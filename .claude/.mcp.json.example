@@ -1,0 +1,9 @@
+{
+  "_comment": "Rename to .mcp.json (at the REPO ROOT, not inside .claude/) to enable. MCP servers are opt-in per repo. Grant tool access with permissions like \"mcp__<server>__*\" in settings.json.",
+  "mcpServers": {
+    "_example_filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}

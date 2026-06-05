@@ -1,0 +1,5 @@
+
+# --- Claude Code (managed by ccc) ---
+.claude/settings.local.json
+.claude/.ccc-source
+CLAUDE.local.md
