@@ -1,4 +1,4 @@
-"""The agent loop — Vegapunk's think → act → observe cycle.
+"""The agent loop — Vegapunk's think -> act -> observe cycle.
 
 This is the heart of the agent and is deliberately hand-written: ask the brain
 what to do, run any tool it requests, feed the result back, and repeat until it
@@ -31,13 +31,24 @@ def run(brain: Brain, tools: list[Tool], user_input: str, max_steps: int = 6) ->
 
         # ACT: run each requested tool, then feed the result back into history.
         for call in response.tool_calls:
-            tool = by_name.get(call.name)
-            if tool is None:
-                result = f"Error: no tool named {call.name!r}."
-            else:
-                result = tool.run(call.arguments)
+            result = _run_tool(by_name.get(call.name), call.name, call.arguments)
             # Trace to stderr so you can *watch* the loop act (stdout stays clean).
             print(f"  [tool] {call.name}({call.arguments}) -> {result}", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     return "(Stopped after hitting the step limit without a final answer.)"
+
+
+def _run_tool(tool: Tool | None, name: str, arguments: dict) -> str:
+    """Run a tool, turning any failure into a message the model can react to.
+
+    Tools are a boundary we don't fully control (bad args, bugs, missing
+    hardware), so a failure must never crash the loop — we feed the error back
+    as the tool's result and let the model recover.
+    """
+    if tool is None:
+        return f"Error: no tool named {name!r}."
+    try:
+        return tool.run(arguments)
+    except Exception as exc:  # noqa: BLE001 — boundary: surface it, don't crash
+        return f"Error running {name}: {exc}"

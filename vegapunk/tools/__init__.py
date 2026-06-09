@@ -1,9 +1,16 @@
-"""Vegapunk's tools — the things it can actually *do*."""
+"""Vegapunk's tools — the things it can actually *do*.
+
+Importing each tool module runs its ``@tool`` decorator, which registers the
+tool into ``REGISTRY``. ``ALL_TOOLS`` is that populated registry. To add a tool:
+create a module with an ``@tool`` function and import it here.
+"""
 
 from .base import Tool
-from .battery import battery_tool
+from .registry import REGISTRY, tool
 
-# Every tool Vegapunk has access to. Register new tools by adding them here.
-ALL_TOOLS: list[Tool] = [battery_tool]
+# Import tool modules for their side effect: each @tool registers itself.
+from . import battery, clock  # noqa: E402,F401 — imported for registration
 
-__all__ = ["Tool", "ALL_TOOLS", "battery_tool"]
+ALL_TOOLS = REGISTRY
+
+__all__ = ["Tool", "tool", "ALL_TOOLS"]
