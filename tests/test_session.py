@@ -6,6 +6,8 @@ FakeBrain in place of a real model.
 
 from __future__ import annotations
 
+import threading
+
 from vegapunk.brain import Brain, BrainResponse, ToolCall
 from vegapunk.loop import run
 from vegapunk.session import Session
@@ -93,3 +95,72 @@ def test_run_one_shot_still_works():
     # Guards the drive_turns extraction: the one-shot path is unchanged.
     fake = FakeBrain([_text("one-shot ok")])
     assert run(fake, [], "hello") == "one-shot ok"
+
+
+def _simple_tool(name: str, func) -> Tool:
+    return Tool(
+        name=name,
+        description=name,
+        parameters={"type": "object", "properties": {}, "required": []},
+        func=func,
+    )
+
+
+def _two_call_turn() -> BrainResponse:
+    """An assistant turn where the model batches two tool calls at once."""
+    return BrainResponse(
+        message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "alpha", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "beta", "arguments": "{}"}},
+            ],
+        },
+        text=None,
+        tool_calls=[
+            ToolCall(id="c1", name="alpha", arguments={}),
+            ToolCall(id="c2", name="beta", arguments={}),
+        ],
+    )
+
+
+def test_batched_tool_results_keep_call_order():
+    fake = FakeBrain([_two_call_turn(), _text("done")])
+    session = Session(
+        fake,
+        tools=[_simple_tool("alpha", lambda _a: "A"), _simple_tool("beta", lambda _a: "B")],
+        system_prompt="SYS",
+    )
+
+    assert session.send("both please") == "done"
+
+    # Tool results line up with the assistant's tool_calls, in call order.
+    assert session.messages[-3] == {"role": "tool", "tool_call_id": "c1", "content": "A"}
+    assert session.messages[-2] == {"role": "tool", "tool_call_id": "c2", "content": "B"}
+    assert session.messages[-1] == {"role": "assistant", "content": "done"}
+
+
+def test_batched_tool_calls_run_concurrently():
+    # Each tool blocks until the *other* one arrives at the barrier. Serial
+    # execution would strand the first tool (barrier timeout -> error result);
+    # concurrent execution lets both pass immediately.
+    barrier = threading.Barrier(2)
+
+    def wait_for_partner(_arguments: dict) -> str:
+        barrier.wait(timeout=2)
+        return "met"
+
+    fake = FakeBrain([_two_call_turn(), _text("done")])
+    session = Session(
+        fake,
+        tools=[
+            _simple_tool("alpha", wait_for_partner),
+            _simple_tool("beta", wait_for_partner),
+        ],
+        system_prompt="SYS",
+    )
+    session.send("go")
+
+    tool_results = [m["content"] for m in session.messages if m["role"] == "tool"]
+    assert tool_results == ["met", "met"]
