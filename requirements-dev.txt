@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=8.0
+ipdb==0.13.13

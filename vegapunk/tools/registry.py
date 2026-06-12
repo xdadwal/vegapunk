@@ -70,4 +70,5 @@ def tool(func: Callable[..., str]) -> Callable[..., str]:
             func=call,
         )
     )
+
     return func

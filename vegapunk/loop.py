@@ -8,8 +8,9 @@ returns a final answer (or we hit the safety limit that stops runaway loops).
 from __future__ import annotations
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
-from .brain import Brain
+from .brain import Brain, ToolCall
 from .config import config
 from .tools import Tool
 
@@ -21,22 +22,76 @@ def run(brain: Brain, tools: list[Tool], user_input: str, max_steps: int = 6) ->
     ]
     schemas = [tool.to_schema() for tool in tools]
     by_name = {tool.name: tool for tool in tools}
+    return drive_turns(brain, by_name, schemas, messages, max_steps)
 
-    for _ in range(max_steps):
+
+def drive_turns(
+    brain: Brain,
+    by_name: dict[str, Tool],
+    schemas: list[dict],
+    messages: list[dict],
+    max_steps: int,
+) -> str:
+    """Run the think -> act -> observe loop over an existing messages list.
+
+    Mutates ``messages`` in place (appending assistant and tool turns) and
+    returns the final text answer, or a notice if the step limit is hit. Shared
+    by the one-shot ``run()`` and the multi-turn ``Session`` so the loop logic
+    lives in exactly one place.
+
+    Tool calls the model batches into one turn are independent by definition,
+    so they execute concurrently — tools must therefore be thread-safe.
+    """
+    for step in range(max_steps):
+        # Trace to stderr so you can *watch* the loop work (stdout stays clean);
+        # the [think] marker shows where each model roundtrip starts, making
+        # batched-vs-chained tool calling visible.
+        print(f"  [think] step {step + 1}", file=sys.stderr)
         response = brain.think(messages, tools=schemas)
         messages.append(response.message)  # OBSERVE: record what the model said
 
         if not response.tool_calls:
             return response.text or ""  # THINK said "done" — final answer
 
-        # ACT: run each requested tool, then feed the result back into history.
-        for call in response.tool_calls:
-            result = _run_tool(by_name.get(call.name), call.name, call.arguments)
-            # Trace to stderr so you can *watch* the loop act (stdout stays clean).
+        # ACT: run the turn's tools, then feed each result back into history.
+        for call, result in _run_tool_batch(by_name, response.tool_calls):
             print(f"  [tool] {call.name}({call.arguments}) -> {result}", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     return "(Stopped after hitting the step limit without a final answer.)"
+
+
+def _run_tool_batch(
+    by_name: dict[str, Tool], calls: list[ToolCall]
+) -> list[tuple[ToolCall, str]]:
+    """Run one turn's tool calls, concurrently when there is more than one.
+
+    Results come back in call order regardless of completion order, so the
+    tool messages always line up with the assistant's tool_calls.
+    """
+    if len(calls) == 1:
+        call = calls[0]
+        return [(call, _run_tool(by_name.get(call.name), call.name, call.arguments))]
+
+    # Not a `with` block: its exit joins the workers, which would stall a
+    # Ctrl-C until every in-flight tool finished.
+    pool = ThreadPoolExecutor(max_workers=min(len(calls), 8))
+    try:
+        futures = [
+            pool.submit(_run_tool, by_name.get(call.name), call.name, call.arguments)
+            for call in calls
+        ]
+        # _run_tool turns normal exceptions into error strings, so .result()
+        # only re-raises interrupts (KeyboardInterrupt/SystemExit).
+        results = list(zip(calls, (future.result() for future in futures)))
+    except BaseException:
+        # Interrupted mid-batch: drop queued tools and stop waiting for running
+        # ones (they can't be force-killed; they finish ignored) so the
+        # interrupt reaches the caller promptly.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
+    return results
 
 
 def _run_tool(tool: Tool | None, name: str, arguments: dict) -> str:
