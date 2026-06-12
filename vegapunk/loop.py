@@ -21,7 +21,23 @@ def run(brain: Brain, tools: list[Tool], user_input: str, max_steps: int = 6) ->
     ]
     schemas = [tool.to_schema() for tool in tools]
     by_name = {tool.name: tool for tool in tools}
+    return drive_turns(brain, by_name, schemas, messages, max_steps)
 
+
+def drive_turns(
+    brain: Brain,
+    by_name: dict[str, Tool],
+    schemas: list[dict],
+    messages: list[dict],
+    max_steps: int,
+) -> str:
+    """Run the think -> act -> observe loop over an existing messages list.
+
+    Mutates ``messages`` in place (appending assistant and tool turns) and
+    returns the final text answer, or a notice if the step limit is hit. Shared
+    by the one-shot ``run()`` and the multi-turn ``Session`` so the loop logic
+    lives in exactly one place.
+    """
     for _ in range(max_steps):
         response = brain.think(messages, tools=schemas)
         messages.append(response.message)  # OBSERVE: record what the model said
