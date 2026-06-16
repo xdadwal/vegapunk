@@ -8,6 +8,7 @@ Run from the repo root:
 
 import sys
 
+from vegapunk.approval import CLIApprover
 from vegapunk.brain import DMRBrain
 from vegapunk.loop import run
 from vegapunk.tools import ALL_TOOLS
@@ -15,7 +16,9 @@ from vegapunk.tools import ALL_TOOLS
 
 def main() -> None:
     question = " ".join(sys.argv[1:]) or "How are you feeling right now?"
-    print(run(DMRBrain(), ALL_TOOLS, question))
+    # Wire the gate: in a terminal you'll be prompted before a guarded tool
+    # (write_file / run_shell) runs; piped/non-interactive, it auto-denies.
+    print(run(DMRBrain(), ALL_TOOLS, question, approver=CLIApprover()))
 
 
 if __name__ == "__main__":

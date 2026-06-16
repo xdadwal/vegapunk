@@ -11,6 +11,9 @@ it becomes a Tool the model can call:
 The name comes from the function, the description from the docstring, and the
 input schema is *derived from the type hints* — no JSON Schema written by hand,
 no manual registration.
+
+A side-effecting tool marks itself for the approval gate with ``@tool(guarded=True)``;
+read-only tools keep the bare ``@tool``.
 """
 
 from __future__ import annotations
@@ -51,24 +54,39 @@ def _build_parameters(func: Callable) -> dict:
     return {"type": "object", "properties": properties, "required": required}
 
 
-def tool(func: Callable[..., str]) -> Callable[..., str]:
-    """Register ``func`` as a Tool and return it unchanged (still callable)."""
-    valid_params = set(inspect.signature(func).parameters)
+def tool(func: Callable[..., str] | None = None, *, guarded: bool = False):
+    """Register a function as a Tool and return it unchanged (still callable).
 
-    def call(arguments: dict) -> str:
-        # The model hands us a dict; the author wrote a normal function with
-        # named params. Unpack into kwargs, ignoring any unexpected keys so a
-        # slightly-off model call doesn't blow up.
-        kwargs = {k: v for k, v in arguments.items() if k in valid_params}
-        return func(**kwargs)
+    Works both bare and parameterized::
 
-    REGISTRY.append(
-        Tool(
-            name=func.__name__,
-            description=inspect.getdoc(func) or "",
-            parameters=_build_parameters(func),
-            func=call,
+        @tool                    # read-only, runs freely
+        def get_time() -> str: ...
+
+        @tool(guarded=True)      # side-effecting, needs approval
+        def write_file(path: str, content: str) -> str: ...
+    """
+
+    def decorate(fn: Callable[..., str]) -> Callable[..., str]:
+        valid_params = set(inspect.signature(fn).parameters)
+
+        def call(arguments: dict) -> str:
+            # The model hands us a dict; the author wrote a normal function with
+            # named params. Unpack into kwargs, ignoring any unexpected keys so a
+            # slightly-off model call doesn't blow up.
+            kwargs = {k: v for k, v in arguments.items() if k in valid_params}
+            return fn(**kwargs)
+
+        REGISTRY.append(
+            Tool(
+                name=fn.__name__,
+                description=inspect.getdoc(fn) or "",
+                parameters=_build_parameters(fn),
+                func=call,
+                guarded=guarded,
+            )
         )
-    )
+        return fn
 
-    return func
+    # Bare ``@tool``: func is the decorated function — register it now.
+    # Parameterized ``@tool(guarded=True)``: func is None — return the decorator.
+    return decorate(func) if func is not None else decorate

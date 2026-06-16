@@ -7,7 +7,9 @@ stdout.
 
 from __future__ import annotations
 
+from .approval import CLIApprover
 from .brain import DMRBrain
+from .prompter import Prompter, PromptToolkitPrompter
 from .session import Session
 from .tools import ALL_TOOLS
 
@@ -15,13 +17,19 @@ _EXIT = {"exit", "quit"}
 _RESET = {"reset", "clear"}
 
 
-def main() -> None:
-    session = Session(DMRBrain(), ALL_TOOLS)
+def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
+    # Defaults are built here (not as argument defaults) so tests can inject a
+    # scripted prompter / fake-brain session and never touch the model or a TTY.
+    if session is None:
+        # One approver for the whole REPL, so "always allow" lasts the session.
+        session = Session(DMRBrain(), ALL_TOOLS, approver=CLIApprover())
+    if prompter is None:
+        prompter = PromptToolkitPrompter()
     print("Vegapunk interactive session. Type 'exit' to quit, 'reset' to clear history.")
 
     while True:
         try:
-            user_input = input("you> ").strip()
+            user_input = prompter.prompt().strip()
         except EOFError:  # Ctrl-D
             print("\nbye.")
             return

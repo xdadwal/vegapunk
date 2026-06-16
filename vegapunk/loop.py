@@ -10,19 +10,34 @@ from __future__ import annotations
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+from .approval import Approver
 from .brain import Brain, ToolCall
 from .config import config
 from .tools import Tool
 
+# Results fed back when a guarded tool is not allowed to run. Both are worded to
+# steer a small model away from immediately re-requesting the same tool.
+DENIED = "Denied by the user. Do not retry this tool; consider another approach or ask the user."
+NO_GATE = (
+    "Blocked: this tool needs approval, but no approval gate is available here. "
+    "Do not retry it; tell the user it can't run in this context."
+)
 
-def run(brain: Brain, tools: list[Tool], user_input: str, max_steps: int = 6) -> str:
+
+def run(
+    brain: Brain,
+    tools: list[Tool],
+    user_input: str,
+    max_steps: int = 6,
+    approver: Approver | None = None,
+) -> str:
     messages: list[dict] = [
         {"role": "system", "content": config.system_prompt},
         {"role": "user", "content": user_input},
     ]
     schemas = [tool.to_schema() for tool in tools]
     by_name = {tool.name: tool for tool in tools}
-    return drive_turns(brain, by_name, schemas, messages, max_steps)
+    return drive_turns(brain, by_name, schemas, messages, max_steps, approver)
 
 
 def drive_turns(
@@ -31,6 +46,7 @@ def drive_turns(
     schemas: list[dict],
     messages: list[dict],
     max_steps: int,
+    approver: Approver | None = None,
 ) -> str:
     """Run the think -> act -> observe loop over an existing messages list.
 
@@ -40,7 +56,9 @@ def drive_turns(
     lives in exactly one place.
 
     Tool calls the model batches into one turn are independent by definition,
-    so they execute concurrently — tools must therefore be thread-safe.
+    so they execute concurrently — tools must therefore be thread-safe. Guarded
+    tools are approved first, in a sequential pre-pass, so an interactive
+    approver never faces concurrent prompts (see ``_run_tool_batch``).
     """
     for step in range(max_steps):
         # Trace to stderr so you can *watch* the loop work (stdout stays clean);
@@ -54,7 +72,7 @@ def drive_turns(
             return response.text or ""  # THINK said "done" — final answer
 
         # ACT: run the turn's tools, then feed each result back into history.
-        for call, result in _run_tool_batch(by_name, response.tool_calls):
+        for call, result in _run_tool_batch(by_name, response.tool_calls, approver):
             print(f"  [tool] {call.name}({call.arguments}) -> {result}", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
@@ -62,36 +80,59 @@ def drive_turns(
 
 
 def _run_tool_batch(
-    by_name: dict[str, Tool], calls: list[ToolCall]
+    by_name: dict[str, Tool], calls: list[ToolCall], approver: Approver | None = None
 ) -> list[tuple[ToolCall, str]]:
-    """Run one turn's tool calls, concurrently when there is more than one.
+    """Gate guarded calls, then run the approved ones — concurrently when there
+    is more than one.
 
-    Results come back in call order regardless of completion order, so the
-    tool messages always line up with the assistant's tool_calls.
+    Gating is a *sequential* pre-pass (in call order) so an interactive approver
+    never faces concurrent stdin prompts; only the actual running is concurrent.
+    Read-only (and unknown) tools always run. A guarded tool runs only if an
+    approver says yes; if the user declines it short-circuits to ``DENIED``, and
+    if no approver is wired at all it short-circuits to ``NO_GATE`` — fail-closed,
+    so a guarded tool never runs silently. Results stay keyed to the original
+    call order, so the tool messages always line up with the assistant's tool_calls.
     """
-    if len(calls) == 1:
-        call = calls[0]
-        return [(call, _run_tool(by_name.get(call.name), call.name, call.arguments))]
+    # Pre-pass: decide each call up front, in order, splitting into what runs
+    # and what's blocked (with the reason fed back to the model).
+    results: dict[int, str] = {}
+    runnable: list[tuple[int, ToolCall]] = []
+    for i, call in enumerate(calls):
+        tool = by_name.get(call.name)
+        if tool is None or not tool.guarded:
+            runnable.append((i, call))  # unknown tool or read-only — runs freely
+        elif approver is None:
+            results[i] = NO_GATE  # guarded, but nothing here can approve it
+        elif approver.approve(call.name, call.arguments):
+            runnable.append((i, call))
+        else:
+            results[i] = DENIED
 
-    # Not a `with` block: its exit joins the workers, which would stall a
-    # Ctrl-C until every in-flight tool finished.
-    pool = ThreadPoolExecutor(max_workers=min(len(calls), 8))
-    try:
-        futures = [
-            pool.submit(_run_tool, by_name.get(call.name), call.name, call.arguments)
-            for call in calls
-        ]
-        # _run_tool turns normal exceptions into error strings, so .result()
-        # only re-raises interrupts (KeyboardInterrupt/SystemExit).
-        results = list(zip(calls, (future.result() for future in futures)))
-    except BaseException:
-        # Interrupted mid-batch: drop queued tools and stop waiting for running
-        # ones (they can't be force-killed; they finish ignored) so the
-        # interrupt reaches the caller promptly.
-        pool.shutdown(wait=False, cancel_futures=True)
-        raise
-    pool.shutdown()
-    return results
+    if len(runnable) == 1:
+        i, call = runnable[0]
+        results[i] = _run_tool(by_name.get(call.name), call.name, call.arguments)
+    elif len(runnable) > 1:
+        # Not a `with` block: its exit joins the workers, which would stall a
+        # Ctrl-C until every in-flight tool finished.
+        pool = ThreadPoolExecutor(max_workers=min(len(runnable), 8))
+        try:
+            futures = {
+                i: pool.submit(_run_tool, by_name.get(call.name), call.name, call.arguments)
+                for i, call in runnable
+            }
+            # _run_tool turns normal exceptions into error strings, so .result()
+            # only re-raises interrupts (KeyboardInterrupt/SystemExit).
+            for i, future in futures.items():
+                results[i] = future.result()
+        except BaseException:
+            # Interrupted mid-batch: drop queued tools and stop waiting for running
+            # ones (they can't be force-killed; they finish ignored) so the
+            # interrupt reaches the caller promptly.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown()
+
+    return [(call, results[i]) for i, call in enumerate(calls)]
 
 
 def _run_tool(tool: Tool | None, name: str, arguments: dict) -> str:

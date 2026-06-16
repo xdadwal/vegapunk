@@ -8,3 +8,6 @@ CLAUDE.local.md
 .venv/
 __pycache__/
 *.pyc
+
+# --- Vegapunk local state (REPL history, etc.) ---
+.vegapunk/

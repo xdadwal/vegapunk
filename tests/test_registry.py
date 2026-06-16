@@ -41,3 +41,21 @@ def test_tool_unpacks_arguments():
     assert made.run({"name": "Vegapunk"}) == "hi Vegapunk"
     # Unexpected keys are ignored rather than fatal.
     assert made.run({"name": "X", "bogus": 1}) == "hi X"
+
+
+def test_guarded_flag_round_trips():
+    @tool(guarded=True)
+    def danger() -> str:
+        """Do something risky."""
+        return "ok"
+
+    @tool
+    def safe() -> str:
+        """Read something harmless."""
+        return "ok"
+
+    # @tool(guarded=True) marks the tool; bare @tool leaves it unguarded, and
+    # both still register and stay directly callable.
+    assert _last("danger").guarded is True
+    assert _last("safe").guarded is False
+    assert danger() == "ok" and safe() == "ok"
