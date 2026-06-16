@@ -23,6 +23,10 @@ the function, and the description from the docstring, and auto-registers it into
   silently.
 - **Expected failures return a clear string** (e.g. "No battery detected"); unexpected errors may
   raise — the loop catches them and feeds the message back to the model.
+- **Be lenient with model-supplied inputs.** The local model often passes loose args (wrong case,
+  extra words, a phrase instead of a keyword); for lookups/searches prefer forgiving matching —
+  case-insensitive and partial — so a reasonable request still succeeds (e.g. name search finds
+  `PROMPT.md` from "prompt").
 - **Verify** with `pytest -q` and a `try_agent.py "<triggering question>"` run before calling it
   done.
 
