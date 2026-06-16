@@ -8,3 +8,6 @@ CLAUDE.local.md
 .venv/
 __pycache__/
 *.pyc
+
+# --- autoloop scratch (standing prompt) ---
+PROMPT.md
