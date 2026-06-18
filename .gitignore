@@ -11,3 +11,6 @@ __pycache__/
 
 # --- Vegapunk local state (REPL history, etc.) ---
 .vegapunk/
+
+# --- autoloop scratch (standing prompt) ---
+PROMPT.md

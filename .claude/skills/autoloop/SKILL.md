@@ -38,6 +38,8 @@ Create/confirm two things in the repo:
 
    # Working notes (the loop appends here)
    ```
+   PROMPT.md is scratch scaffolding — gitignore it (or delete it when the loop ends) so it's
+   never accidentally committed.
 2. **`specs/`** (optional) — backing specifications/reference the task needs. Keep PROMPT.md
    short; put detail in `specs/*.md` and reference it.
 
