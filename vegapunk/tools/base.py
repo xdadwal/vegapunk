@@ -16,6 +16,10 @@ class Tool:
     description: str
     parameters: dict  # JSON Schema describing the tool's input arguments
     func: Callable[[dict], str]
+    # Side-effecting tools (write a file, run a command, send something) set this
+    # so the loop asks for human approval before running them. Internal policy —
+    # deliberately not part of to_schema(), so the model never sees it.
+    guarded: bool = False
 
     def to_schema(self) -> dict:
         """Render this tool in the OpenAI 'function' tool format the model expects."""

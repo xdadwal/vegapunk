@@ -9,5 +9,8 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 
+# --- Vegapunk local state (REPL history, etc.) ---
+.vegapunk/
+
 # --- autoloop scratch (standing prompt) ---
 PROMPT.md
