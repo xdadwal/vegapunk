@@ -18,16 +18,23 @@ _run = subprocess.run
 
 
 @tool(guarded=True)
-def run_shell(command: str) -> str:
+def run_shell(command: str, stdin: str = "") -> str:
     """Run a shell command and return its combined stdout+stderr. Use this for
     things the other tools can't do — build, test, inspect, git, and so on. It
     runs in the workspace with a time limit, and very long output is truncated.
-    The exit code is reported in the result so you can tell success from failure."""
+    The exit code is reported in the result so you can tell success from failure.
+
+    If the command might prompt for input, supply the answer(s) via `stdin`, each
+    ending in a newline (e.g. "y\\n", or "Akshay\\n" for a name prompt). By default
+    `stdin` is empty and closed, so an interactive prompt fails fast with an EOF
+    error instead of hanging until the timeout — when you see that, read the prompt
+    shown in the output and retry with the needed input in `stdin`."""
     try:
         completed = _run(
             command,
             shell=True,
             cwd=str(workspace_root()),
+            input=stdin,
             capture_output=True,
             text=True,
             timeout=config.shell_timeout,
