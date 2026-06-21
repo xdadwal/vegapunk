@@ -87,7 +87,8 @@ def _run_tool_batch(
 
     Gating is a *sequential* pre-pass (in call order) so an interactive approver
     never faces concurrent stdin prompts; only the actual running is concurrent.
-    Read-only (and unknown) tools always run. A guarded tool runs only if an
+    Read-only tools always run; an unknown tool name short-circuits to a
+    corrective message naming the real tools. A guarded tool runs only if an
     approver says yes; if the user declines it short-circuits to ``DENIED``, and
     if no approver is wired at all it short-circuits to ``NO_GATE`` — fail-closed,
     so a guarded tool never runs silently. Results stay keyed to the original
@@ -99,8 +100,10 @@ def _run_tool_batch(
     runnable: list[tuple[int, ToolCall]] = []
     for i, call in enumerate(calls):
         tool = by_name.get(call.name)
-        if tool is None or not tool.guarded:
-            runnable.append((i, call))  # unknown tool or read-only — runs freely
+        if tool is None:
+            results[i] = _unknown_tool(call.name, by_name)  # name the real tools so it can recover
+        elif not tool.guarded:
+            runnable.append((i, call))  # read-only — runs freely
         elif approver is None:
             results[i] = NO_GATE  # guarded, but nothing here can approve it
         elif approver.approve(call.name, call.arguments):
@@ -135,15 +138,42 @@ def _run_tool_batch(
     return [(call, results[i]) for i, call in enumerate(calls)]
 
 
+def _unknown_tool(name: str, by_name: dict[str, Tool]) -> str:
+    """Feedback for a tool name the model invented: name the real tools so it can
+    recover, rather than the call silently doing nothing."""
+    available = ", ".join(sorted(by_name)) or "(none registered)"
+    return (
+        f"No tool named {name!r}. Available tools: {available}. "
+        "Call one of these, or answer the user directly without a tool."
+    )
+
+
+def _missing_args(name: str, tool: Tool, missing: list[str]) -> str:
+    """Feedback for required arguments the model left out: name them (with types,
+    from the derived schema) and ask for a corrected retry."""
+    props = tool.parameters.get("properties", {})
+    listed = ", ".join(f'"{p}" ({props.get(p, {}).get("type", "string")})' for p in missing)
+    return (
+        f"{name} is missing required argument(s): {listed}. "
+        f"Call {name} again with every required argument."
+    )
+
+
 def _run_tool(tool: Tool | None, name: str, arguments: dict) -> str:
     """Run a tool, turning any failure into a message the model can react to.
 
     Tools are a boundary we don't fully control (bad args, bugs, missing
     hardware), so a failure must never crash the loop — we feed the error back
-    as the tool's result and let the model recover.
+    as the tool's result and let the model recover. Before running, a missing
+    required argument short-circuits to corrective guidance (extra keys are
+    tolerated — the @tool wrapper drops them), so a slightly-off call from a
+    small model becomes a retry signal instead of an opaque TypeError.
     """
     if tool is None:
-        return f"Error: no tool named {name!r}."
+        return f"Error: no tool named {name!r}."  # unknown names are caught earlier; defensive
+    missing = [p for p in tool.parameters.get("required", []) if p not in arguments]
+    if missing:
+        return _missing_args(name, tool, missing)
     try:
         return tool.run(arguments)
     except Exception as exc:  # noqa: BLE001 — boundary: surface it, don't crash
