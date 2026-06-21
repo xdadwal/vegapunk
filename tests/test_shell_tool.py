@@ -7,6 +7,7 @@ a fraction of a second. ``config`` is frozen, so we swap in a modified copy with
 
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 
 import pytest
@@ -53,3 +54,56 @@ def test_times_out_fast(ws, monkeypatch):
     monkeypatch.setattr("vegapunk.tools.shell.config", replace(config, shell_timeout=0.2))
     out = run_shell("sleep 5")
     assert out.startswith("Timed out after")
+
+
+def test_stdin_is_fed_to_command(ws):
+    out = run_shell("cat", stdin="hello\n")  # cat echoes whatever it reads on stdin
+    assert "hello" in out
+    assert "[exit 0]" in out
+
+
+def test_default_stdin_closed_no_hang(ws, monkeypatch):
+    # No stdin given: it's closed, so a reader gets EOF and exits at once rather
+    # than blocking on the inherited terminal. The short timeout bounds a
+    # regression (a real block would surface as "Timed out", not a hang).
+    monkeypatch.setattr("vegapunk.tools.shell.config", replace(config, shell_timeout=5))
+    out = run_shell("cat")
+    assert out.startswith("[exit 0]")
+    assert not out.startswith("Timed out")
+
+
+def test_interactive_prompt_fails_fast_not_timeout(ws, monkeypatch):
+    # A prompt with no input used to hang until the timeout; now stdin is closed
+    # so input() raises EOFError immediately. Bound a regression with a short
+    # timeout that's still well clear of interpreter startup.
+    monkeypatch.setattr("vegapunk.tools.shell.config", replace(config, shell_timeout=5))
+    out = run_shell(f'{sys.executable} -c "input()"')
+    assert not out.startswith("Timed out")
+    assert "[exit 0]" not in out  # EOFError -> non-zero exit
+    assert "EOFError" in out
+
+
+def test_stdin_answers_prompt(ws):
+    out = run_shell(f"{sys.executable} -c \"print('Hi ' + input())\"", stdin="Akshay\n")
+    assert "Hi Akshay" in out
+    assert "[exit 0]" in out
+
+
+def test_stdin_feeds_multiple_prompts_in_order(ws):
+    # A script that reads several inputs gets each answer in turn from the one
+    # newline-separated stdin string — the common "fixed series of questions" case.
+    code = "a=input(); b=input(); c=input(); print(a + '-' + b + '-' + c)"
+    out = run_shell(f'{sys.executable} -c "{code}"', stdin="one\ntwo\nthree\n")
+    assert "one-two-three" in out
+    assert "[exit 0]" in out
+
+
+def test_partial_stdin_runs_out_at_next_prompt(ws, monkeypatch):
+    # Fewer answers than prompts: the supplied ones are consumed, then the next
+    # read hits EOF and fails fast (what drives incremental prompt discovery).
+    monkeypatch.setattr("vegapunk.tools.shell.config", replace(config, shell_timeout=5))
+    code = "a=input(); b=input(); print('reached-end')"
+    out = run_shell(f'{sys.executable} -c "{code}"', stdin="only-one\n")
+    assert not out.startswith("Timed out")
+    assert "EOFError" in out
+    assert "reached-end" not in out
