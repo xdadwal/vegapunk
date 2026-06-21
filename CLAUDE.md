@@ -1,6 +1,6 @@
 # Project guide for Claude Code
 
-> Seeded from `ccc` v0.3.0. Run `/sync-config` to pull the latest config. Edit the canonical
+> Seeded from `ccc` v0.4.0. Run `/sync-config` to pull the latest config. Edit the canonical
 > versions in your `ccc` checkout, not here, so improvements flow to every repo.
 
 ## How to work here
@@ -8,8 +8,6 @@
 - **Plan before large changes.** Reuse existing patterns and utilities before adding new ones.
 - **Tests gate "done".** A change isn't finished until the relevant tests/build pass. Never
   commit on a red build, and never delete or skip a test just to make it green.
-- **Run Python through the repo's `.venv`** — a bare `python` is missing the deps. Use
-  `.venv/bin/python -m pytest -q` for tests and `.venv/bin/python -m vegapunk` to run the agent.
 - **Small, reversible steps.** Prefer the smallest change that solves the problem.
 - **Ask when genuinely ambiguous; otherwise pick the obvious default and state it.**
 
