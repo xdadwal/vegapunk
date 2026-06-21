@@ -22,7 +22,17 @@ when the user asks — never commit/push/PR unprompted.
 - **Confirm tooling.** `gh auth status` succeeds; note the remote (`git remote -v`) and the base
   branch (usually `main`/`master`).
 
-## Step 2 — Stage intentionally
+## Step 2 — Refresh the README
+
+- **Keep `README.md` true to this change.** Before staging, run the `/update-readme` skill so the
+  README reflects anything reader-facing this PR changes — a tool added/removed, a CLI command or
+  flag, run/setup steps, config or `VEGAPUNK_*` env vars, dependencies, or the project layout.
+- It makes the **smallest faithful edit**, and **no edit at all** when nothing reader-facing changed
+  (internal refactor, tests-only). Don't force a README change just to satisfy this step.
+- The README edit is part of *this* PR's diff: stage it with the rest in Step 3 and mention it in the
+  commit/PR body.
+
+## Step 3 — Stage intentionally
 
 - **Never `git add -A`.** Stage only the files this change touches, by explicit path
   (`git add <paths>`).
@@ -32,7 +42,7 @@ when the user asks — never commit/push/PR unprompted.
 - **Never stage secrets** (`.env`, tokens, keys — hooks block `.env`, but look), large binaries, or
   lockfiles you hand-edited (regenerate those instead).
 
-## Step 3 — Commit
+## Step 4 — Commit
 
 - **Conventional Commits**: `type(scope): summary` in the imperative, ≤ ~72 chars
   (`feat`/`fix`/`refactor`/`test`/`docs`/`chore`/`perf`/`build`/`ci`).
@@ -42,14 +52,14 @@ when the user asks — never commit/push/PR unprompted.
 - **End the commit message with the session's `Co-Authored-By:` trailer** (the harness specifies the
   exact line for the current model).
 
-## Step 4 — Push
+## Step 5 — Push
 
 - `git push -u origin <branch>`. Pushing prompts for confirmation (configured in settings) — that's
   expected.
 - Force-push with `-f`/`--force` is blocked by a hook; if you must, use `--force-with-lease`, and
   never on a shared branch.
 
-## Step 5 — Open the PR
+## Step 6 — Open the PR
 
 - `gh pr create --base <main|master> --head <branch> --title "<conventional title>" --body "<body>"`.
 - **Title** carries the full scope (the branch name may be narrower — if it materially misleads,
@@ -61,7 +71,7 @@ when the user asks — never commit/push/PR unprompted.
   🤖 Generated with [Claude Code](https://claude.com/claude-code)
   ```
 
-## Step 6 — Report
+## Step 7 — Report
 
 Print the PR URL `gh` returns, and a one-line summary of what landed (commit count, files, test
 result). Offer follow-ups only if relevant (reviewers/labels, branch rename, splitting commits).
@@ -70,6 +80,6 @@ result). Offer follow-ups only if relevant (reviewers/labels, branch rename, spl
 
 - This is the GitHub-facing tail of the pipeline: `ship`/`autoloop` get you to a verified, committed
   change; `raise-pr` takes that to a reviewable PR.
-- If nothing is committed yet, this skill does the commit too (Steps 2–3). If the change is already
-  committed, start at Step 4.
+- If nothing is committed yet, this skill does the commit too (Steps 3–4). If the change is already
+  committed, start at Step 5.
 - Keep the human as the merge gate — open the PR; don't merge it unless explicitly asked.
