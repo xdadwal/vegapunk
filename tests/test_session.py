@@ -80,6 +80,25 @@ def test_tool_call_turn_appends_assistant_then_tool_then_answers():
     assert msgs[-1] == {"role": "assistant", "content": "pong received"}  # final answer
 
 
+def test_reasoning_is_traced_to_stderr_but_kept_out_of_history(capsys):
+    reasoning = "User asked who I am; the answer is in the system prompt."
+    turn = BrainResponse(
+        message={"role": "assistant", "content": "I'm Vegapunk."},
+        text="I'm Vegapunk.",
+        tool_calls=[],
+        reasoning=reasoning,
+    )
+    session = Session(FakeBrain([turn]), tools=[], system_prompt="SYS")
+
+    assert session.send("who are you?") == "I'm Vegapunk."
+
+    # Surfaced on the suppressible stderr watch-channel, beside [think]/[tool].
+    assert f"  [reason] {reasoning}" in capsys.readouterr().err
+    # ...but never replayed into the conversation history sent to the model.
+    assert all(reasoning not in str(m) for m in session.messages)
+    assert session.messages[-1] == {"role": "assistant", "content": "I'm Vegapunk."}
+
+
 def test_system_prompt_seeded_once_and_survives_reset():
     fake = FakeBrain([_text("ok")])
     session = Session(fake, tools=[], system_prompt="SYS")

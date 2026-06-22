@@ -66,6 +66,10 @@ def drive_turns(
         # batched-vs-chained tool calling visible.
         print(f"  [think] step {step + 1}", file=sys.stderr)
         response = brain.think(messages, tools=schemas)
+        if response.reasoning:
+            # Watch the model think on the same suppressible channel as the rest
+            # of the trace; it never enters history or the clean stdout reply.
+            print(f"  [reason] {response.reasoning}", file=sys.stderr)
         messages.append(response.message)  # OBSERVE: record what the model said
 
         if not response.tool_calls:
