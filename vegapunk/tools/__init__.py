@@ -1,4 +1,3 @@
-
 """Vegapunk's tools — the things it can actually *do*.
 
 Importing each tool module runs its ``@tool`` decorator, which registers the
