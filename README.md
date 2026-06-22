@@ -72,6 +72,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_WORKSPACE` | Root directory the file/shell tools are sandboxed to | current directory |
 | `VEGAPUNK_SHELL_TIMEOUT` | Max seconds a shell command may run | `30` |
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
+| `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 
 ## Tests

@@ -141,6 +141,50 @@ def test_batched_tool_results_keep_call_order():
     assert session.messages[-1] == {"role": "assistant", "content": "done"}
 
 
+class _AlwaysToolBrain(Brain):
+    """A Brain that never finishes — every turn requests a tool — so the loop
+    runs until it hits the step budget. Records how many times it was asked."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> BrainResponse:
+        self.calls += 1
+        return BrainResponse(
+            message={
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "ping", "arguments": "{}"}}
+                ],
+            },
+            text=None,
+            tool_calls=[ToolCall(id="c1", name="ping", arguments={})],
+        )
+
+
+def test_session_honors_configured_max_steps():
+    # The brain never returns a final answer, so the loop runs until the budget
+    # is exhausted — it must stop after exactly max_steps think() calls.
+    brain = _AlwaysToolBrain()
+    session = Session(
+        brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS", max_steps=3
+    )
+    result = session.send("loop forever")
+    assert brain.calls == 3
+    assert "step limit" in result.lower()
+
+
+def test_session_default_max_steps_comes_from_config():
+    # With no explicit max_steps, the budget is the configured default.
+    from vegapunk.config import config
+
+    brain = _AlwaysToolBrain()
+    session = Session(brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS")
+    session.send("loop forever")
+    assert brain.calls == config.max_steps
+
+
 def test_batched_tool_calls_run_concurrently():
     # Each tool blocks until the *other* one arrives at the barrier. Serial
     # execution would strand the first tool (barrier timeout -> error result);

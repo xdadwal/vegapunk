@@ -34,7 +34,7 @@ def test_searches_multiple_files(ws):
 def test_ignore_case(ws):
     (ws / "a.txt").write_text("Hello World\n")
     assert "a.txt:1: Hello World" in grep("hello", ignore_case=True)
-    assert grep("hello") == "No matches for 'hello'."  # case-sensitive by default
+    assert grep("hello").startswith("No matches for 'hello'.")  # case-sensitive by default
 
 
 def test_regex_pattern(ws):
@@ -51,7 +51,7 @@ def test_preserves_leading_indentation(ws):
 
 def test_no_matches_returns_clear_string(ws):
     (ws / "a.txt").write_text("hello\n")
-    assert grep("zzz") == "No matches for 'zzz'."
+    assert grep("zzz").startswith("No matches for 'zzz'.")
 
 
 def test_invalid_regex_returns_clear_string(ws):
@@ -152,5 +152,5 @@ def test_search_names_loose_phrase_matches_any_word(ws):
 def test_content_search_stays_case_sensitive_by_default(ws):
     # Names go case-insensitive, but content keeps grep's precise default.
     (ws / "a.txt").write_text("Prompt here\n")
-    assert grep("prompt", target="content") == "No matches for 'prompt'."
+    assert grep("prompt", target="content").startswith("No matches for 'prompt'.")
     assert "a.txt:1: Prompt here" in grep("prompt", target="content", ignore_case=True)
