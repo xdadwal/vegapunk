@@ -28,6 +28,8 @@ the function, and the description from the docstring, and auto-registers it into
   case-insensitive and partial — so a reasonable request still succeeds (e.g. name search finds
   `PROMPT.md` from "prompt").
 - **Verify** with `pytest -q` and a `try_agent.py "<triggering question>"` run before calling it
-  done.
+  done. For a **guarded** tool, `try_agent.py`'s `CLIApprover` auto-denies without a TTY (e.g. a
+  piped/non-interactive shell), so verify it in a real terminal — or with a throwaway driver that
+  passes an auto-approving `Approver` to `run(...)`.
 
 To scaffold a new tool consistently, use the `/add-tool` skill.
