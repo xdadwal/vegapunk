@@ -18,7 +18,7 @@ class Config:
     base_url: str = os.getenv("VEGAPUNK_BASE_URL", "http://localhost:12434/engines/v1")
 
     # DMR requires the "ai/" prefix on the model id, or the request 404s.
-    model: str = os.getenv("VEGAPUNK_MODEL", "ai/qwen2.5:latest")
+    model: str = os.getenv("VEGAPUNK_MODEL", "gemma4:latest")
 
     # The OpenAI client insists on *some* key string; a local DMR server
     # ignores it, so a placeholder is fine.
