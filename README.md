@@ -37,8 +37,9 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
 - **Whole-line commands:** `exit`/`quit` to leave; `reset`/`clear` to wipe the conversation
   (approval decisions are kept).
-- Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[tool]` = a tool result),
-  leaving **stdout** clean for the agent's replies.
+- Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[reason]` = the model's
+  chain-of-thought when the model returns one, `[tool]` = a tool result), leaving **stdout** clean
+  for the agent's replies.
 
 ## Tools
 

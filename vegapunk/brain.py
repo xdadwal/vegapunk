@@ -40,6 +40,10 @@ class BrainResponse:
     text: str | None
     # Tools the model asked to run this turn (empty when it's finished).
     tool_calls: list[ToolCall] = field(default_factory=list)
+    # The model's chain-of-thought for this turn, if the server returned one
+    # (e.g. reasoning models' `reasoning_content`). Display-only — never
+    # replayed into history. None when absent.
+    reasoning: str | None = None
 
 
 class Brain(ABC):
@@ -64,6 +68,14 @@ class DMRBrain(Brain):
 
         message = self._client.chat.completions.create(**kwargs).choices[0].message
 
+        # Reasoning models put their chain-of-thought in a separate field; the
+        # OpenAI SDK message allows extra fields, so read it defensively and
+        # normalize empty -> None. Display-only — see below: it's kept out of
+        # the replayed history turn.
+        reasoning = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning, str):
+            reasoning = reasoning.strip() or None
+
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:
             try:
@@ -76,7 +88,9 @@ class DMRBrain(Brain):
 
         # Rebuild a clean assistant turn to replay into history. We reconstruct
         # it (rather than dumping the SDK object) so only the fields the server
-        # expects get sent back on the next request.
+        # expects get sent back on the next request — `reasoning_content` is
+        # deliberately omitted (servers reject/ignore it and it just bloats
+        # context; the model regenerates fresh reasoning each turn).
         assistant_message: dict = {"role": "assistant", "content": message.content}
         if message.tool_calls:
             assistant_message["tool_calls"] = [
@@ -91,4 +105,9 @@ class DMRBrain(Brain):
                 for tc in message.tool_calls
             ]
 
-        return BrainResponse(message=assistant_message, text=message.content, tool_calls=tool_calls)
+        return BrainResponse(
+            message=assistant_message,
+            text=message.content,
+            tool_calls=tool_calls,
+            reasoning=reasoning,
+        )
