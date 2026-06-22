@@ -20,7 +20,7 @@ class Session:
         brain: Brain,
         tools: list[Tool],
         system_prompt: str = config.system_prompt,
-        max_steps: int = 6,
+        max_steps: int = config.max_steps,
         approver: Approver | None = None,
     ) -> None:
         self._brain = brain

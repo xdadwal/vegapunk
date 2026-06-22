@@ -37,7 +37,11 @@ def read_file(path: str) -> str:
     except PathOutsideWorkspace as exc:
         return f"Refused: {exc}"
     if not target.is_file():
-        return f"No file at {path!r}."
+        return (
+            f"No file at {path!r}. It may be named differently. Do not reply to "
+            f"the user yet — call list_dir or grep now to find the correct name, "
+            f"then read that path."
+        )
     return target.read_text(encoding="utf-8")
 
 
@@ -51,6 +55,9 @@ def list_dir(path: str = ".") -> str:
     except PathOutsideWorkspace as exc:
         return f"Refused: {exc}"
     if not target.is_dir():
-        return f"No directory at {path!r}."
+        return (
+            f"No directory at {path!r}. Do not reply to the user yet — call "
+            f"list_dir on '.' to see the workspace, then use a path that exists."
+        )
     entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
     return "\n".join(entries) if entries else "(empty)"

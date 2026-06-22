@@ -58,7 +58,11 @@ def grep(pattern: str, path: str = ".", ignore_case: bool = False, target: str =
         results.extend(_match_content(files, content_re, base))
 
     if not results:
-        return f"No matches for {pattern!r}."
+        return (
+            f"No matches for {pattern!r}. If you expected one, try ignore_case=true, "
+            f'a shorter pattern, or target="names" to find files by name — or '
+            f"list_dir to see what's here."
+        )
 
     output = "\n".join(results)
     if len(output) > config.output_char_cap:

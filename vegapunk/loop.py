@@ -28,7 +28,7 @@ def run(
     brain: Brain,
     tools: list[Tool],
     user_input: str,
-    max_steps: int = 6,
+    max_steps: int = config.max_steps,
     approver: Approver | None = None,
 ) -> str:
     messages: list[dict] = [

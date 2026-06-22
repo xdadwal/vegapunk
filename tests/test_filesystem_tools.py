@@ -54,7 +54,9 @@ def test_read_file_happy_path(ws):
 
 
 def test_read_file_missing_returns_clear_string(ws):
-    assert read_file("nope.txt") == "No file at 'nope.txt'."
+    out = read_file("nope.txt")
+    assert out.startswith("No file at 'nope.txt'.")
+    assert "list_dir" in out  # steers recovery instead of dead-ending
 
 
 def test_read_file_rejects_traversal(ws):
@@ -70,4 +72,6 @@ def test_list_dir_lists_entries(ws):
 
 
 def test_list_dir_missing_returns_clear_string(ws):
-    assert list_dir("nodir") == "No directory at 'nodir'."
+    out = list_dir("nodir")
+    assert out.startswith("No directory at 'nodir'.")
+    assert "list_dir" in out  # steers recovery

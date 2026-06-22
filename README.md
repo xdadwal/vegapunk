@@ -7,7 +7,8 @@ Irreversible actions (writing files, running shell commands) go behind an intera
 
 The model is served locally over an OpenAI-compatible API — by default
 [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) at
-`http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. Nothing leaves your machine.
+`http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. The model and your files stay
+local; the only outbound traffic is the `fetch_url` / `search_web` tools, when the agent uses them.
 
 ## Requirements
 
@@ -54,6 +55,8 @@ toolset:
 | `grep` | Search the workspace by file contents or by filename | — |
 | `write_file` | Create or overwrite a workspace file | ✋ gated |
 | `run_shell` | Run a shell command in the workspace | ✋ gated |
+| `fetch_url` | Fetch a web page and return its readable text | — |
+| `search_web` | Search the web (DuckDuckGo) for external information | — |
 | `yell` | Echo the reply in UPPERCASE (a persona tool) | — |
 
 Filesystem and shell tools are **confined to the workspace root** (default: the directory you
@@ -72,6 +75,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_WORKSPACE` | Root directory the file/shell tools are sandboxed to | current directory |
 | `VEGAPUNK_SHELL_TIMEOUT` | Max seconds a shell command may run | `30` |
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
+| `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 
 ## Tests
