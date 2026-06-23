@@ -9,7 +9,7 @@ from .base import Tool
 from .registry import REGISTRY, tool
 
 # Import tool modules for their side effect: each @tool registers itself.
-from . import battery, clock, filesystem, grep, shell, yell, fetch, search  # noqa: E402,F401 — imported for registration
+from . import battery, clock, filesystem, grep, shell, yell, fetch, search, system_stats  # noqa: E402,F401 — imported for registration
 
 ALL_TOOLS = REGISTRY
 
