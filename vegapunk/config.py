@@ -17,9 +17,9 @@ class Config:
     # Docker Model Runner exposes an OpenAI-compatible API at this base URL.
     base_url: str = os.getenv("VEGAPUNK_BASE_URL", "http://localhost:12434/engines/v1")
 
-    # DMR needs a fully-qualified model id (e.g. docker.io/gemma4:12B or
+    # DMR needs a fully-qualified model id (e.g. docker.io/gemma4:latest or
     # ai/qwen2.5:latest), or the request 404s.
-    model: str = os.getenv("VEGAPUNK_MODEL", "docker.io/gemma4:12B")
+    model: str = os.getenv("VEGAPUNK_MODEL", "docker.io/gemma4:latest")
 
     # The OpenAI client insists on *some* key string; a local DMR server
     # ignores it, so a placeholder is fine.
