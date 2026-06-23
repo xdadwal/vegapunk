@@ -56,7 +56,8 @@ toolset:
 | `read_file` | Read a file's full text (relative to the workspace) | — |
 | `list_dir` | List the entries in a workspace directory | — |
 | `grep` | Search the workspace by file contents or by filename | — |
-| `write_file` | Create or overwrite a workspace file | ✋ gated |
+| `write_file` | Create or overwrite a whole workspace file | ✋ gated |
+| `edit_file` | Replace an exact snippet in an existing file (targeted edit) | ✋ gated |
 | `run_shell` | Run a shell command in the workspace | ✋ gated |
 | `fetch_url` | Fetch a web page and return its readable text | — |
 | `search_web` | Search the web (DuckDuckGo) for external information | — |
