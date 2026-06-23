@@ -10,10 +10,11 @@ pipe (a faked stdin gates the TTY check).
 
 from __future__ import annotations
 
+import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from vegapunk.approval import CLIApprover, ScriptedApprover
+from vegapunk.approval import CLIApprover, Decision, ScriptedApprover
 from vegapunk.brain import ToolCall
 from vegapunk.loop import DENIED, NO_GATE, _run_tool_batch
 from vegapunk.tools.base import Tool
@@ -64,6 +65,25 @@ def test_guarded_tool_denied_returns_message_and_does_not_run():
 
     assert results[0][1] == DENIED
     assert ran == []  # the tool's function was never invoked
+
+
+def test_guarded_tool_declined_with_feedback_steers_the_model():
+    # Declining *with feedback* must feed the user's steer back as the result —
+    # not the generic DENIED string — and still never run the tool.
+    ran: list[bool] = []
+
+    def record(_a: dict) -> str:
+        ran.append(True)
+        return "should not happen"
+
+    approver = ScriptedApprover(decisions={"shell": Decision(allow=False, feedback="use rg")})
+    results = _run_tool_batch(
+        {"shell": _tool("shell", record, guarded=True)}, [_call("c1", "shell")], approver
+    )
+
+    assert ran == []
+    assert "use rg" in results[0][1]
+    assert results[0][1] != DENIED  # the steer replaced the generic denial
 
 
 def test_mixed_batch_preserves_call_order_with_selective_denial():
@@ -122,40 +142,90 @@ ENTER = "\r"
 class _PipeCLIApprover(CLIApprover):
     """Drives the real selection menu deterministically: one keystroke-string
     per expected ``approve()`` that reaches the menu, fed via a prompt_toolkit
-    pipe. If the menu is consulted more often than scripted, ``next`` raises."""
+    pipe. ``feedback_scripts`` does the same for the decline-with-feedback line
+    prompt. If either is consulted more often than scripted, ``next`` raises."""
 
-    def __init__(self, scripts: list[str]) -> None:
+    def __init__(self, scripts: list[str], feedback_scripts: list[str] | None = None) -> None:
         super().__init__()
         self._scripts = iter(scripts)
+        self._feedback_scripts = iter(feedback_scripts or [])
 
     def _ask(self, tool_name, arguments, *, input=None, output=None) -> str:
         with create_pipe_input() as inp:
             inp.send_text(next(self._scripts))
             return super()._ask(tool_name, arguments, input=inp, output=DummyOutput())
 
+    def _ask_feedback(self, tool_name, arguments, *, input=None, output=None) -> str:
+        with create_pipe_input() as inp:
+            inp.send_text(next(self._feedback_scripts))
+            return super()._ask_feedback(tool_name, arguments, input=inp, output=DummyOutput())
+
 
 def test_cli_approver_yes_then_no(monkeypatch):
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
     approver = _PipeCLIApprover([ENTER, DOWN + ENTER])  # default 'yes', then 'no'
 
-    assert approver.approve("a", {}) is True
-    assert approver.approve("b", {}) is False
+    assert approver.approve("a", {}).allow is True
+    assert approver.approve("b", {}).allow is False
 
 
 def test_cli_approver_select_no(monkeypatch):
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
-    assert _PipeCLIApprover([DOWN + ENTER]).approve("act", {}) is False
+    assert _PipeCLIApprover([DOWN + ENTER]).approve("act", {}).allow is False
+
+
+def test_cli_approver_feedback_declines_with_message(monkeypatch):
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
+    # 3rd menu option ('feedback'), then a typed steer submitted with Enter.
+    approver = _PipeCLIApprover([DOWN + DOWN + ENTER], feedback_scripts=["use rg instead" + ENTER])
+
+    decision = approver.approve("run_shell", {})
+
+    assert decision.allow is False
+    assert decision.feedback == "use rg instead"
+
+
+def test_cli_approver_feedback_empty_is_plain_decline(monkeypatch):
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
+    # Pick 'feedback' but type nothing: collapses to a plain decline (no steer).
+    approver = _PipeCLIApprover([DOWN + DOWN + ENTER], feedback_scripts=[ENTER])
+
+    decision = approver.approve("run_shell", {})
+
+    assert decision.allow is False
+    assert decision.feedback is None
+
+
+def test_cli_approver_feedback_eof_is_plain_decline(monkeypatch):
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
+    # Ctrl-D (end-of-input) at the steer prompt == no steer -> plain decline.
+    approver = _PipeCLIApprover([DOWN + DOWN + ENTER], feedback_scripts=["\x04"])
+
+    decision = approver.approve("run_shell", {})
+
+    assert decision.allow is False
+    assert decision.feedback is None
+
+
+def test_cli_approver_feedback_ctrl_c_cancels_the_turn(monkeypatch):
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
+    # Ctrl-C at the free-text steer prompt propagates (like the main REPL) so the
+    # turn is cancelled by Session.send — it is NOT swallowed into a decline.
+    approver = _PipeCLIApprover([DOWN + DOWN + ENTER], feedback_scripts=["\x03"])
+
+    with pytest.raises(KeyboardInterrupt):
+        approver.approve("run_shell", {})
 
 
 def test_cli_approver_up_wraps_to_always(monkeypatch):
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
     # Up from the top wraps to the last choice ('always').
-    assert _PipeCLIApprover([UP + ENTER]).approve("act", {}) is True
+    assert _PipeCLIApprover([UP + ENTER]).approve("act", {}).allow is True
 
 
 def test_cli_approver_ctrl_c_in_menu_declines(monkeypatch):
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
-    assert _PipeCLIApprover(["\x03"]).approve("act", {}) is False  # Ctrl-C == decline
+    assert _PipeCLIApprover(["\x03"]).approve("act", {}).allow is False  # Ctrl-C == decline
 
 
 def test_cli_approver_remembers_always(monkeypatch):
@@ -163,11 +233,12 @@ def test_cli_approver_remembers_always(monkeypatch):
     # tool must be served from memory — if it re-opened the menu, next() would
     # raise StopIteration and fail the test. A different tool still prompts.
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
-    approver = _PipeCLIApprover([DOWN + DOWN + ENTER, ENTER])  # 'always' for act, then 'yes' for other
+    # 'always' is now the 4th choice (index 3) after the feedback option.
+    approver = _PipeCLIApprover([DOWN + DOWN + DOWN + ENTER, ENTER])  # 'always' for act, then 'yes' for other
 
-    assert approver.approve("act", {}) is True  # selected 'always'
-    assert approver.approve("act", {}) is True  # remembered — no menu
-    assert approver.approve("other", {}) is True  # different tool — menu again ('yes')
+    assert approver.approve("act", {}).allow is True  # selected 'always'
+    assert approver.approve("act", {}).allow is True  # remembered — no menu
+    assert approver.approve("other", {}).allow is True  # different tool — menu again ('yes')
 
 
 def test_cli_approver_auto_denies_without_tty(monkeypatch):
@@ -180,4 +251,4 @@ def test_cli_approver_auto_denies_without_tty(monkeypatch):
     # non-TTY guard must short-circuit before the menu is ever built.
     approver = _PipeCLIApprover([])
     monkeypatch.setattr(approver, "_ask", boom)
-    assert approver.approve("act", {}) is False
+    assert approver.approve("act", {}).allow is False

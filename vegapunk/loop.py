@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-from .approval import Approver
+from .approval import Approver, Decision
 from .brain import Brain, ToolCall
 from .config import config
 from .tools import Tool
@@ -93,10 +93,12 @@ def _run_tool_batch(
     never faces concurrent stdin prompts; only the actual running is concurrent.
     Read-only tools always run; an unknown tool name short-circuits to a
     corrective message naming the real tools. A guarded tool runs only if an
-    approver says yes; if the user declines it short-circuits to ``DENIED``, and
-    if no approver is wired at all it short-circuits to ``NO_GATE`` — fail-closed,
-    so a guarded tool never runs silently. Results stay keyed to the original
-    call order, so the tool messages always line up with the assistant's tool_calls.
+    approver says yes; if the user declines it short-circuits to ``DENIED`` — or
+    to their own steer when they decline *with feedback*, fed back as the result
+    so a decline can redirect rather than dead-end. If no approver is wired at all
+    it short-circuits to ``NO_GATE`` — fail-closed, so a guarded tool never runs
+    silently. Results stay keyed to the original call order, so the tool messages
+    always line up with the assistant's tool_calls.
     """
     # Pre-pass: decide each call up front, in order, splitting into what runs
     # and what's blocked (with the reason fed back to the model).
@@ -110,10 +112,14 @@ def _run_tool_batch(
             runnable.append((i, call))  # read-only — runs freely
         elif approver is None:
             results[i] = NO_GATE  # guarded, but nothing here can approve it
-        elif approver.approve(call.name, call.arguments):
-            runnable.append((i, call))
         else:
-            results[i] = DENIED
+            decision: Decision = approver.approve(call.name, call.arguments)
+            if decision.allow:
+                runnable.append((i, call))
+            elif decision.feedback:
+                results[i] = _denied_with_feedback(decision.feedback)  # decline + steer
+            else:
+                results[i] = DENIED
 
     if len(runnable) == 1:
         i, call = runnable[0]
@@ -140,6 +146,15 @@ def _run_tool_batch(
         pool.shutdown()
 
     return [(call, results[i]) for i, call in enumerate(calls)]
+
+
+def _denied_with_feedback(feedback: str) -> str:
+    """Frame the user's steer as an imperative tool result — the channel this
+    model acts on — so declining a call redirects it instead of dead-ending."""
+    return (
+        f"The user declined this tool and said: {feedback}\n"
+        "Do that instead — don't retry the same call."
+    )
 
 
 def _unknown_tool(name: str, by_name: dict[str, Tool]) -> str:
