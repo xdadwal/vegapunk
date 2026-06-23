@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
+from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
@@ -25,8 +27,23 @@ from prompt_toolkit.output import Output
 _CHOICES = [
     ("yes", "Yes (run it)"),
     ("no", "No (don't run)"),
+    ("feedback", "No — tell Vegapunk what to do instead"),
     ("always", "Always allow this tool this session"),
 ]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The outcome of an approval prompt.
+
+    ``allow`` gates whether the tool runs. ``feedback`` is the user's free-text
+    steer when they decline *and* want to redirect the model — the loop feeds it
+    back as the tool result so a decline becomes a course-correction. ``None``
+    feedback is a plain decline.
+    """
+
+    allow: bool
+    feedback: str | None = None
 
 
 def _build_menu(
@@ -83,7 +100,7 @@ class Approver(ABC):
     """Decides whether a guarded tool call may run."""
 
     @abstractmethod
-    def approve(self, tool_name: str, arguments: dict) -> bool:
+    def approve(self, tool_name: str, arguments: dict) -> Decision:
         ...
 
 
@@ -98,9 +115,9 @@ class CLIApprover(Approver):
     def __init__(self) -> None:
         self._always_allowed: set[str] = set()
 
-    def approve(self, tool_name: str, arguments: dict) -> bool:
+    def approve(self, tool_name: str, arguments: dict) -> Decision:
         if tool_name in self._always_allowed:
-            return True
+            return Decision(allow=True)
 
         # No interactive terminal: we cannot ask a human, so refuse (safe default).
         if not sys.stdin.isatty():
@@ -108,37 +125,72 @@ class CLIApprover(Approver):
                 f"  [approval] {tool_name}({arguments}) auto-denied (no interactive terminal).",
                 file=sys.stderr,
             )
-            return False
+            return Decision(allow=False)
 
         choice = self._ask(tool_name, arguments)
         if choice == "always":
             self._always_allowed.add(tool_name)
-            return True
-        return choice == "yes"
+            return Decision(allow=True)
+        if choice == "yes":
+            return Decision(allow=True)
+        if choice == "feedback":
+            # Declined, but the user wants to redirect: read a line and hand it
+            # to the model. Empty input collapses to a plain decline.
+            steer = self._ask_feedback(tool_name, arguments)
+            return Decision(allow=False, feedback=steer or None)
+        return Decision(allow=False)  # plain "no"
 
     def _ask(
         self, tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
     ) -> str:
-        """Run the selection menu and return 'yes' | 'no' | 'always'.
+        """Run the selection menu and return 'yes' | 'no' | 'feedback' | 'always'.
 
         Isolated so tests can drive the real menu through a prompt_toolkit pipe.
         """
         return _build_menu(tool_name, arguments, input=input, output=output).run()
+
+    def _ask_feedback(
+        self, tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
+    ) -> str:
+        """Read one line of steer after a decline; '' when there's nothing to say.
+
+        Isolated like ``_ask`` so tests can drive it through a prompt_toolkit
+        pipe. Ctrl-D (end-of-input) means "no steer" → a plain decline. Ctrl-C is
+        deliberately left to propagate: this is a free-text prompt like the main
+        REPL, so an interrupt cancels the whole turn (``Session.send`` rolls it
+        back) rather than silently collapsing to a decline.
+        """
+        try:
+            return (
+                PromptSession(
+                    message=f"what should Vegapunk do instead of {tool_name}? > ",
+                    input=input,
+                    output=output,
+                )
+                .prompt()
+                .strip()
+            )
+        except EOFError:
+            return ""
 
 
 class ScriptedApprover(Approver):
     """Deterministic approver for tests.
 
     Answers ``default`` for any tool, unless ``decisions`` overrides it per
-    name. Records every request in ``calls`` so tests can assert what was (and
-    wasn't) asked.
+    name. A decision may be a bare bool (allow/deny) or a full ``Decision`` (to
+    script decline-with-feedback). Records every request in ``calls`` so tests
+    can assert what was (and wasn't) asked.
     """
 
-    def __init__(self, default: bool = True, decisions: dict[str, bool] | None = None) -> None:
+    def __init__(
+        self, default: bool = True, decisions: dict[str, bool | Decision] | None = None
+    ) -> None:
         self._default = default
         self._decisions = dict(decisions or {})
         self.calls: list[tuple[str, dict]] = []
 
-    def approve(self, tool_name: str, arguments: dict) -> bool:
+    def approve(self, tool_name: str, arguments: dict) -> Decision:
         self.calls.append((tool_name, arguments))
-        return self._decisions.get(tool_name, self._default)
+        outcome = self._decisions.get(tool_name, self._default)
+        return outcome if isinstance(outcome, Decision) else Decision(allow=outcome)

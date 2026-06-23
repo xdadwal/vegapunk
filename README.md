@@ -4,6 +4,8 @@ A self-hosted, CLI-first personal agent powered by a **local** LLM. Vegapunk run
 agentic loop: it sends your input plus the available tool schemas to the model, runs whatever tools
 the model calls, feeds the results back, and repeats until the model produces a final answer.
 Irreversible actions (writing files, running shell commands) go behind an interactive approval gate.
+When a request is underspecified, Vegapunk asks a short clarifying question rather than guessing, then
+continues once you answer.
 
 The model is served locally over an OpenAI-compatible API — by default
 [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) at
@@ -62,7 +64,9 @@ toolset:
 
 Filesystem and shell tools are **confined to the workspace root** (default: the directory you
 launched Vegapunk in); paths outside it are refused. When the model calls a **gated** tool, an
-inline menu prompts **Yes / No / Always allow this tool this session** before anything runs.
+inline menu prompts **Yes / No / No — tell Vegapunk what to do instead / Always allow this tool this
+session** before anything runs. Declining with a message hands the model your steer (fed back as the
+tool result), so a "no" can redirect it instead of dead-ending.
 
 ## Configuration
 

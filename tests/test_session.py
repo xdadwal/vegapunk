@@ -51,6 +51,31 @@ def test_history_persists_across_turns():
     ]
 
 
+def test_clarifying_question_then_continue():
+    # The model can ask a clarifying question (a plain-text turn, no tools); the
+    # user answers on the next turn and the model finishes with that context.
+    # No new mechanism — this pins that the existing loop carries the back-and-forth.
+    fake = FakeBrain(
+        [
+            _text("Which file do you mean — a.md or b.md?"),
+            _text("Renamed a.md to archive.md."),
+        ]
+    )
+    session = Session(fake, tools=[], system_prompt="SYS")
+
+    assert session.send("rename the file") == "Which file do you mean — a.md or b.md?"
+    assert session.send("a.md") == "Renamed a.md to archive.md."
+
+    # On the 2nd think() the model saw its own question and the user's answer.
+    second = [(m["role"], m.get("content")) for m in fake.seen_messages[1]]
+    assert second == [
+        ("system", "SYS"),
+        ("user", "rename the file"),
+        ("assistant", "Which file do you mean — a.md or b.md?"),
+        ("user", "a.md"),
+    ]
+
+
 def test_tool_call_turn_appends_assistant_then_tool_then_answers():
     call_turn = BrainResponse(
         message={
