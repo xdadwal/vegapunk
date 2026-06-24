@@ -35,6 +35,8 @@ python3 -m venv .venv
 This starts an interactive REPL (it needs the model endpoint to be reachable). The REPL offers:
 
 - **Persistent history** across sessions (`.vegapunk/history`), recalled with ↑/↓.
+- **Persistent memory** — durable facts and preferences you share are saved to `.vegapunk/memory.md`
+  and auto-loaded into future sessions, so Vegapunk still knows them next time.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
 - **Whole-line commands:** `exit`/`quit` to leave; `reset`/`clear` to wipe the conversation
@@ -61,6 +63,7 @@ toolset:
 | `run_shell` | Run a shell command in the workspace | ✋ gated |
 | `fetch_url` | Fetch a web page and return its readable text | — |
 | `search_web` | Search the web (DuckDuckGo) for external information | — |
+| `remember` | Save a durable fact/preference about you for future sessions | — |
 | `yell` | Echo the reply in UPPERCASE (a persona tool) | — |
 
 Filesystem and shell tools are **confined to the workspace root** (default: the directory you
@@ -83,6 +86,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
+| `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 
 ## Tests
 
@@ -104,6 +108,7 @@ vegapunk/
   prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
   approval.py    # interactive approval gate for guarded tools
   config.py      # settings + the persona system prompt
+  memory.py      # long-term memory store (auto-loaded into the system prompt)
   tools/         # one module per tool, plus the @tool registry
 tests/           # test suite
 ```

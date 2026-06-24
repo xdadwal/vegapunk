@@ -7,8 +7,10 @@ stdout.
 
 from __future__ import annotations
 
+from . import memory
 from .approval import CLIApprover
 from .brain import DMRBrain
+from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
 from .session import Session
 from .tools import ALL_TOOLS
@@ -22,7 +24,14 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     # scripted prompter / fake-brain session and never touch the model or a TTY.
     if session is None:
         # One approver for the whole REPL, so "always allow" lasts the session.
-        session = Session(DMRBrain(), ALL_TOOLS, approver=CLIApprover())
+        # Fold remembered facts into the system prompt so the model starts the
+        # session already knowing them (no recall step needed).
+        session = Session(
+            DMRBrain(),
+            ALL_TOOLS,
+            system_prompt=config.system_prompt + memory.as_system_block(),
+            approver=CLIApprover(),
+        )
     if prompter is None:
         prompter = PromptToolkitPrompter()
     print("Vegapunk interactive session. Type 'exit' to quit, 'reset' to clear history.")
