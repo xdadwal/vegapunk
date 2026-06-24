@@ -1,0 +1,180 @@
+"""The REPL's slash commands — ``/help``, ``/save``, ``/load``, ``/sessions``,
+``/new``, ``/exit``.
+
+Mirrors the ``@tool`` registry (``tools/registry.py``): a ``@command`` decorator
+registers a handler into ``REGISTRY``, so adding a command is one function and
+``/help`` is generated from the registry. The CLI calls ``dispatch`` on each
+``/``-prefixed line; non-command input is sent to the model instead.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+from . import session_store
+from .session import Session
+
+# A handler takes the live context and the text after the command name.
+Handler = Callable[["CommandContext", str], "CommandResult"]
+
+
+@dataclass
+class CommandContext:
+    """Mutable REPL state handed to every command; handlers may reassign fields."""
+
+    session: Session
+    current_name: str | None = None
+
+
+@dataclass
+class CommandResult:
+    output: str = ""  # what the REPL prints
+    exit: bool = False  # signal the REPL to quit
+
+
+@dataclass
+class Command:
+    name: str
+    summary: str
+    handler: Handler
+
+
+# name and aliases both map to the same Command.
+REGISTRY: dict[str, Command] = {}
+
+
+def command(name: str, summary: str, *aliases: str) -> Callable[[Handler], Handler]:
+    """Register a slash-command handler. Like ``@tool``, but for the REPL."""
+
+    def decorate(fn: Handler) -> Handler:
+        cmd = Command(name=name, summary=summary, handler=fn)
+        for key in (name, *aliases):
+            REGISTRY[key] = cmd
+        return fn
+
+    return decorate
+
+
+def dispatch(line: str, ctx: CommandContext) -> CommandResult | None:
+    """Run a ``/cmd args`` line. Returns ``None`` when ``line`` isn't a slash
+    command, so the caller knows to send it to the model instead."""
+    if not line.startswith("/"):
+        return None
+    name, _, arg = line[1:].strip().partition(" ")
+    cmd = REGISTRY.get(name.lower())
+    if cmd is None:
+        return CommandResult(output=f"Unknown command /{name}. Type /help for the list.")
+    return cmd.handler(ctx, arg.strip())
+
+
+def _format_sessions() -> str:
+    rows = session_store.list_sessions()
+    if not rows:
+        return "(no saved sessions)"
+    return "\n".join(f"  {name} ({turns} turns)" for name, turns in rows)
+
+
+@command("help", "Show this help")
+def _help(ctx: CommandContext, arg: str) -> CommandResult:
+    seen: set[str] = set()
+    lines = []
+    for cmd in REGISTRY.values():
+        if cmd.name in seen:
+            continue
+        seen.add(cmd.name)
+        lines.append(f"  /{cmd.name:<9} {cmd.summary}")
+    return CommandResult(output="Commands:\n" + "\n".join(lines))
+
+
+@command("exit", "Quit Vegapunk", "quit")
+def _exit(ctx: CommandContext, arg: str) -> CommandResult:
+    return CommandResult(output="bye.", exit=True)
+
+
+@command("new", "Start a fresh conversation", "reset", "clear")
+def _new(ctx: CommandContext, arg: str) -> CommandResult:
+    ctx.session.reset()
+    ctx.current_name = None  # next turn auto-names a fresh saved session
+    return CommandResult(output="(new conversation)")
+
+
+@command("save", "Rename the current session: /save <name>")
+def _save(ctx: CommandContext, arg: str) -> CommandResult:
+    name = session_store.slugify(arg)
+    if not name:
+        return CommandResult(output="Usage: /save <name>")
+    if name != ctx.current_name and session_store.exists(name):
+        return CommandResult(output=f"A session named '{name}' already exists — choose another name.")
+    session_store.save_session(name, ctx.session.messages)
+    if ctx.current_name and ctx.current_name != name:
+        session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) file
+    ctx.current_name = name
+    return CommandResult(output=f"Saved as '{name}'.")
+
+
+@command("load", "Resume a saved session: /load <name>")
+def _load(ctx: CommandContext, arg: str) -> CommandResult:
+    name = session_store.slugify(arg)
+    if not name:
+        return CommandResult(output="Usage: /load <name>")
+    try:
+        messages = session_store.load_session(name)
+    except session_store.SessionNotFound:
+        return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
+    ctx.session.restore(messages)
+    ctx.current_name = name
+    turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
+    return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
+
+
+@command("sessions", "List saved sessions")
+def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
+    return CommandResult(output=_format_sessions())
+
+
+def _oneline(text: str | None, cap: int = 200) -> str:
+    """Collapse a message to a single, length-capped line for the history view."""
+    collapsed = " ".join((text or "").split())
+    return collapsed if len(collapsed) <= cap else collapsed[: cap - 1] + "…"
+
+
+def _recent_turns(messages: list[dict], limit: int) -> list[tuple[str, str | None]]:
+    """The last ``limit`` exchanges as ``(user_text, reply_text)`` pairs.
+
+    Pairs each user message with the assistant's next text reply; the system turn,
+    tool turns, and tool-call-only assistant turns (no content) are skipped. A
+    trailing user message with no reply yet pairs with ``None``.
+    """
+    turns: list[tuple[str, str | None]] = []
+    pending: str | None = None
+    for message in messages:
+        role, content = message.get("role"), message.get("content")
+        if role == "user":
+            if pending is not None:
+                turns.append((pending, None))
+            pending = content
+        elif role == "assistant" and content and pending is not None:
+            turns.append((pending, content))
+            pending = None
+    if pending is not None:
+        turns.append((pending, None))
+    return turns[-limit:]
+
+
+@command("history", "Show the last few turns of this conversation: /history [n]")
+def _history(ctx: CommandContext, arg: str) -> CommandResult:
+    limit = 5
+    if arg:
+        try:
+            limit = max(1, int(arg))
+        except ValueError:
+            return CommandResult(output="Usage: /history [n]  (n = number of turns, default 5)")
+    turns = _recent_turns(ctx.session.messages, limit)
+    if not turns:
+        return CommandResult(output="(no conversation yet)")
+    lines = []
+    for user_text, reply_text in turns:
+        lines.append(f"  you:  {_oneline(user_text)}")
+        lines.append(f"  vega: {_oneline(reply_text) if reply_text else '…'}")
+    return CommandResult(output="\n".join(lines))

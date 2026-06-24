@@ -141,6 +141,38 @@ def test_run_one_shot_still_works():
     assert run(fake, [], "hello") == "one-shot ok"
 
 
+def test_restore_replaces_the_conversation():
+    session = Session(FakeBrain([]), tools=[], system_prompt="SYS")
+    saved = [
+        {"role": "system", "content": "OLD"},
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+    ]
+    session.restore(saved)
+    assert session.messages == saved  # faithful restore, including the saved system turn
+
+
+def test_suggest_name_titles_first_user_message_without_touching_history():
+    brain = FakeBrain([_text("Fixing the agent loop")])
+    session = Session(brain, tools=[], system_prompt="SYS")
+    session.restore(
+        [{"role": "system", "content": "SYS"}, {"role": "user", "content": "the loop is broken"}]
+    )
+
+    assert session.suggest_name() == "Fixing the agent loop"
+    # The titling call ran on a throwaway message list — history is untouched.
+    assert session.messages == [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "the loop is broken"},
+    ]
+
+
+def test_suggest_name_empty_when_no_user_turn_yet():
+    # No user message -> returns "" without calling the model (queue stays full).
+    session = Session(FakeBrain([]), tools=[], system_prompt="SYS")
+    assert session.suggest_name() == ""
+
+
 def _simple_tool(name: str, func) -> Tool:
     return Tool(
         name=name,

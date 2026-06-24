@@ -60,6 +60,42 @@ class Session:
         """
         del self._messages[1:]
 
+    def restore(self, messages: list[dict]) -> None:
+        """Replace the conversation with a saved one (resume).
+
+        A faithful restore — keeps the saved system turn as-is, so resuming a
+        session reproduces exactly what the model last saw.
+        """
+        self._messages = list(messages)
+
+    def suggest_name(self) -> str:
+        """Ask the model for a short title for this conversation, from its first
+        user message — used to auto-name a session.
+
+        Best-effort and isolated: it runs on a throwaway message list (never
+        touching history) and returns ``""`` if there's no user turn yet or the
+        call fails, so the caller can fall back to a slug of the message text. A
+        failed title must never break the actual turn.
+        """
+        first = next(
+            (m["content"] for m in self._messages if m.get("role") == "user" and m.get("content")),
+            None,
+        )
+        if not first:
+            return ""
+        probe = [
+            {
+                "role": "system",
+                "content": "Reply with a short 3-5 word title for a conversation that begins "
+                "with the next message. Give the title only — no quotes, no punctuation.",
+            },
+            {"role": "user", "content": first},
+        ]
+        try:
+            return (self._brain.think(probe).text or "").strip()
+        except Exception:  # noqa: BLE001 — titling is optional; fall back, never crash the turn
+            return ""
+
     @property
     def messages(self) -> list[dict]:
         """A snapshot of the message history (for inspection and tests).
