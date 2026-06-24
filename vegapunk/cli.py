@@ -1,22 +1,25 @@
 """Interactive REPL for Vegapunk — run with ``python -m vegapunk``.
 
-A simple read-eval-print loop over a Session so you can hold a real
-conversation. Tool activity is traced to stderr by the loop; replies go to
-stdout.
+A read-eval-print loop over a Session. ``/``-prefixed input is handled locally by
+the slash-command system (``commands.py``); everything else is sent to the model.
+Each conversation auto-saves every turn under a name the model picks from the
+first message (``session_store``). Tool activity is traced to stderr by the loop;
+replies go to stdout.
 """
 
 from __future__ import annotations
 
-from . import memory
+import sys
+from datetime import datetime
+
+from . import memory, session_store
 from .approval import CLIApprover
 from .brain import DMRBrain
+from .commands import CommandContext, dispatch
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
 from .session import Session
 from .tools import ALL_TOOLS
-
-_EXIT = {"exit", "quit"}
-_RESET = {"reset", "clear"}
 
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
@@ -34,7 +37,8 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         )
     if prompter is None:
         prompter = PromptToolkitPrompter()
-    print("Vegapunk interactive session. Type 'exit' to quit, 'reset' to clear history.")
+    ctx = CommandContext(session=session)
+    print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
 
     while True:
         try:
@@ -43,19 +47,18 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             print("\nbye.")
             return
         except KeyboardInterrupt:  # Ctrl-C while waiting for input
-            print("\n(interrupted — type 'exit' to quit)")
+            print("\n(interrupted — type /exit to quit)")
             continue
 
         if not user_input:
             continue
 
-        command = user_input.lower()
-        if command in _EXIT:
-            print("bye.")
-            return
-        if command in _RESET:
-            session.reset()
-            print("(history cleared)")
+        result = dispatch(user_input, ctx)
+        if result is not None:  # it was a slash command
+            if result.output:
+                print(result.output)
+            if result.exit:
+                return
             continue
 
         try:
@@ -64,6 +67,38 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             print("\n(interrupted)")
             continue
         print(f"vega> {reply}")
+        _autosave_turn(ctx)
+
+
+def _autosave_turn(ctx: CommandContext) -> None:
+    """Persist the conversation after a turn, naming a fresh one from its first
+    message (model-chosen, with a text-slug then timestamp fallback).
+
+    Best-effort: a disk error — or a Ctrl-C during the titling call — degrades to
+    a stderr note rather than tearing down the live conversation. The name is
+    committed only after a successful first save, so '(saved as ...)' never lies.
+    """
+    try:
+        if ctx.current_name is None:
+            first = next(
+                (m["content"] for m in ctx.session.messages if m.get("role") == "user" and m.get("content")),
+                "",
+            )
+            base = (
+                session_store.slugify(ctx.session.suggest_name())
+                or session_store.slugify(first)
+                or f"session-{datetime.now():%Y%m%d-%H%M%S}"
+            )
+            name = session_store.unique_name(base)
+            session_store.save_session(name, ctx.session.messages)
+            ctx.current_name = name
+            print(f"(saved as '{name}')")
+        else:
+            session_store.save_session(ctx.current_name, ctx.session.messages)
+    except KeyboardInterrupt:
+        print("  [session] autosave skipped (interrupted).", file=sys.stderr)
+    except OSError as exc:
+        print(f"  [session] could not save: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

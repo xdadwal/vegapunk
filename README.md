@@ -37,13 +37,28 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Persistent history** across sessions (`.vegapunk/history`), recalled with ↑/↓.
 - **Persistent memory** — durable facts and preferences you share are saved to `.vegapunk/memory.md`
   and auto-loaded into future sessions, so Vegapunk still knows them next time.
+- **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
+  from your first message (`.vegapunk/sessions/`), so you can pick it back up later.
+- **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
-- **Whole-line commands:** `exit`/`quit` to leave; `reset`/`clear` to wipe the conversation
-  (approval decisions are kept).
 - Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[reason]` = the model's
   chain-of-thought when the model returns one, `[tool]` = a tool result), leaving **stdout** clean
   for the agent's replies.
+
+### Commands
+
+Lines starting with `/` are handled locally instead of being sent to the model:
+
+| Command | What it does |
+|---------|--------------|
+| `/help` | List the available commands |
+| `/history [n]` | Show the last `n` turns of this conversation (default 5) |
+| `/sessions` | List saved conversations and their turn counts |
+| `/save <name>` | Rename the current conversation |
+| `/load <name>` | Resume a saved conversation |
+| `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
+| `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
 ## Tools
 
@@ -87,6 +102,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
+| `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
 
 ## Tests
 
@@ -102,6 +118,8 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 vegapunk/
   __main__.py    # `python -m vegapunk` entry → cli.main()
   cli.py         # interactive REPL and command dispatch
+  commands.py    # slash commands (/help, /save, /load, /sessions, /new, /exit)
+  session_store.py # save/list/resume conversations on disk
   loop.py        # the agent loop: think → act (run tools) → observe → repeat
   session.py     # conversation state across turns
   brain.py       # LLM backend (local model via the OpenAI SDK)
