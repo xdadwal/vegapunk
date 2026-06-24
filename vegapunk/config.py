@@ -50,6 +50,14 @@ class Config:
         os.getenv("VEGAPUNK_HISTORY_FILE", str(Path.cwd() / ".vegapunk" / "history"))
     ).expanduser()
 
+    # Vegapunk's long-term memory: durable facts/preferences it should still know
+    # next session. Auto-loaded into the system prompt at startup and appended to
+    # by the `remember` tool. Plaintext and human-editable, so avoid saving
+    # secrets. Defaults under the current directory, like history_file.
+    memory_file: Path = Path(
+        os.getenv("VEGAPUNK_MEMORY_FILE", str(Path.cwd() / ".vegapunk" / "memory.md"))
+    ).expanduser()
+
     # Vegapunk's identity + how it operates. The "How you work" stanza keeps a
     # small model self-correcting after a failed step instead of apologizing
     # and giving up.
@@ -73,6 +81,10 @@ class Config:
         "one short clarifying question and wait for their answer instead of "
         "guessing. This is for missing information only — keep working through "
         "tool errors and obstacles yourself.\n"
+        "- When the user states a durable fact or preference about themselves "
+        "(their tools, environment, how they like things done), or asks you to "
+        "remember something, call remember to save it for future sessions. Don't "
+        "save ephemeral, one-off task details.\n"
         "- Stop only when the task is genuinely done, or you've tried the "
         "reasonable options and are truly stuck — then briefly say what you tried.\n"
         "\n"
