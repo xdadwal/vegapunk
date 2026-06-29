@@ -58,6 +58,13 @@ class Config:
         os.getenv("VEGAPUNK_MEMORY_FILE", str(Path.cwd() / ".vegapunk" / "memory.md"))
     ).expanduser()
 
+    # Where saved conversations live (one JSON file per session). Conversations
+    # auto-save here each turn under a model-chosen name. Plaintext and
+    # human-editable, so — like memory — avoid pasting secrets into a chat.
+    sessions_dir: Path = Path(
+        os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
+    ).expanduser()
+
     # Vegapunk's identity + how it operates. The "How you work" stanza keeps a
     # small model self-correcting after a failed step instead of apologizing
     # and giving up.

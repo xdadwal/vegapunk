@@ -21,10 +21,12 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
+from .commands import REGISTRY as _COMMAND_REGISTRY
 from .config import config
 
-# The whole-line commands the REPL understands; offered as completions.
-_COMMANDS = ["exit", "quit", "reset", "clear"]
+# The slash commands the REPL understands, offered as completions — derived from
+# the command registry so they never drift from what the REPL actually handles.
+_COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 
 
 class Prompter(ABC):

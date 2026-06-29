@@ -55,8 +55,8 @@ def test_history_persists_to_file(tmp_path):
 def test_prompter_uses_whole_line_command_completer(tmp_path):
     completer = PromptToolkitPrompter(history_path=tmp_path / "history")._session.completer
     assert isinstance(completer, WordCompleter)
-    # Whole-line prefix → suggests the command; mid-sentence → stays silent.
-    assert [c.text for c in completer.get_completions(Document("cl", 2), CompleteEvent())] == ["clear"]
+    # Slash-command prefix → suggests the command; a normal sentence → stays silent.
+    assert [c.text for c in completer.get_completions(Document("/cl", 3), CompleteEvent())] == ["/clear"]
     assert list(completer.get_completions(Document("tell me ex", 10), CompleteEvent())) == []
 
 
