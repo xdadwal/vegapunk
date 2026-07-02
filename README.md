@@ -43,11 +43,16 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
 - **Streaming output** — replies print token by token as the model generates them, instead of
-  appearing whole after a long silence.
+  appearing whole after a long silence; a spinner marks the wait before the first token.
 - Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[reason]` = the model's
-  chain-of-thought, streamed live as it's generated, `[tool]` = a tool result, `[note]` = a loop
-  warning, e.g. the model ran out of tokens mid-answer), leaving **stdout** clean for the agent's
-  replies.
+  chain-of-thought, streamed live as it's generated, `[tool]` = a tool result, truncated for
+  display at 200 chars, `[note]` = a loop warning, e.g. the model ran out of tokens mid-answer),
+  leaving **stdout** clean for the agent's replies.
+- **Color-coded output**, themed on the Doctor himself: reasoning murmurs in Punk Records magenta,
+  tools glow Egghead cyan, failures go Atlas red, warnings York yellow, and your prompt wears
+  Shaka gold. Auto-disabled when a stream isn't a terminal; `NO_COLOR` and `VEGAPUNK_COLOR` give
+  manual control.
+- A **status toolbar** under the prompt shows the model and the current conversation's name.
 
 ### Commands
 
@@ -103,6 +108,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_SHELL_TIMEOUT` | Max seconds a shell command may run | `30` |
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
+| `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 | `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
@@ -129,6 +135,7 @@ vegapunk/
   prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
   approval.py    # interactive approval gate for guarded tools
   config.py      # settings + the persona system prompt
+  style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
   tools/         # one module per tool, plus the @tool registry
 tests/           # test suite

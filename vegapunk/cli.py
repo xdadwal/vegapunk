@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 
-from . import memory, session_store
+from . import memory, session_store, style
 from .approval import CLIApprover
 from .brain import DMRBrain, TextDelta
 from .commands import CommandContext, dispatch
@@ -20,6 +20,19 @@ from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
 from .session import Session
 from .tools import ALL_TOOLS
+
+
+def _vega_prefix() -> str:
+    """The reply-line prefix — Punk Records speaking, bold magenta. The reset
+    lands before the space so the reply text itself streams in default color."""
+    return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
+
+
+def _status_line(ctx: CommandContext) -> str:
+    """The prompt's bottom-toolbar text: what model you're talking to and which
+    conversation it's saving into. Re-evaluated every render, so /save and /new
+    show up on the next prompt."""
+    return f" {config.model} · {ctx.current_name or 'unsaved'}"
 
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
@@ -35,10 +48,17 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             system_prompt=config.system_prompt + memory.as_system_block(),
             approver=CLIApprover(),
         )
-    if prompter is None:
-        prompter = PromptToolkitPrompter()
+    # ctx exists before the prompter so the toolbar callable can close over
+    # it — /save and /new then show up on the very next prompt render.
     ctx = CommandContext(session=session)
+    if prompter is None:
+        prompter = PromptToolkitPrompter(status=lambda: _status_line(ctx))
     print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
+    print(
+        style.paint(
+            f"model {config.model} · workspace {config.workspace_root}", style.DIM, sys.stdout
+        )
+    )
 
     while True:
         try:
@@ -47,7 +67,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             print("\nbye.")
             return
         except KeyboardInterrupt:  # Ctrl-C while waiting for input
-            print("\n(interrupted — type /exit to quit)")
+            print("\n" + style.paint("(interrupted — type /exit to quit)", style.YELLOW, sys.stdout))
             continue
 
         if not user_input:
@@ -76,12 +96,12 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                     break
                 if isinstance(event, TextDelta) and event.text:
                     if not streamed:
-                        print("vega> ", end="", flush=True)
+                        print(_vega_prefix(), end="", flush=True)
                         streamed = True
                     print(event.text, end="", flush=True)
                     line_open = not event.text.endswith("\n")
             if not streamed:
-                print("vega> ")  # an empty reply still gets its prompt line
+                print(_vega_prefix())  # an empty reply still gets its prompt line
             elif line_open:
                 print()
         except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
@@ -90,7 +110,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # rolls the partial turn out of history deterministically
                 # (rather than whenever the abandoned generator gets GC'd).
                 events.close()
-            print("\n(interrupted)")
+            print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
             continue
         _autosave_turn(ctx)
 
@@ -117,13 +137,19 @@ def _autosave_turn(ctx: CommandContext) -> None:
             name = session_store.unique_name(base)
             session_store.save_session(name, ctx.session.messages)
             ctx.current_name = name
-            print(f"(saved as '{name}')")
+            print(style.paint(f"(saved as '{name}')", style.DIM, sys.stdout))
         else:
             session_store.save_session(ctx.current_name, ctx.session.messages)
     except KeyboardInterrupt:
-        print("  [session] autosave skipped (interrupted).", file=sys.stderr)
+        print(
+            style.paint("  [session] autosave skipped (interrupted).", style.YELLOW, sys.stderr),
+            file=sys.stderr,
+        )
     except OSError as exc:
-        print(f"  [session] could not save: {exc}", file=sys.stderr)
+        print(
+            style.paint(f"  [session] could not save: {exc}", style.RED, sys.stderr),
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

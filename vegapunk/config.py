@@ -42,6 +42,11 @@ class Config:
     # try another approach; lower reins in a runaway loop.
     max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "8"))
 
+    # Color in the CLI: "auto" (color only when the stream is a terminal),
+    # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR
+    # cross-tool standard (https://no-color.org) also disables it.
+    color: str = os.getenv("VEGAPUNK_COLOR", "auto")
+
     # The REPL input history file (up/down recall, persisted across sessions).
     # Defaults under the current directory's root so state stays with the
     # project you launched in; override with VEGAPUNK_HISTORY_FILE. Stored in

@@ -10,8 +10,10 @@ tmp path and reply turns queue a second response for the auto-naming title call.
 from __future__ import annotations
 
 import pytest
-from test_session import FakeBrain, _text  # sibling test module (tests/ is on sys.path)
+from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
+from test_session import FakeBrain, _text
 
+from vegapunk import style
 from vegapunk.brain import TextDelta
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
@@ -185,3 +187,35 @@ def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):
     assert "vega> yo" in captured.out  # reply still shown
     assert "could not save" in captured.err  # degraded on stderr
     assert "bye." in captured.out  # survived to the next prompt and /exit
+
+
+def test_banner_shows_model_and_workspace(capsys):
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    out = capsys.readouterr().out
+    assert "model " in out and "workspace " in out  # plain under capsys (not a TTY)
+
+
+def test_vega_prefix_is_bold_magenta_when_forced(monkeypatch, capsys):
+    _force_color(monkeypatch)
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session([_text("yo"), _text("t")]))
+    out = capsys.readouterr().out
+    # Prefix wrapped, reset before the space, reply text plain.
+    assert f"{style.BOLD}{style.MAGENTA}vega>{style.RESET} yo" in out
+
+
+def test_interrupted_note_is_yellow_when_forced(monkeypatch, capsys):
+    _force_color(monkeypatch)
+    main(prompter=ScriptedPrompter(["go", "/exit"]), session=_MidStreamInterruptSession())
+    out = capsys.readouterr().out
+    assert f"{style.YELLOW}(interrupted){style.RESET}" in out
+
+
+def test_status_line_shows_model_and_session_name():
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
+    from vegapunk.config import config
+
+    ctx = CommandContext(session=_session([]))
+    assert _status_line(ctx) == f" {config.model} · unsaved"  # before the first autosave
+    ctx.current_name = "my-chat"
+    assert _status_line(ctx) == f" {config.model} · my-chat"  # /save and autosave show live

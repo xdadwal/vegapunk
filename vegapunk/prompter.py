@@ -9,7 +9,9 @@ suggestions and command completion, deliberate multi-line composition
 
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -21,6 +23,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
+from . import style
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .config import config
 
@@ -70,13 +73,17 @@ class PromptToolkitPrompter(Prompter):
         history_path: Path | None = None,
         input: Input | None = None,
         output: Output | None = None,
+        status: Callable[[], str] | None = None,
     ) -> None:
         if history_path is None:
             history_path = config.history_file
         # FileHistory creates the file lazily but not its parent dir.
         history_path.parent.mkdir(parents=True, exist_ok=True)
+        # Shaka gold for the person giving the orders — gated through the same
+        # seam as everything else, so NO_COLOR/VEGAPUNK_COLOR strip it too.
+        message = [("bold fg:ansiyellow", "you> ")] if style.enabled(sys.stdout) else "you> "
         self._session: PromptSession[str] = PromptSession(
-            message="you> ",
+            message=message,
             history=FileHistory(str(history_path)),
             multiline=False,  # Enter submits; Up/Down recall history
             key_bindings=_build_key_bindings(),
@@ -86,6 +93,9 @@ class PromptToolkitPrompter(Prompter):
             # mid-sentence — only when the line so far is a command prefix.
             completer=WordCompleter(_COMMANDS, sentence=True),
             complete_while_typing=True,
+            # A callable is re-evaluated on every render, so a status line
+            # like "model · session-name" stays current without any wiring.
+            bottom_toolbar=status,
             input=input,
             output=output,
         )

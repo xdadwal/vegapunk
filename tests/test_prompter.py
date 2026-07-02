@@ -80,3 +80,26 @@ def test_scripted_prompter_raises_queued_exception():
     with pytest.raises(KeyboardInterrupt):
         p.prompt()
     assert p.prompt() == "after"
+
+
+def test_status_callable_is_wired_to_the_bottom_toolbar(tmp_path):
+    status = lambda: " gemma · my-chat"  # noqa: E731 — mirrors the CLI's wiring
+    prompter = PromptToolkitPrompter(history_path=tmp_path / "history", status=status)
+    assert prompter._session.bottom_toolbar is status  # re-evaluated per render
+
+
+def test_prompt_message_is_plain_off_a_tty(tmp_path):
+    # Under pytest stdout isn't a TTY and the suite pins color mode "auto",
+    # so the constructor must pick the plain string, not style tuples.
+    prompter = PromptToolkitPrompter(history_path=tmp_path / "history")
+    assert prompter._session.message == "you> "
+
+
+def test_prompt_message_is_gold_when_color_forced(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from vegapunk import style
+
+    monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
+    prompter = PromptToolkitPrompter(history_path=tmp_path / "history")
+    assert prompter._session.message == [("bold fg:ansiyellow", "you> ")]
