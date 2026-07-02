@@ -3,15 +3,22 @@
 This is the heart of the agent and is deliberately hand-written: ask the brain
 what to do, run any tool it requests, feed the result back, and repeat until it
 returns a final answer (or we hit the safety limit that stops runaway loops).
+
+The loop consumes the brain's event stream as it arrives: reasoning deltas are
+traced live to stderr (the loop's watch-channel), while reply-text deltas are
+re-yielded upward so the interface on top (the CLI) can render them token by
+token. ``drive_turns`` is therefore a generator; its final reply travels back
+as the generator's *return value* (``StopIteration.value``).
 """
 
 from __future__ import annotations
 
 import sys
+from collections.abc import Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
 from .approval import Approver, Decision
-from .brain import Brain, ToolCall
+from .brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
 from .config import config
 from .tools import Tool
 
@@ -31,13 +38,23 @@ def run(
     max_steps: int = config.max_steps,
     approver: Approver | None = None,
 ) -> str:
+    """One-shot: run a single request to completion and return the reply.
+
+    Drains the turn stream internally (no live rendering), so script callers
+    keep the simple call-and-get-a-string contract.
+    """
     messages: list[dict] = [
         {"role": "system", "content": config.system_prompt},
         {"role": "user", "content": user_input},
     ]
     schemas = [tool.to_schema() for tool in tools]
     by_name = {tool.name: tool for tool in tools}
-    return drive_turns(brain, by_name, schemas, messages, max_steps, approver)
+    turns = drive_turns(brain, by_name, schemas, messages, max_steps, approver)
+    while True:
+        try:
+            next(turns)
+        except StopIteration as stop:
+            return stop.value
 
 
 def drive_turns(
@@ -47,13 +64,22 @@ def drive_turns(
     messages: list[dict],
     max_steps: int,
     approver: Approver | None = None,
-) -> str:
+) -> Generator[TextDelta, None, str]:
     """Run the think -> act -> observe loop over an existing messages list.
 
-    Mutates ``messages`` in place (appending assistant and tool turns) and
-    returns the final text answer, or a notice if the step limit is hit. Shared
-    by the one-shot ``run()`` and the multi-turn ``Session`` so the loop logic
-    lives in exactly one place.
+    A generator: yields ``TextDelta`` fragments of the assistant's speech as
+    the model produces them, and *returns* the final text answer (or a notice
+    if the step limit is hit) via ``StopIteration.value``. Mutates ``messages``
+    in place (appending assistant and tool turns). Shared by the one-shot
+    ``run()`` and the multi-turn ``Session`` so the loop logic lives in
+    exactly one place.
+
+    Display invariant: any reply text is always yielded as deltas *before*
+    being returned — a non-streaming Brain's answer and the step-limit notice
+    are synthesized into one delta each — so a renderer can print exactly what
+    it receives and never needs to decide whether the return value still needs
+    printing. Reasoning deltas are not re-yielded; they are traced live to
+    stderr here, beside [think]/[tool], and never reach stdout or history.
 
     Tool calls the model batches into one turn are independent by definition,
     so they execute concurrently — tools must therefore be thread-safe. Guarded
@@ -65,22 +91,73 @@ def drive_turns(
         # the [think] marker shows where each model roundtrip starts, making
         # batched-vs-chained tool calling visible.
         print(f"  [think] step {step + 1}", file=sys.stderr)
-        response = brain.think(messages, tools=schemas)
-        if response.reasoning:
-            # Watch the model think on the same suppressible channel as the rest
-            # of the trace; it never enters history or the clean stdout reply.
-            print(f"  [reason] {response.reasoning}", file=sys.stderr)
+        response, streamed_text = yield from _relay_think(brain.think(messages, tools=schemas))
+        if response.truncated:
+            # Out of tokens mid-answer: say so on the watch channel rather
+            # than passing a silently amputated reply off as the model's
+            # chosen ending.
+            print("  [note] the model ran out of tokens; this turn is cut off", file=sys.stderr)
         messages.append(response.message)  # OBSERVE: record what the model said
 
         if not response.tool_calls:
+            if not streamed_text and response.text:
+                # A Brain that didn't stream its text (yielded only the final
+                # response) still gets its answer displayed — see the
+                # display invariant above.
+                yield TextDelta(response.text)
             return response.text or ""  # THINK said "done" — final answer
+
+        if streamed_text:
+            # The model spoke *and* called tools: close the spoken line so the
+            # tool trace that follows doesn't glue onto it mid-line.
+            yield TextDelta("\n")
 
         # ACT: run the turn's tools, then feed each result back into history.
         for call, result in _run_tool_batch(by_name, response.tool_calls, approver):
             print(f"  [tool] {call.name}({call.arguments}) -> {result}", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
-    return "(Stopped after hitting the step limit without a final answer.)"
+    notice = "(Stopped after hitting the step limit without a final answer.)"
+    yield TextDelta(notice)
+    return notice
+
+
+def _relay_think(
+    events: Iterator[ThinkEvent],
+) -> Generator[TextDelta, None, tuple[BrainResponse, bool]]:
+    """Consume one ``think`` stream: trace reasoning deltas live to stderr,
+    re-yield text deltas to the caller, and return the final response plus
+    whether any text was re-yielded.
+
+    The [reason] line opens on the first reasoning fragment and closes when
+    the reply starts (or the stream ends), so the live trace reads exactly
+    like the old one-line-per-turn version — just written as it's generated.
+    """
+    response: BrainResponse | None = None
+    streamed_text = False
+    reasoning_open = False
+    for event in events:
+        if isinstance(event, ReasoningDelta):
+            if not reasoning_open:
+                print("  [reason] ", end="", file=sys.stderr, flush=True)
+                reasoning_open = True
+            print(event.text, end="", file=sys.stderr, flush=True)
+        elif isinstance(event, TextDelta):
+            if reasoning_open:
+                print(file=sys.stderr)
+                reasoning_open = False
+            if event.text:
+                streamed_text = True
+                yield event
+        elif isinstance(event, BrainResponse):
+            response = event
+    if reasoning_open:
+        print(file=sys.stderr)
+    if response is None:
+        # A Brain that ends without its final event is a broken contract, not
+        # a condition to paper over — fail loudly.
+        raise RuntimeError("Brain.think() stream ended without a final BrainResponse")
+    return response, streamed_text
 
 
 def _run_tool_batch(

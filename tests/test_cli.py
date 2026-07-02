@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 from test_session import FakeBrain, _text  # sibling test module (tests/ is on sys.path)
 
+from vegapunk.brain import TextDelta
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
 from vegapunk.session import Session
@@ -70,6 +71,28 @@ def test_reply_is_printed_and_session_autosaved(capsys):
     assert "(saved as 'a-chat')" in out  # auto-named from the title call
 
 
+def test_streamed_reply_is_not_printed_twice(capsys):
+    # The reply arrives as streamed deltas AND as send()'s return value; only
+    # the stream is rendered — the return must not be printed again.
+    main(
+        prompter=ScriptedPrompter(["hi", "/exit"]),
+        session=_session([_text("unmistakable-reply"), _text("title")]),
+    )
+    out = capsys.readouterr().out
+    assert out.count("unmistakable-reply") == 1
+    assert "vega> unmistakable-reply\n" in out  # and the streamed line is closed
+
+
+def test_empty_reply_still_gets_its_prompt_line(capsys):
+    # A model turn with no text at all: the vega> line still appears (blank),
+    # so the user sees the turn ended rather than a silently missing reply.
+    main(
+        prompter=ScriptedPrompter(["hi", "/exit"]),
+        session=_session([_text(""), _text("title")]),
+    )
+    assert "vega> \n" in capsys.readouterr().out
+
+
 def test_new_clears_history(capsys):
     session = _session([_text("hi there"), _text("greeting")])  # reply + title
     main(prompter=ScriptedPrompter(["hello", "/new", "/exit"]), session=session)
@@ -79,17 +102,74 @@ def test_new_clears_history(capsys):
 
 
 class _BoomSession:
-    """A session whose send() always interrupts — to exercise the mid-turn path."""
+    """A session whose send() raises at call time. A real (generator) send can't
+    do that, but the CLI guards the events-not-yet-created window anyway — this
+    pins that defensive branch."""
 
     def send(self, _user_input: str) -> str:
         raise KeyboardInterrupt
 
 
-def test_ctrl_c_during_send_is_caught(capsys):
+def test_ctrl_c_before_the_stream_starts_is_caught(capsys):
     main(prompter=ScriptedPrompter(["go", "/exit"]), session=_BoomSession())
     out = capsys.readouterr().out
-    assert "(interrupted)" in out  # caught the mid-generation interrupt
+    assert "(interrupted)" in out  # caught the interrupt
     assert "bye." in out  # and the loop survived to handle the next input
+
+
+class _MidStreamInterruptSession:
+    """send() dies mid-stream the way the real Session does when Ctrl-C lands
+    inside a pull: the generator raises after rolling its history back."""
+
+    def send(self, _user_input: str):
+        def stream():
+            yield TextDelta("par")
+            raise KeyboardInterrupt
+
+        return stream()
+
+
+def test_ctrl_c_mid_generation_is_caught_after_partial_output(capsys):
+    main(prompter=ScriptedPrompter(["go", "/exit"]), session=_MidStreamInterruptSession())
+    out = capsys.readouterr().out
+    assert "vega> par" in out  # the partial text had already streamed
+    assert "(interrupted)" in out  # the interrupt was caught mid-line
+    assert "bye." in out  # and the loop survived
+
+
+class _SuspendedReply:
+    """Stands in for a send() stream when Ctrl-C lands *between* pulls (in CLI
+    code, while the generator is suspended): the interrupt never reaches the
+    generator, so the CLI's close() call is the only thing that triggers the
+    session's rollback."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise KeyboardInterrupt  # the interrupt surfaces from the CLI's pull
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _SuspendedSession:
+    def __init__(self) -> None:
+        self.reply = _SuspendedReply()
+
+    def send(self, _user_input: str):
+        return self.reply
+
+
+def test_ctrl_c_between_pulls_closes_the_stream_for_deterministic_rollback(capsys):
+    session = _SuspendedSession()
+    main(prompter=ScriptedPrompter(["go", "/exit"]), session=session)
+    out = capsys.readouterr().out
+    assert "(interrupted)" in out
+    assert session.reply.closed  # the CLI forced the rollback; GC timing never decides it
 
 
 def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):

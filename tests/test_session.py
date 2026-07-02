@@ -7,25 +7,38 @@ FakeBrain in place of a real model.
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 
-from vegapunk.brain import Brain, BrainResponse, ToolCall
+import pytest
+
+from vegapunk.brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
 from vegapunk.loop import run
 from vegapunk.session import Session
 from vegapunk.tools import Tool
 
 
 class FakeBrain(Brain):
-    """A scripted Brain: returns queued responses in order, recording a copy of
-    each messages list it was asked to think over."""
+    """A scripted Brain: streams queued responses in order, recording a copy of
+    each messages list it was asked to think over.
+
+    Mirrors the real streaming shape — deltas first (when the turn has them),
+    then the assembled response, last — so tests exercise the same event path
+    the CLI sees.
+    """
 
     def __init__(self, responses: list[BrainResponse]) -> None:
         self._responses = list(responses)
         self.seen_messages: list[list[dict]] = []
 
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> BrainResponse:
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
         # Copy: drive_turns mutates the list in place, so snapshot what we saw.
         self.seen_messages.append(list(messages))
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if response.reasoning:
+            yield ReasoningDelta(response.reasoning)
+        if response.text:
+            yield TextDelta(response.text)
+        yield response
 
 
 def _text(content: str) -> BrainResponse:
@@ -34,12 +47,21 @@ def _text(content: str) -> BrainResponse:
     )
 
 
+def _reply(send_events) -> str:
+    """Drain a send() stream and return the reply it carries in StopIteration."""
+    while True:
+        try:
+            next(send_events)
+        except StopIteration as stop:
+            return stop.value
+
+
 def test_history_persists_across_turns():
     fake = FakeBrain([_text("hi Akshay"), _text("your name is Akshay")])
     session = Session(fake, tools=[], system_prompt="SYS")
 
-    assert session.send("my name is Akshay") == "hi Akshay"
-    assert session.send("what's my name?") == "your name is Akshay"
+    assert _reply(session.send("my name is Akshay")) == "hi Akshay"
+    assert _reply(session.send("what's my name?")) == "your name is Akshay"
 
     # On the 2nd think() call the brain saw the full prior history.
     second = [(m["role"], m.get("content")) for m in fake.seen_messages[1]]
@@ -63,8 +85,8 @@ def test_clarifying_question_then_continue():
     )
     session = Session(fake, tools=[], system_prompt="SYS")
 
-    assert session.send("rename the file") == "Which file do you mean — a.md or b.md?"
-    assert session.send("a.md") == "Renamed a.md to archive.md."
+    assert _reply(session.send("rename the file")) == "Which file do you mean — a.md or b.md?"
+    assert _reply(session.send("a.md")) == "Renamed a.md to archive.md."
 
     # On the 2nd think() the model saw its own question and the user's answer.
     second = [(m["role"], m.get("content")) for m in fake.seen_messages[1]]
@@ -97,7 +119,7 @@ def test_tool_call_turn_appends_assistant_then_tool_then_answers():
     )
     session = Session(fake, tools=[ping], system_prompt="SYS")
 
-    assert session.send("ping it") == "pong received"
+    assert _reply(session.send("ping it")) == "pong received"
 
     msgs = session.messages
     assert msgs[-3]["role"] == "assistant" and msgs[-3].get("tool_calls")  # the tool-call turn
@@ -115,7 +137,7 @@ def test_reasoning_is_traced_to_stderr_but_kept_out_of_history(capsys):
     )
     session = Session(FakeBrain([turn]), tools=[], system_prompt="SYS")
 
-    assert session.send("who are you?") == "I'm Vegapunk."
+    assert _reply(session.send("who are you?")) == "I'm Vegapunk."
 
     # Surfaced on the suppressible stderr watch-channel, beside [think]/[tool].
     assert f"  [reason] {reasoning}" in capsys.readouterr().err
@@ -129,7 +151,7 @@ def test_system_prompt_seeded_once_and_survives_reset():
     session = Session(fake, tools=[], system_prompt="SYS")
     assert session.messages[0] == {"role": "system", "content": "SYS"}
 
-    session.send("hello")
+    _reply(session.send("hello"))
     assert len(session.messages) > 1
     session.reset()
     assert session.messages == [{"role": "system", "content": "SYS"}]
@@ -209,7 +231,7 @@ def test_batched_tool_results_keep_call_order():
         system_prompt="SYS",
     )
 
-    assert session.send("both please") == "done"
+    assert _reply(session.send("both please")) == "done"
 
     # Tool results line up with the assistant's tool_calls, in call order.
     assert session.messages[-3] == {"role": "tool", "tool_call_id": "c1", "content": "A"}
@@ -224,9 +246,9 @@ class _AlwaysToolBrain(Brain):
     def __init__(self) -> None:
         self.calls = 0
 
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> BrainResponse:
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
         self.calls += 1
-        return BrainResponse(
+        yield BrainResponse(
             message={
                 "role": "assistant",
                 "content": None,
@@ -246,7 +268,7 @@ def test_session_honors_configured_max_steps():
     session = Session(
         brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS", max_steps=3
     )
-    result = session.send("loop forever")
+    result = _reply(session.send("loop forever"))
     assert brain.calls == 3
     assert "step limit" in result.lower()
 
@@ -257,8 +279,67 @@ def test_session_default_max_steps_comes_from_config():
 
     brain = _AlwaysToolBrain()
     session = Session(brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS")
-    session.send("loop forever")
+    _reply(session.send("loop forever"))
     assert brain.calls == config.max_steps
+
+
+def test_send_streams_the_reply_as_text_deltas():
+    # The reply arrives as deltas *and* as the generator's return value — the
+    # deltas are for live rendering, the return for programmatic callers.
+    session = Session(FakeBrain([_text("hi Akshay")]), tools=[], system_prompt="SYS")
+
+    events = session.send("hello")
+    seen: list[TextDelta] = []
+    while True:
+        try:
+            seen.append(next(events))
+        except StopIteration as stop:
+            reply = stop.value
+            break
+
+    assert seen == [TextDelta("hi Akshay")]
+    assert reply == "hi Akshay"
+
+
+def test_send_is_lazy_until_first_pull():
+    # A created-but-never-consumed send must not touch history: generators run
+    # nothing before the first next(), so the user turn isn't even appended.
+    session = Session(FakeBrain([_text("unused")]), tools=[], system_prompt="SYS")
+    session.send("hello")  # never pulled
+    assert session.messages == [{"role": "system", "content": "SYS"}]
+
+
+class _InterruptedBrain(Brain):
+    """Streams a little text, then dies the way Ctrl-C lands mid-generation."""
+
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
+        yield TextDelta("I was say")
+        raise KeyboardInterrupt
+
+
+def test_interrupt_mid_stream_rolls_the_partial_turn_back():
+    session = Session(_InterruptedBrain(), tools=[], system_prompt="SYS")
+
+    events = session.send("hi")
+    with pytest.raises(KeyboardInterrupt):
+        while True:
+            next(events)
+
+    # The half-generated turn (user message included) is rolled back out, so
+    # the next send starts from a consistent history.
+    assert session.messages == [{"role": "system", "content": "SYS"}]
+
+
+def test_abandoning_the_stream_mid_turn_rolls_back():
+    # The consumer stops pulling and closes the generator (what the CLI does
+    # on Ctrl-C): the suspended send must roll back, not strand a half-turn.
+    session = Session(FakeBrain([_text("a long answer")]), tools=[], system_prompt="SYS")
+
+    events = session.send("hi")
+    next(events)  # the turn is underway — a first delta arrived
+    events.close()
+
+    assert session.messages == [{"role": "system", "content": "SYS"}]
 
 
 def test_batched_tool_calls_run_concurrently():
@@ -280,7 +361,7 @@ def test_batched_tool_calls_run_concurrently():
         ],
         system_prompt="SYS",
     )
-    session.send("go")
+    _reply(session.send("go"))
 
     tool_results = [m["content"] for m in session.messages if m["role"] == "tool"]
     assert tool_results == ["met", "met"]

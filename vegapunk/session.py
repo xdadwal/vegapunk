@@ -7,8 +7,10 @@ and any future interface all drive Vegapunk through this.
 
 from __future__ import annotations
 
+from collections.abc import Generator
+
 from .approval import Approver
-from .brain import Brain
+from .brain import Brain, TextDelta, final_response
 from .config import config
 from .loop import drive_turns
 from .tools import Tool
@@ -32,22 +34,33 @@ class Session:
         # The system prompt is seeded once, here — never re-added per turn.
         self._messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
-    def send(self, user_input: str) -> str:
-        """Add a user turn, run the agent loop, and return Vegapunk's reply."""
+    def send(self, user_input: str) -> Generator[TextDelta, None, str]:
+        """Add a user turn, run the agent loop, and stream Vegapunk's reply.
+
+        A generator: yields ``TextDelta`` fragments as the model produces them
+        and *returns* the complete reply via ``StopIteration.value``. Lazy,
+        like all generators — nothing (not even the history append) happens
+        until the first pull, so a created-but-never-consumed send is a no-op.
+        """
         checkpoint = len(self._messages)
         self._messages.append({"role": "user", "content": user_input})
         try:
-            return drive_turns(
-                self._brain,
-                self._by_name,
-                self._schemas,
-                self._messages,
-                self._max_steps,
-                self._approver,
+            return (
+                yield from drive_turns(
+                    self._brain,
+                    self._by_name,
+                    self._schemas,
+                    self._messages,
+                    self._max_steps,
+                    self._approver,
+                )
             )
-        except KeyboardInterrupt:
-            # Interrupted mid-generation: roll the partial turn back out so the
-            # history stays consistent, then let the caller decide what to do.
+        except (KeyboardInterrupt, GeneratorExit):
+            # Interrupted mid-generation (Ctrl-C lands here when it strikes
+            # inside a pull), or the consumer abandoned the stream mid-turn
+            # (``.close()`` throws GeneratorExit in at the paused yield):
+            # either way, roll the partial turn back out so the history stays
+            # consistent, then re-raise for the caller/close machinery.
             del self._messages[checkpoint:]
             raise
 
@@ -92,7 +105,8 @@ class Session:
             {"role": "user", "content": first},
         ]
         try:
-            return (self._brain.think(probe).text or "").strip()
+            # Drain the think stream — a title isn't worth rendering live.
+            return (final_response(self._brain.think(probe)).text or "").strip()
         except Exception:  # noqa: BLE001 — titling is optional; fall back, never crash the turn
             return ""
 
