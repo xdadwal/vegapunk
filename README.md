@@ -42,9 +42,12 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
+- **Streaming output** — replies print token by token as the model generates them, instead of
+  appearing whole after a long silence.
 - Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[reason]` = the model's
-  chain-of-thought when the model returns one, `[tool]` = a tool result), leaving **stdout** clean
-  for the agent's replies.
+  chain-of-thought, streamed live as it's generated, `[tool]` = a tool result, `[note]` = a loop
+  warning, e.g. the model ran out of tokens mid-answer), leaving **stdout** clean for the agent's
+  replies.
 
 ### Commands
 

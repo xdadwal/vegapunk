@@ -4,7 +4,7 @@ A read-eval-print loop over a Session. ``/``-prefixed input is handled locally b
 the slash-command system (``commands.py``); everything else is sent to the model.
 Each conversation auto-saves every turn under a name the model picks from the
 first message (``session_store``). Tool activity is traced to stderr by the loop;
-replies go to stdout.
+replies stream to stdout token by token as the model generates them.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import datetime
 
 from . import memory, session_store
 from .approval import CLIApprover
-from .brain import DMRBrain
+from .brain import DMRBrain, TextDelta
 from .commands import CommandContext, dispatch
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
@@ -61,12 +61,37 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 return
             continue
 
+        events = None
         try:
-            reply = session.send(user_input)
+            # send() is a generator — nothing runs until the first next().
+            # The loop guarantees the whole reply arrives as TextDeltas, so
+            # rendering is just: print what you're handed, as you're handed it.
+            events = session.send(user_input)
+            streamed = False
+            line_open = False
+            while True:
+                try:
+                    event = next(events)
+                except StopIteration:  # .value carries the reply; already rendered
+                    break
+                if isinstance(event, TextDelta) and event.text:
+                    if not streamed:
+                        print("vega> ", end="", flush=True)
+                        streamed = True
+                    print(event.text, end="", flush=True)
+                    line_open = not event.text.endswith("\n")
+            if not streamed:
+                print("vega> ")  # an empty reply still gets its prompt line
+            elif line_open:
+                print()
         except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
+            if events is not None:
+                # Closing throws GeneratorExit into the paused send(), which
+                # rolls the partial turn out of history deterministically
+                # (rather than whenever the abandoned generator gets GC'd).
+                events.close()
             print("\n(interrupted)")
             continue
-        print(f"vega> {reply}")
         _autosave_turn(ctx)
 
 
