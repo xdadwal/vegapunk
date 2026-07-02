@@ -73,6 +73,10 @@ class BrainResponse:
     # chosen ending. Display-only, like reasoning — the loop notes it on the
     # trace so a truncated reply is never passed off as complete.
     truncated: bool = False
+    # The server's own count of tokens this request occupied (prompt +
+    # completion — i.e. the whole conversation's current footprint in the
+    # context window). None when the server didn't report usage.
+    context_tokens: int | None = None
 
 
 # Everything a think() stream can yield: deltas while the model generates,
@@ -112,7 +116,15 @@ class DMRBrain(Brain):
         self._client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
 
     def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        kwargs: dict = {"model": self._model, "messages": messages, "stream": True}
+        kwargs: dict = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+            # Ask for the usage rider — a trailing choices-less chunk carrying
+            # exact token counts, which is how the toolbar knows how full the
+            # context window is.
+            "stream_options": {"include_usage": True},
+        }
         if tools:
             kwargs["tools"] = tools
 
@@ -124,12 +136,16 @@ class DMRBrain(Brain):
         calls: dict[int, dict] = {}
 
         finish_reason: str | None = None
+        usage = None
 
         # `with` so an abandoned stream (consumer closes us mid-turn, Ctrl-C)
         # releases the HTTP connection instead of leaving it dangling.
         with self._client.chat.completions.create(**kwargs) as stream:
             for chunk in stream:
-                if not chunk.choices:  # e.g. a trailing usage-only chunk
+                # The usage rider arrives on a trailing chunk with no choices,
+                # so it must be read before the empty-choices skip.
+                usage = getattr(chunk, "usage", None) or usage
+                if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 finish_reason = choice.finish_reason or finish_reason
@@ -165,11 +181,16 @@ class DMRBrain(Brain):
             reasoning="".join(reasoning),
             raw_calls=[calls[i] for i in sorted(calls)],
             truncated=finish_reason == "length",
+            context_tokens=getattr(usage, "total_tokens", None),
         )
 
     @staticmethod
     def _assemble(
-        text: str | None, reasoning: str, raw_calls: list[dict], truncated: bool
+        text: str | None,
+        reasoning: str,
+        raw_calls: list[dict],
+        truncated: bool,
+        context_tokens: int | None,
     ) -> BrainResponse:
         """Build the finished turn from what the stream accumulated."""
         tool_calls: list[ToolCall] = []
@@ -203,4 +224,5 @@ class DMRBrain(Brain):
             tool_calls=tool_calls,
             reasoning=reasoning.strip() or None,
             truncated=truncated,
+            context_tokens=context_tokens,
         )

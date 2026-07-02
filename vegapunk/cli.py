@@ -9,6 +9,7 @@ replies stream to stdout token by token as the model generates them.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from datetime import datetime
 
@@ -28,11 +29,32 @@ def _vega_prefix() -> str:
     return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
 
 
+def _context_gauge(used: int | None) -> str:
+    """The toolbar's right side: how full the model's context window is —
+    absolute tokens, and a percentage when the window size is known
+    (config.context_window; 0 means unknown). Empty before the first turn."""
+    if used is None:
+        return ""
+    if config.context_window > 0:
+        # Deliberately uncapped: >100% means the conversation has overflowed
+        # the configured window — capping would hide exactly that signal.
+        pct = round(100 * used / config.context_window)
+        return f"{used:,}/{config.context_window:,} tok ({pct}%) "
+    return f"{used:,} tok "
+
+
 def _status_line(ctx: CommandContext) -> str:
-    """The prompt's bottom-toolbar text: what model you're talking to and which
-    conversation it's saving into. Re-evaluated every render, so /save and /new
-    show up on the next prompt."""
-    return f" {config.model} · {ctx.current_name or 'unsaved'}"
+    """The prompt's bottom-toolbar text: model and conversation name on the
+    left, context-window fullness on the right. Re-evaluated every render, so
+    /save, /new, and each finished turn show up on the next prompt."""
+    left = f" {config.model} · {ctx.current_name or 'unsaved'}"
+    right = _context_gauge(ctx.session.context_tokens)
+    # Right-align by padding to the terminal's current width; clamp so the
+    # two sides never fuse when the window is narrow. len() counts code
+    # points, not display cells — good enough because model ids and session
+    # slugs are ASCII here; double-width glyphs would push the gauge off-edge.
+    pad = shutil.get_terminal_size().columns - len(left) - len(right)
+    return left + " " * max(pad, 1) + right
 
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:

@@ -161,7 +161,9 @@ class _ScriptedStreamBrain(Brain):
         yield from self._scripts.pop(0)
 
 
-def _response(text=None, tool_calls=None, reasoning=None, truncated=False) -> BrainResponse:
+def _response(
+    text=None, tool_calls=None, reasoning=None, truncated=False, context_tokens=None
+) -> BrainResponse:
     message: dict = {"role": "assistant", "content": text}
     if tool_calls:
         message["tool_calls"] = [
@@ -174,11 +176,18 @@ def _response(text=None, tool_calls=None, reasoning=None, truncated=False) -> Br
         tool_calls=tool_calls or [],
         reasoning=reasoning,
         truncated=truncated,
+        context_tokens=context_tokens,
     )
 
 
 def _drive(scripts, tools=None, max_steps=8):
     """Run drive_turns over scripted think() streams; return (yielded, reply)."""
+    events, (reply, _context) = _drive_full(scripts, tools, max_steps)
+    return events, reply
+
+
+def _drive_full(scripts, tools=None, max_steps=8):
+    """Like _drive, but returns the full (reply, context_tokens) return value."""
     by_name = {t.name: t for t in tools or []}
     messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
     turns = drive_turns(_ScriptedStreamBrain(scripts), by_name, [], messages, max_steps)
@@ -399,3 +408,33 @@ def test_shorten_boundaries_and_grammar():
     assert _shorten("x" * 200) == "x" * 200  # exactly at the limit: untouched
     assert _shorten("x" * 201) == "x" * 200 + "… (+1 more char)"  # singular
     assert _shorten("x" * 1401).endswith("… (+1,201 more chars)")  # plural, thousands-grouped
+
+
+def test_context_tokens_from_the_last_think_are_returned():
+    # Two steps; each think reports its own footprint — the turn returns the
+    # latest one (the fullest view of the conversation).
+    ping = _tool("ping", lambda _a: "PONG")
+    call = ToolCall(id="c1", name="ping", arguments={})
+    _events, (reply, context) = _drive_full(
+        [
+            [_response(tool_calls=[call], context_tokens=120)],
+            [_response("done", context_tokens=185)],
+        ],
+        tools=[ping],
+    )
+    assert (reply, context) == ("done", 185)
+
+
+def test_context_tokens_survive_a_final_step_without_usage():
+    # A server that omits usage on one call must not wipe the last-known
+    # footprint — better slightly stale than gone.
+    ping = _tool("ping", lambda _a: "PONG")
+    call = ToolCall(id="c1", name="ping", arguments={})
+    _events, (_reply, context) = _drive_full(
+        [
+            [_response(tool_calls=[call], context_tokens=120)],
+            [_response("done")],  # no usage reported
+        ],
+        tools=[ping],
+    )
+    assert context == 120

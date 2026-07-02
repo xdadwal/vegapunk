@@ -216,6 +216,39 @@ def test_status_line_shows_model_and_session_name():
     from vegapunk.config import config
 
     ctx = CommandContext(session=_session([]))
-    assert _status_line(ctx) == f" {config.model} · unsaved"  # before the first autosave
+    # rstrip: the line is padded to the terminal width for the right gauge.
+    assert _status_line(ctx).rstrip() == f" {config.model} · unsaved"  # before the first autosave
     ctx.current_name = "my-chat"
-    assert _status_line(ctx) == f" {config.model} · my-chat"  # /save and autosave show live
+    assert _status_line(ctx).rstrip() == f" {config.model} · my-chat"  # /save and autosave show live
+
+
+def test_context_gauge_formats_absolute_and_percent(monkeypatch):
+    from dataclasses import replace
+
+    from vegapunk.cli import _context_gauge
+    from vegapunk.config import config as real_config
+
+    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=131072))
+    assert _context_gauge(None) == ""  # before the first turn: no gauge
+    assert _context_gauge(13107) == "13,107/131,072 tok (10%) "
+
+    # Unknown window (0): absolute only — never a % against a guessed size.
+    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=0))
+    assert _context_gauge(13107) == "13,107 tok "
+
+
+def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
+    import os
+
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
+
+    monkeypatch.setattr(
+        "vegapunk.cli.shutil.get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    ctx = CommandContext(session=_session([]))
+    ctx.session.context_tokens = 500
+    line = _status_line(ctx)
+    assert len(line) == 80  # padded so the gauge lands on the right edge
+    assert line.endswith("tok (0%) ")
+    assert "unsaved" in line

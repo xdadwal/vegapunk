@@ -52,7 +52,9 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   tools glow Egghead cyan, failures go Atlas red, warnings York yellow, and your prompt wears
   Shaka gold. Auto-disabled when a stream isn't a terminal; `NO_COLOR` and `VEGAPUNK_COLOR` give
   manual control.
-- A **status toolbar** under the prompt shows the model and the current conversation's name.
+- A **status toolbar** under the prompt shows the model and the current conversation's name on
+  the left, and — after the first turn — how full the model's context window is on the right
+  (exact server-reported tokens, absolute and percent).
 
 ### Commands
 
@@ -109,6 +111,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
+| `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 | `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |

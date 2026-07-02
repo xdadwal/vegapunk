@@ -57,7 +57,8 @@ def run(
         try:
             next(turns)
         except StopIteration as stop:
-            return stop.value
+            reply, _context_tokens = stop.value  # one-shots don't track fullness
+            return reply
 
 
 def drive_turns(
@@ -67,15 +68,17 @@ def drive_turns(
     messages: list[dict],
     max_steps: int,
     approver: Approver | None = None,
-) -> Generator[TextDelta, None, str]:
+) -> Generator[TextDelta, None, tuple[str, int | None]]:
     """Run the think -> act -> observe loop over an existing messages list.
 
     A generator: yields ``TextDelta`` fragments of the assistant's speech as
-    the model produces them, and *returns* the final text answer (or a notice
-    if the step limit is hit) via ``StopIteration.value``. Mutates ``messages``
-    in place (appending assistant and tool turns). Shared by the one-shot
-    ``run()`` and the multi-turn ``Session`` so the loop logic lives in
-    exactly one place.
+    the model produces them, and *returns* — via ``StopIteration.value`` — the
+    final text answer (or a notice if the step limit is hit) together with the
+    conversation's context footprint in tokens: the server-reported total from
+    the turn's last model call, None if the server never said. Mutates
+    ``messages`` in place (appending assistant and tool turns). Shared by the
+    one-shot ``run()`` and the multi-turn ``Session`` so the loop logic lives
+    in exactly one place.
 
     Display invariant: any reply text is always yielded as deltas *before*
     being returned — a non-streaming Brain's answer and the step-limit notice
@@ -89,12 +92,17 @@ def drive_turns(
     tools are approved first, in a sequential pre-pass, so an interactive
     approver never faces concurrent prompts (see ``_run_tool_batch``).
     """
+    context_tokens: int | None = None
     for step in range(max_steps):
         # Trace to stderr so you can *watch* the loop work (stdout stays clean);
         # the [think] marker shows where each model roundtrip starts, making
         # batched-vs-chained tool calling visible.
         print(style.paint(f"  [think] step {step + 1}", style.DIM, sys.stderr), file=sys.stderr)
         response, streamed_text = yield from _relay_think(brain.think(messages, tools=schemas))
+        # Each think sees the whole conversation, so the latest report is the
+        # current footprint; keep the previous one if a server omits usage.
+        if response.context_tokens is not None:
+            context_tokens = response.context_tokens
         if response.truncated:
             # Out of tokens mid-answer: say so on the watch channel rather
             # than passing a silently amputated reply off as the model's
@@ -115,7 +123,7 @@ def drive_turns(
                 # response) still gets its answer displayed — see the
                 # display invariant above.
                 yield TextDelta(response.text)
-            return response.text or ""  # THINK said "done" — final answer
+            return response.text or "", context_tokens  # THINK said "done"
 
         if streamed_text:
             # The model spoke *and* called tools: close the spoken line so the
@@ -134,7 +142,7 @@ def drive_turns(
 
     notice = "(Stopped after hitting the step limit without a final answer.)"
     yield TextDelta(notice)
-    return notice
+    return notice, context_tokens
 
 
 class _Spinner:

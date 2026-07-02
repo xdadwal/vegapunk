@@ -47,6 +47,12 @@ class Config:
     # cross-tool standard (https://no-color.org) also disables it.
     color: str = os.getenv("VEGAPUNK_COLOR", "auto")
 
+    # The model's context window (tokens), for the toolbar's fullness gauge.
+    # DMR doesn't expose it over the API, so it's declared here; the default
+    # matches the local DMR setup (check yours: `docker model logs | grep
+    # n_ctx`). Set 0 if unknown — the gauge then shows tokens without a %.
+    context_window: int = int(os.getenv("VEGAPUNK_CONTEXT_WINDOW", "131072"))
+
     # The REPL input history file (up/down recall, persisted across sessions).
     # Defaults under the current directory's root so state stays with the
     # project you launched in; override with VEGAPUNK_HISTORY_FILE. Stored in
