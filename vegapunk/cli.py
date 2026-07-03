@@ -13,7 +13,7 @@ import shutil
 import sys
 from datetime import datetime
 
-from . import memory, session_store, style
+from . import memory, session_store, skills, style
 from .approval import CLIApprover
 from .brain import DMRBrain, TextDelta
 from .commands import CommandContext, dispatch
@@ -62,12 +62,14 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     # scripted prompter / fake-brain session and never touch the model or a TTY.
     if session is None:
         # One approver for the whole REPL, so "always allow" lasts the session.
-        # Fold remembered facts into the system prompt so the model starts the
-        # session already knowing them (no recall step needed).
+        # Fold remembered facts and the skill ads into the system prompt so the
+        # model starts the session knowing both. Assembled once — a skill added
+        # mid-session is reachable via use_skill but not advertised until the
+        # next launch (same staleness memory has).
         session = Session(
             DMRBrain(),
             ALL_TOOLS,
-            system_prompt=config.system_prompt + memory.as_system_block(),
+            system_prompt=config.system_prompt + memory.as_system_block() + skills.as_system_block(),
             approver=CLIApprover(),
         )
     # ctx exists before the prompter so the toolbar callable can close over
@@ -102,6 +104,19 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             if result.exit:
                 return
             continue
+
+        if ctx.pending_skill is not None:
+            # A /skill staging rides this message: body first, imperatively
+            # framed (the channel this model follows), then the request. The
+            # closing marker keeps a body that ends in examples or quotes from
+            # bleeding into the request. The combined turn enters history and
+            # autosave as-is — an honest record of what the model actually saw.
+            name, body = ctx.pending_skill
+            user_input = (
+                f"[Skill '{name}' — follow these instructions for this request:]\n"
+                f"{body}\n[End of skill instructions. The request:]\n{user_input}"
+            )
+            ctx.pending_skill = None
 
         events = None
         try:

@@ -76,6 +76,13 @@ class Config:
         os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
     ).expanduser()
 
+    # Where skills live — user-written markdown guides ("how to X") the agent
+    # pulls in on demand via the use_skill tool. One .md file per skill; each
+    # is advertised to the model as a one-line description at startup.
+    skills_dir: Path = Path(
+        os.getenv("VEGAPUNK_SKILLS_DIR", str(Path.cwd() / ".vegapunk" / "skills"))
+    ).expanduser()
+
     # Vegapunk's identity + how it operates. The "How you work" stanza keeps a
     # small model self-correcting after a failed step instead of apologizing
     # and giving up.

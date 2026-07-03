@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from test_session import FakeBrain  # sibling module (tests/ is on sys.path)
 
+from vegapunk import session_store
 from vegapunk.commands import CommandContext, dispatch
 from vegapunk.session import Session
 
@@ -210,3 +211,102 @@ def test_completer_offers_slash_commands_not_bare_keywords():
 
     assert "/save" in _COMMANDS and "/exit" in _COMMANDS
     assert "exit" not in _COMMANDS and "reset" not in _COMMANDS
+
+
+@pytest.fixture
+def skills_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path)
+    return tmp_path
+
+
+def _write_skill(home, filename, text):
+    (home / filename).write_text(text, encoding="utf-8")
+
+
+def test_skills_lists_name_and_description(skills_home):
+    _write_skill(skills_home, "commit-message.md", "---\ndescription: Commit rules\n---\nbody")
+    result = dispatch("/skills", _ctx())
+    assert "commit-message — Commit rules" in result.output
+
+
+def test_skills_empty_points_at_the_directory(skills_home):
+    result = dispatch("/skills", _ctx())
+    assert "no skills" in result.output
+    assert str(skills_home) in result.output
+
+
+def test_skill_stages_for_the_next_message(skills_home):
+    _write_skill(skills_home, "commit-message.md", "---\ndescription: d\n---\nThe rules.")
+    ctx = _ctx()
+    result = dispatch("/skill commit", ctx)  # forgiving partial match
+    assert "will be included with your next message" in result.output
+    assert ctx.pending_skill is not None
+    name, body = ctx.pending_skill
+    assert name == "commit-message"
+    assert body == "The rules."
+
+
+def test_skill_bare_shows_usage_and_names(skills_home):
+    _write_skill(skills_home, "commit-message.md", "body")
+    ctx = _ctx()
+    result = dispatch("/skill", ctx)
+    assert "Usage: /skill" in result.output
+    assert "commit-message" in result.output
+    assert ctx.pending_skill is None
+
+
+def test_skill_unknown_name_corrects(skills_home):
+    _write_skill(skills_home, "commit-message.md", "body")
+    ctx = _ctx()
+    result = dispatch("/skill deploy", ctx)
+    assert "No skill matches 'deploy'" in result.output
+    assert "commit-message" in result.output
+    assert ctx.pending_skill is None
+
+
+def test_new_clears_a_staged_skill(skills_home):
+    _write_skill(skills_home, "commit-message.md", "body")
+    ctx = _ctx()
+    dispatch("/skill commit-message", ctx)
+    assert ctx.pending_skill is not None
+    dispatch("/new", ctx)
+    assert ctx.pending_skill is None
+
+
+def test_help_lists_skill_commands(skills_home):
+    out = dispatch("/help", _ctx()).output
+    assert "/skills" in out and "/skill" in out
+
+
+def test_load_clears_a_staged_skill(skills_home, tmp_path):
+    # Staged state belongs to the conversation it was staged in — restoring a
+    # different one must drop it, exactly like /new does.
+    _write_skill(skills_home, "commit-message.md", "body")
+    session_store.save_session("other", [{"role": "system", "content": "SYS"}])
+    ctx = _ctx()
+    dispatch("/skill commit-message", ctx)
+    assert ctx.pending_skill is not None
+    dispatch("/load other", ctx)
+    assert ctx.pending_skill is None
+
+
+def test_skills_lists_survivors_when_a_file_is_degraded(skills_home, capsys):
+    _write_skill(skills_home, "good.md", "---\ndescription: Fine\n---\nbody")
+    _write_skill(skills_home, "empty.md", "")
+    result = dispatch("/skills", _ctx())
+    assert "good — Fine" in result.output
+    assert "empty" not in result.output  # skipped (with a stderr note), not listed
+
+
+def test_skill_staged_body_is_capped(skills_home, monkeypatch):
+    from dataclasses import replace
+
+    from vegapunk.config import config as real_config
+
+    _write_skill(skills_home, "big.md", "x" * 500)
+    monkeypatch.setattr("vegapunk.commands.config", replace(real_config, output_char_cap=50))
+    ctx = _ctx()
+    dispatch("/skill big", ctx)
+    _, body = ctx.pending_skill
+    assert body.endswith("...[truncated]")
+    assert "x" * 51 not in body

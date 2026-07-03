@@ -252,3 +252,35 @@ def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
     assert len(line) == 80  # padded so the gauge lands on the right edge
     assert line.endswith("tok (0%) ")
     assert "unsaved" in line
+
+
+@pytest.fixture
+def skills_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path)
+    return tmp_path
+
+
+def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
+    (skills_home / "commit-message.md").write_text(
+        "---\ndescription: d\n---\nUse type(scope): summary.", encoding="utf-8"
+    )
+    brain = FakeBrain([_text("done"), _text("title"), _text("also done"), _text("title2")])
+    session = Session(brain, tools=[], system_prompt="SYS")
+    main(
+        prompter=ScriptedPrompter(
+            ["/skill commit-message", "/history", "write a commit message", "plain follow-up", "/exit"]
+        ),
+        session=session,
+    )
+
+    # The staging survived the intervening /history command, then rode the
+    # first real message: skill body first, a closing marker, then the request.
+    first_user = next(m["content"] for m in brain.seen_messages[0] if m["role"] == "user")
+    assert first_user.startswith("[Skill 'commit-message' — follow these instructions")
+    assert "Use type(scope): summary." in first_user
+    assert "[End of skill instructions. The request:]" in first_user
+    assert first_user.rstrip().endswith("write a commit message")
+
+    # ...and was cleared afterwards: the follow-up message is unadorned.
+    second_user = [m["content"] for m in brain.seen_messages[2] if m["role"] == "user"][-1]
+    assert second_user == "plain follow-up"

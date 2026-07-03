@@ -37,6 +37,9 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Persistent history** across sessions (`.vegapunk/history`), recalled with ↑/↓.
 - **Persistent memory** — durable facts and preferences you share are saved to `.vegapunk/memory.md`
   and auto-loaded into future sessions, so Vegapunk still knows them next time.
+- **Skills** — teach Vegapunk repeatable procedures by dropping markdown files in
+  `.vegapunk/skills/`; each is advertised to the model as one line, and its full instructions load
+  on demand when a task matches (or force one with `/skill <name>`). See [Skills](#skills).
 - **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
   from your first message (`.vegapunk/sessions/`), so you can pick it back up later.
 - **Slash commands** (see below) — anything else you type goes to the model.
@@ -65,6 +68,8 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
 | `/sessions` | List saved conversations and their turn counts |
+| `/skills` | List available skills |
+| `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
@@ -89,6 +94,7 @@ toolset:
 | `fetch_url` | Fetch a web page and return its readable text | — |
 | `search_web` | Search the web (DuckDuckGo) for external information | — |
 | `remember` | Save a durable fact/preference about you for future sessions | — |
+| `use_skill` | Load a skill's full instructions when a task matches one | — |
 | `yell` | Echo the reply in UPPERCASE (a persona tool) | — |
 
 Filesystem and shell tools are **confined to the workspace root** (default: the directory you
@@ -96,6 +102,36 @@ launched Vegapunk in); paths outside it are refused. When the model calls a **ga
 inline menu prompts **Yes / No / No — tell Vegapunk what to do instead / Always allow this tool this
 session** before anything runs. Declining with a message hands the model your steer (fed back as the
 tool result), so a "no" can redirect it instead of dead-ending.
+
+## Skills
+
+Skills teach Vegapunk repeatable procedures — one markdown file per skill under
+`.vegapunk/skills/`. The design is progressive disclosure: at startup every skill costs the system
+prompt only a one-line `name — description` ad, and the full body enters the conversation only
+when it's needed — either the model calls `use_skill` because your request matches a listed skill,
+or you force one with `/skill <name>` (its instructions then ride along with your next message).
+
+A skill's **name is its filename** (slugified: `My Skill.md` → `my-skill`). The description comes
+from a minimal frontmatter block; without one, the first line of the file serves as the ad:
+
+```markdown
+---
+description: How to write a commit message for this repo
+---
+# Commit messages
+
+- Format: type(scope): summary — imperative mood, <= 72 chars.
+- Types: feat, fix, refactor, test, docs, chore.
+- The body explains why, not what.
+```
+
+Malformed files degrade loudly rather than vanish (an unclosed frontmatter fence or missing
+description falls back to sensible defaults with a `[skills]` note on stderr); skipping is the
+exception and always announced — empty files, unreadable ones, duplicate names, and names with no
+usable characters. Skill bodies are capped at `VEGAPUNK_OUTPUT_CAP` characters like any
+other tool output. Skills are discovered at each use, but the ads in the system prompt are
+assembled once at launch — a skill added mid-session works via `use_skill` and `/skill`, but isn't
+advertised to the model until the next start.
 
 ## Configuration
 
@@ -115,6 +151,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 | `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
+| `VEGAPUNK_SKILLS_DIR` | Directory of skill files (one `.md` each, advertised at startup) | `.vegapunk/skills` |
 
 ## Tests
 
@@ -140,6 +177,7 @@ vegapunk/
   config.py      # settings + the persona system prompt
   style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
+  skills.py      # skill discovery + on-demand loading (.vegapunk/skills/)
   tools/         # one module per tool, plus the @tool registry
 tests/           # test suite
 ```
