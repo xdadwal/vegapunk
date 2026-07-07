@@ -23,6 +23,8 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.output import Output
 
+from . import style
+
 # The approval choices, in menu order: (returned value, label shown).
 _CHOICES = [
     ("yes", "Yes (run it)"),
@@ -59,7 +61,14 @@ def _build_menu(
     state = {"idx": 0}
 
     def render():
-        lines = [("bold", f"approve tool?  {tool_name}({arguments})\n")]
+        # The tool name pops Egghead-cyan inside the bold header; these are
+        # prompt_toolkit style tuples, rendered (or not) by its own output
+        # layer, so DummyOutput-driven tests see only the returned choice.
+        lines = [
+            ("bold", "approve tool?  "),
+            ("bold fg:ansicyan", tool_name),
+            ("bold", f"({arguments})\n"),
+        ]
         for i, (_value, label) in enumerate(_CHOICES):
             selected = i == state["idx"]
             prefix = "> " if selected else "  "
@@ -122,7 +131,11 @@ class CLIApprover(Approver):
         # No interactive terminal: we cannot ask a human, so refuse (safe default).
         if not sys.stdin.isatty():
             print(
-                f"  [approval] {tool_name}({arguments}) auto-denied (no interactive terminal).",
+                style.paint(
+                    f"  [approval] {tool_name}({arguments}) auto-denied (no interactive terminal).",
+                    style.RED,
+                    sys.stderr,
+                ),
                 file=sys.stderr,
             )
             return Decision(allow=False)

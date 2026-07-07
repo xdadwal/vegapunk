@@ -365,3 +365,30 @@ def test_batched_tool_calls_run_concurrently():
 
     tool_results = [m["content"] for m in session.messages if m["role"] == "tool"]
     assert tool_results == ["met", "met"]
+
+
+def _text_with_usage(content: str, context_tokens: int) -> BrainResponse:
+    return BrainResponse(
+        message={"role": "assistant", "content": content},
+        text=content,
+        tool_calls=[],
+        context_tokens=context_tokens,
+    )
+
+
+def test_send_records_the_context_footprint():
+    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
+    assert session.context_tokens is None  # nothing known before the first turn
+    _reply(session.send("hello"))
+    assert session.context_tokens == 240
+
+
+def test_reset_and_restore_clear_the_stale_footprint():
+    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
+    _reply(session.send("hello"))
+
+    session.reset()
+    assert session.context_tokens is None  # fresh conversation, no footprint yet
+
+    session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}])
+    assert session.context_tokens is None  # unknown until the next turn reports it

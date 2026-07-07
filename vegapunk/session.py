@@ -31,6 +31,11 @@ class Session:
         self._max_steps = max_steps
         # Guards side-effecting tools. None means no gate (used by tests).
         self._approver = approver
+        # The conversation's current footprint in the model's context window
+        # (server-reported tokens, from the latest completed turn). None until
+        # the first turn — and again after reset/restore, when any old number
+        # would describe a conversation the model hasn't seen yet.
+        self.context_tokens: int | None = None
         # The system prompt is seeded once, here — never re-added per turn.
         self._messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
@@ -45,16 +50,17 @@ class Session:
         checkpoint = len(self._messages)
         self._messages.append({"role": "user", "content": user_input})
         try:
-            return (
-                yield from drive_turns(
-                    self._brain,
-                    self._by_name,
-                    self._schemas,
-                    self._messages,
-                    self._max_steps,
-                    self._approver,
-                )
+            reply, context_tokens = yield from drive_turns(
+                self._brain,
+                self._by_name,
+                self._schemas,
+                self._messages,
+                self._max_steps,
+                self._approver,
             )
+            if context_tokens is not None:
+                self.context_tokens = context_tokens
+            return reply
         except (KeyboardInterrupt, GeneratorExit):
             # Interrupted mid-generation (Ctrl-C lands here when it strikes
             # inside a pull), or the consumer abandoned the stream mid-turn
@@ -72,6 +78,7 @@ class Session:
         approval decisions.
         """
         del self._messages[1:]
+        self.context_tokens = None  # a fresh conversation has no footprint yet
 
     def restore(self, messages: list[dict]) -> None:
         """Replace the conversation with a saved one (resume).
@@ -80,6 +87,9 @@ class Session:
         session reproduces exactly what the model last saw.
         """
         self._messages = list(messages)
+        # Unknown until the next turn reports it — saved sessions don't carry
+        # token counts, and a stale number would describe the old conversation.
+        self.context_tokens = None
 
     def suggest_name(self) -> str:
         """Ask the model for a short title for this conversation, from its first

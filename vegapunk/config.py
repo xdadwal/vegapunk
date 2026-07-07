@@ -42,6 +42,17 @@ class Config:
     # try another approach; lower reins in a runaway loop.
     max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "8"))
 
+    # Color in the CLI: "auto" (color only when the stream is a terminal),
+    # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR
+    # cross-tool standard (https://no-color.org) also disables it.
+    color: str = os.getenv("VEGAPUNK_COLOR", "auto")
+
+    # The model's context window (tokens), for the toolbar's fullness gauge.
+    # DMR doesn't expose it over the API, so it's declared here; the default
+    # matches the local DMR setup (check yours: `docker model logs | grep
+    # n_ctx`). Set 0 if unknown — the gauge then shows tokens without a %.
+    context_window: int = int(os.getenv("VEGAPUNK_CONTEXT_WINDOW", "131072"))
+
     # The REPL input history file (up/down recall, persisted across sessions).
     # Defaults under the current directory's root so state stays with the
     # project you launched in; override with VEGAPUNK_HISTORY_FILE. Stored in
@@ -63,6 +74,13 @@ class Config:
     # human-editable, so — like memory — avoid pasting secrets into a chat.
     sessions_dir: Path = Path(
         os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
+    ).expanduser()
+
+    # Where skills live — user-written markdown guides ("how to X") the agent
+    # pulls in on demand via the use_skill tool. One .md file per skill; each
+    # is advertised to the model as a one-line description at startup.
+    skills_dir: Path = Path(
+        os.getenv("VEGAPUNK_SKILLS_DIR", str(Path.cwd() / ".vegapunk" / "skills"))
     ).expanduser()
 
     # Vegapunk's identity + how it operates. The "How you work" stanza keeps a

@@ -10,8 +10,10 @@ tmp path and reply turns queue a second response for the auto-naming title call.
 from __future__ import annotations
 
 import pytest
-from test_session import FakeBrain, _text  # sibling test module (tests/ is on sys.path)
+from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
+from test_session import FakeBrain, _text
 
+from vegapunk import style
 from vegapunk.brain import TextDelta
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
@@ -185,3 +187,100 @@ def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):
     assert "vega> yo" in captured.out  # reply still shown
     assert "could not save" in captured.err  # degraded on stderr
     assert "bye." in captured.out  # survived to the next prompt and /exit
+
+
+def test_banner_shows_model_and_workspace(capsys):
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    out = capsys.readouterr().out
+    assert "model " in out and "workspace " in out  # plain under capsys (not a TTY)
+
+
+def test_vega_prefix_is_bold_magenta_when_forced(monkeypatch, capsys):
+    _force_color(monkeypatch)
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session([_text("yo"), _text("t")]))
+    out = capsys.readouterr().out
+    # Prefix wrapped, reset before the space, reply text plain.
+    assert f"{style.BOLD}{style.MAGENTA}vega>{style.RESET} yo" in out
+
+
+def test_interrupted_note_is_yellow_when_forced(monkeypatch, capsys):
+    _force_color(monkeypatch)
+    main(prompter=ScriptedPrompter(["go", "/exit"]), session=_MidStreamInterruptSession())
+    out = capsys.readouterr().out
+    assert f"{style.YELLOW}(interrupted){style.RESET}" in out
+
+
+def test_status_line_shows_model_and_session_name():
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
+    from vegapunk.config import config
+
+    ctx = CommandContext(session=_session([]))
+    # rstrip: the line is padded to the terminal width for the right gauge.
+    assert _status_line(ctx).rstrip() == f" {config.model} · unsaved"  # before the first autosave
+    ctx.current_name = "my-chat"
+    assert _status_line(ctx).rstrip() == f" {config.model} · my-chat"  # /save and autosave show live
+
+
+def test_context_gauge_formats_absolute_and_percent(monkeypatch):
+    from dataclasses import replace
+
+    from vegapunk.cli import _context_gauge
+    from vegapunk.config import config as real_config
+
+    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=131072))
+    assert _context_gauge(None) == ""  # before the first turn: no gauge
+    assert _context_gauge(13107) == "13,107/131,072 tok (10%) "
+
+    # Unknown window (0): absolute only — never a % against a guessed size.
+    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=0))
+    assert _context_gauge(13107) == "13,107 tok "
+
+
+def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
+    import os
+
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
+
+    monkeypatch.setattr(
+        "vegapunk.cli.shutil.get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    ctx = CommandContext(session=_session([]))
+    ctx.session.context_tokens = 500
+    line = _status_line(ctx)
+    assert len(line) == 80  # padded so the gauge lands on the right edge
+    assert line.endswith("tok (0%) ")
+    assert "unsaved" in line
+
+
+@pytest.fixture
+def skills_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path)
+    return tmp_path
+
+
+def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
+    (skills_home / "commit-message.md").write_text(
+        "---\ndescription: d\n---\nUse type(scope): summary.", encoding="utf-8"
+    )
+    brain = FakeBrain([_text("done"), _text("title"), _text("also done"), _text("title2")])
+    session = Session(brain, tools=[], system_prompt="SYS")
+    main(
+        prompter=ScriptedPrompter(
+            ["/skill commit-message", "/history", "write a commit message", "plain follow-up", "/exit"]
+        ),
+        session=session,
+    )
+
+    # The staging survived the intervening /history command, then rode the
+    # first real message: skill body first, a closing marker, then the request.
+    first_user = next(m["content"] for m in brain.seen_messages[0] if m["role"] == "user")
+    assert first_user.startswith("[Skill 'commit-message' — follow these instructions")
+    assert "Use type(scope): summary." in first_user
+    assert "[End of skill instructions. The request:]" in first_user
+    assert first_user.rstrip().endswith("write a commit message")
+
+    # ...and was cleared afterwards: the follow-up message is unadorned.
+    second_user = [m["content"] for m in brain.seen_messages[2] if m["role"] == "user"][-1]
+    assert second_user == "plain follow-up"

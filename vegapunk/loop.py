@@ -13,10 +13,13 @@ as the generator's *return value* (``StopIteration.value``).
 
 from __future__ import annotations
 
+import itertools
 import sys
+import threading
 from collections.abc import Generator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 
+from . import style
 from .approval import Approver, Decision
 from .brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
 from .config import config
@@ -54,7 +57,8 @@ def run(
         try:
             next(turns)
         except StopIteration as stop:
-            return stop.value
+            reply, _context_tokens = stop.value  # one-shots don't track fullness
+            return reply
 
 
 def drive_turns(
@@ -64,15 +68,17 @@ def drive_turns(
     messages: list[dict],
     max_steps: int,
     approver: Approver | None = None,
-) -> Generator[TextDelta, None, str]:
+) -> Generator[TextDelta, None, tuple[str, int | None]]:
     """Run the think -> act -> observe loop over an existing messages list.
 
     A generator: yields ``TextDelta`` fragments of the assistant's speech as
-    the model produces them, and *returns* the final text answer (or a notice
-    if the step limit is hit) via ``StopIteration.value``. Mutates ``messages``
-    in place (appending assistant and tool turns). Shared by the one-shot
-    ``run()`` and the multi-turn ``Session`` so the loop logic lives in
-    exactly one place.
+    the model produces them, and *returns* — via ``StopIteration.value`` — the
+    final text answer (or a notice if the step limit is hit) together with the
+    conversation's context footprint in tokens: the server-reported total from
+    the turn's last model call, None if the server never said. Mutates
+    ``messages`` in place (appending assistant and tool turns). Shared by the
+    one-shot ``run()`` and the multi-turn ``Session`` so the loop logic lives
+    in exactly one place.
 
     Display invariant: any reply text is always yielded as deltas *before*
     being returned — a non-streaming Brain's answer and the step-limit notice
@@ -86,17 +92,29 @@ def drive_turns(
     tools are approved first, in a sequential pre-pass, so an interactive
     approver never faces concurrent prompts (see ``_run_tool_batch``).
     """
+    context_tokens: int | None = None
     for step in range(max_steps):
         # Trace to stderr so you can *watch* the loop work (stdout stays clean);
         # the [think] marker shows where each model roundtrip starts, making
         # batched-vs-chained tool calling visible.
-        print(f"  [think] step {step + 1}", file=sys.stderr)
+        print(style.paint(f"  [think] step {step + 1}", style.DIM, sys.stderr), file=sys.stderr)
         response, streamed_text = yield from _relay_think(brain.think(messages, tools=schemas))
+        # Each think sees the whole conversation, so the latest report is the
+        # current footprint; keep the previous one if a server omits usage.
+        if response.context_tokens is not None:
+            context_tokens = response.context_tokens
         if response.truncated:
             # Out of tokens mid-answer: say so on the watch channel rather
             # than passing a silently amputated reply off as the model's
             # chosen ending.
-            print("  [note] the model ran out of tokens; this turn is cut off", file=sys.stderr)
+            print(
+                style.paint(
+                    "  [note] the model ran out of tokens; this turn is cut off",
+                    style.YELLOW,
+                    sys.stderr,
+                ),
+                file=sys.stderr,
+            )
         messages.append(response.message)  # OBSERVE: record what the model said
 
         if not response.tool_calls:
@@ -105,7 +123,7 @@ def drive_turns(
                 # response) still gets its answer displayed — see the
                 # display invariant above.
                 yield TextDelta(response.text)
-            return response.text or ""  # THINK said "done" — final answer
+            return response.text or "", context_tokens  # THINK said "done"
 
         if streamed_text:
             # The model spoke *and* called tools: close the spoken line so the
@@ -114,12 +132,94 @@ def drive_turns(
 
         # ACT: run the turn's tools, then feed each result back into history.
         for call, result in _run_tool_batch(by_name, response.tool_calls, approver):
-            print(f"  [tool] {call.name}({call.arguments}) -> {result}", file=sys.stderr)
+            marker = style.paint(
+                f"  [tool] {call.name}",
+                style.RED if _looks_failed(result) else style.CYAN,
+                sys.stderr,
+            )
+            print(f"{marker}({call.arguments}) -> {_shorten(result)}", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     notice = "(Stopped after hitting the step limit without a final answer.)"
     yield TextDelta(notice)
-    return notice
+    return notice, context_tokens
+
+
+class _Spinner:
+    """A '⠋ thinking…' line animated on stderr while the model hasn't produced
+    its first event of a step.
+
+    Interactive-terminal sugar only — gated on stderr being a TTY, not on the
+    color setting (NO_COLOR means no color, not no animation; a piped trace
+    never spins). A daemon thread owns the drawing so the main thread can stay
+    blocked in the model read; ``stop()`` is idempotent, joins the thread, and
+    erases the spinner's own line, so whatever prints next starts clean.
+    """
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not sys.stderr.isatty():
+            return
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def _spin(self) -> None:
+        for frame in itertools.cycle(self._FRAMES):
+            # Draw before waiting, so even an instant stop() has one frame to
+            # erase — which also makes the behavior deterministic to test.
+            print(f"\r  {frame} thinking…", end="", file=sys.stderr, flush=True)
+            if self._stop.wait(0.1):
+                return
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return  # never started (non-TTY) or already stopped
+        self._stop.set()
+        try:
+            self._thread.join()
+        finally:
+            # The erase must survive a second Ctrl-C landing inside join()
+            # (the classic double-mash) — without this finally, the mashed
+            # interrupt would strand a stale "thinking…" frame on screen.
+            self._thread = None
+            # \r plus erase-to-end-of-line clears only the spinner's own
+            # line; the [think] line above it is untouched.
+            print("\r\x1b[K", end="", file=sys.stderr, flush=True)
+
+
+def _looks_failed(result: str) -> bool:
+    """Display-only guess at whether a tool result reports a failed step, so it
+    can pop red in the trace. Matches every failure string this module's own
+    producers emit: ``_run_tool`` ("Error…"), ``DENIED``, ``NO_GATE``
+    ("Blocked…"), ``_unknown_tool`` ("No tool named…"), and ``_missing_args``
+    ("<name> is missing required argument(s)…"). A decline *with feedback*
+    ("The user declined…") deliberately stays un-red — that's a steer, not a
+    failure. A successful result that merely starts with "Error" (a tool
+    echoing a log) false-positives red; accepted, since this only tints the
+    trace and the result fed back to the model is untouched.
+    """
+    return result.startswith(("Error", "Denied", "Blocked", "No tool named")) or (
+        "is missing required argument(s)" in result
+    )
+
+
+def _shorten(result: str, limit: int = 200) -> str:
+    """Trim a tool result for the trace — display only; the model always gets
+    the full result (capped separately by config.output_char_cap).
+
+    200 chars keeps a whole-file read from flooding the watch channel while
+    still showing enough to recognize what came back; hardcoded until someone
+    actually needs to tune it.
+    """
+    extra = len(result) - limit
+    if extra <= 0:
+        return result
+    return f"{result[:limit]}… (+{extra:,} more char{'s' if extra != 1 else ''})"
 
 
 def _relay_think(
@@ -132,27 +232,50 @@ def _relay_think(
     The [reason] line opens on the first reasoning fragment and closes when
     the reply starts (or the stream ends), so the live trace reads exactly
     like the old one-line-per-turn version — just written as it's generated.
+
+    Color is opened once at the line start and reset once at the line close
+    (not per fragment): the close lives in a ``finally`` because a Ctrl-C
+    landing mid-reasoning — the likeliest interrupt point, blocked in the
+    model read — would otherwise leave the whole terminal stained dim.
     """
     response: BrainResponse | None = None
     streamed_text = False
     reasoning_open = False
-    for event in events:
-        if isinstance(event, ReasoningDelta):
-            if not reasoning_open:
-                print("  [reason] ", end="", file=sys.stderr, flush=True)
-                reasoning_open = True
-            print(event.text, end="", file=sys.stderr, flush=True)
-        elif isinstance(event, TextDelta):
-            if reasoning_open:
-                print(file=sys.stderr)
-                reasoning_open = False
-            if event.text:
-                streamed_text = True
-                yield event
-        elif isinstance(event, BrainResponse):
-            response = event
-    if reasoning_open:
-        print(file=sys.stderr)
+    # What closes the [reason] line; captured at open time so color-disabled
+    # output stays byte-identical to the plain prints it replaced.
+    reset = ""
+    # Spin while the model chews on the prompt — the wait before its first
+    # event is the one stretch of true silence a step has.
+    spinner = _Spinner()
+    spinner.start()
+    try:
+        for event in events:
+            spinner.stop()  # first event arrived; idempotent on later ones
+            if isinstance(event, ReasoningDelta):
+                if not reasoning_open:
+                    # Punk Records murmuring: dim magenta opens here and stays
+                    # open across the raw deltas until the line-closing RESET.
+                    reset = style.RESET if style.enabled(sys.stderr) else ""
+                    open_code = style.DIM + style.MAGENTA if reset else ""
+                    print(f"{open_code}  [reason] ", end="", file=sys.stderr, flush=True)
+                    reasoning_open = True
+                print(event.text, end="", file=sys.stderr, flush=True)
+            elif isinstance(event, TextDelta):
+                if reasoning_open:
+                    print(reset, file=sys.stderr)
+                    reasoning_open = False
+                if event.text:
+                    streamed_text = True
+                    yield event
+            elif isinstance(event, BrainResponse):
+                response = event
+    finally:
+        # Runs on normal stream end, on interrupt, and on generator close —
+        # a GeneratorExit always lands at a yield, where the line is already
+        # closed, so this never emits spurious output during a close().
+        spinner.stop()  # covers dying before the first event ever arrived
+        if reasoning_open:
+            print(reset, file=sys.stderr)
     if response is None:
         # A Brain that ends without its final event is a broken contract, not
         # a condition to paper over — fail loudly.

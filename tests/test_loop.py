@@ -12,13 +12,22 @@ invariant), driven through scripted event-stream brains.
 
 from __future__ import annotations
 
+import io
+import sys
 from collections.abc import Iterator
+from dataclasses import replace
 
 import pytest
 
+from vegapunk import style
 from vegapunk.brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
 from vegapunk.loop import _run_tool_batch, drive_turns
 from vegapunk.tools.base import Tool
+
+
+def _force_color(monkeypatch) -> None:
+    """Turn color on regardless of capsys's non-TTY streams (mode 'always')."""
+    monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
 
 
 def _tool(name, func, *, required=None, properties=None, guarded=False) -> Tool:
@@ -152,7 +161,9 @@ class _ScriptedStreamBrain(Brain):
         yield from self._scripts.pop(0)
 
 
-def _response(text=None, tool_calls=None, reasoning=None, truncated=False) -> BrainResponse:
+def _response(
+    text=None, tool_calls=None, reasoning=None, truncated=False, context_tokens=None
+) -> BrainResponse:
     message: dict = {"role": "assistant", "content": text}
     if tool_calls:
         message["tool_calls"] = [
@@ -165,11 +176,18 @@ def _response(text=None, tool_calls=None, reasoning=None, truncated=False) -> Br
         tool_calls=tool_calls or [],
         reasoning=reasoning,
         truncated=truncated,
+        context_tokens=context_tokens,
     )
 
 
 def _drive(scripts, tools=None, max_steps=8):
     """Run drive_turns over scripted think() streams; return (yielded, reply)."""
+    events, (reply, _context) = _drive_full(scripts, tools, max_steps)
+    return events, reply
+
+
+def _drive_full(scripts, tools=None, max_steps=8):
+    """Like _drive, but returns the full (reply, context_tokens) return value."""
     by_name = {t.name: t for t in tools or []}
     messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
     turns = drive_turns(_ScriptedStreamBrain(scripts), by_name, [], messages, max_steps)
@@ -253,3 +271,170 @@ def test_step_limit_notice_is_yielded_before_being_returned():
 def test_think_stream_without_a_final_response_fails_loudly():
     with pytest.raises(RuntimeError):
         _drive([[TextDelta("orphan")]])
+
+
+def test_reasoning_line_is_dim_magenta_with_a_single_reset(monkeypatch, capsys):
+    # Color opens once before the prefix, the raw deltas stream unwrapped,
+    # and one RESET closes the line right before its newline.
+    _force_color(monkeypatch)
+    _drive([[ReasoningDelta("pon"), ReasoningDelta("dering"), TextDelta("hi"), _response("hi")]])
+    err = capsys.readouterr().err
+    assert f"{style.DIM}{style.MAGENTA}  [reason] pondering{style.RESET}\n" in err
+
+
+class _InterruptMidReasoningBrain(Brain):
+    """Dies the way Ctrl-C lands: mid-reasoning, blocked in the model read."""
+
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
+        yield ReasoningDelta("half a thou")
+        raise KeyboardInterrupt
+
+
+def test_interrupt_mid_reasoning_still_resets_the_terminal(monkeypatch, capsys):
+    # The dim-magenta open must not outlive the turn: the finally emits the
+    # RESET even when the stream dies, so the terminal is never left stained.
+    _force_color(monkeypatch)
+    turns = drive_turns(
+        _InterruptMidReasoningBrain(), {}, [], [{"role": "user", "content": "q"}], 8
+    )
+    with pytest.raises(KeyboardInterrupt):
+        next(turns)
+    assert capsys.readouterr().err.endswith(style.RESET + "\n")
+
+
+def test_tool_trace_marker_is_cyan_and_error_marker_red(monkeypatch, capsys):
+    _force_color(monkeypatch)
+
+    def _boom(_a: dict) -> str:
+        raise ValueError("nope")
+
+    calls = [
+        ToolCall(id="c1", name="ping", arguments={}),
+        ToolCall(id="c2", name="boom", arguments={}),
+    ]
+    _drive(
+        [[_response(tool_calls=calls)], [_response("done")]],
+        tools=[_tool("ping", lambda _a: "PONG"), _tool("boom", _boom)],
+    )
+    err = capsys.readouterr().err
+    # Marker+name painted; the reset lands before the args/result, which stay plain.
+    assert f"{style.CYAN}  [tool] ping{style.RESET}({{}}) -> PONG" in err
+    assert f"{style.RED}  [tool] boom{style.RESET}" in err  # failures pop red
+
+
+def test_long_tool_results_are_truncated_in_trace_but_full_in_history(capsys):
+    # Display-only: the watch channel shows a preview; the model (history)
+    # always receives the complete result.
+    long_result = "x" * 500
+    call = ToolCall(id="c1", name="dump", arguments={})
+    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
+    turns = drive_turns(
+        _ScriptedStreamBrain([[_response(tool_calls=[call])], [_response("done")]]),
+        {"dump": _tool("dump", lambda _a: long_result)},
+        [],
+        messages,
+        8,
+    )
+    while True:
+        try:
+            next(turns)
+        except StopIteration:
+            break
+    err = capsys.readouterr().err
+    assert "x" * 200 + "… (+300 more chars)" in err
+    assert "x" * 201 not in err  # the trace really is cut
+    tool_turn = next(m for m in messages if m["role"] == "tool")
+    assert tool_turn["content"] == long_result  # history untouched
+
+
+def test_short_tool_results_are_shown_whole(capsys):
+    call = ToolCall(id="c1", name="ping", arguments={})
+    _drive(
+        [[_response(tool_calls=[call])], [_response("done")]],
+        tools=[_tool("ping", lambda _a: "PONG")],
+    )
+    assert "-> PONG" in capsys.readouterr().err  # no ellipsis for short results
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def test_spinner_draws_and_erases_on_a_tty(monkeypatch):
+    from vegapunk.loop import _Spinner
+
+    fake = _FakeTTY()
+    monkeypatch.setattr(sys, "stderr", fake)
+    spinner = _Spinner()
+    spinner.start()
+    spinner.stop()
+    out = fake.getvalue()
+    assert "thinking…" in out  # at least one frame drew (draw-before-wait)
+    assert out.endswith("\r\x1b[K")  # and the line was erased on stop
+    spinner.stop()  # idempotent: a second stop is a no-op, not an error
+
+
+def test_spinner_is_silent_off_a_tty(capsys):
+    from vegapunk.loop import _Spinner
+
+    spinner = _Spinner()
+    spinner.start()  # capsys stderr is not a TTY -> never starts a thread
+    spinner.stop()
+    assert "thinking" not in capsys.readouterr().err
+
+
+def test_looks_failed_matches_every_failure_producer():
+    # Pin the display heuristic to the strings this module actually emits, so
+    # rewording a constant can't silently un-red the trace.
+    from vegapunk.loop import DENIED, NO_GATE, _looks_failed, _missing_args, _unknown_tool
+
+    needs_arg = _tool("save", lambda _a: "saved", required=["path"], properties={"path": {"type": "string"}})
+    assert _looks_failed("Error running save: boom")  # _run_tool exception path
+    assert _looks_failed(DENIED)
+    assert _looks_failed(NO_GATE)
+    assert _looks_failed(_unknown_tool("bogus", {"save": needs_arg}))
+    assert _looks_failed(_missing_args("save", needs_arg, ["path"]))
+    # A decline WITH feedback is a steer, not a failure — deliberately un-red.
+    from vegapunk.loop import _denied_with_feedback
+
+    assert not _looks_failed(_denied_with_feedback("try the other file"))
+    assert not _looks_failed("PONG")
+
+
+def test_shorten_boundaries_and_grammar():
+    from vegapunk.loop import _shorten
+
+    assert _shorten("x" * 200) == "x" * 200  # exactly at the limit: untouched
+    assert _shorten("x" * 201) == "x" * 200 + "… (+1 more char)"  # singular
+    assert _shorten("x" * 1401).endswith("… (+1,201 more chars)")  # plural, thousands-grouped
+
+
+def test_context_tokens_from_the_last_think_are_returned():
+    # Two steps; each think reports its own footprint — the turn returns the
+    # latest one (the fullest view of the conversation).
+    ping = _tool("ping", lambda _a: "PONG")
+    call = ToolCall(id="c1", name="ping", arguments={})
+    _events, (reply, context) = _drive_full(
+        [
+            [_response(tool_calls=[call], context_tokens=120)],
+            [_response("done", context_tokens=185)],
+        ],
+        tools=[ping],
+    )
+    assert (reply, context) == ("done", 185)
+
+
+def test_context_tokens_survive_a_final_step_without_usage():
+    # A server that omits usage on one call must not wipe the last-known
+    # footprint — better slightly stale than gone.
+    ping = _tool("ping", lambda _a: "PONG")
+    call = ToolCall(id="c1", name="ping", arguments={})
+    _events, (_reply, context) = _drive_full(
+        [
+            [_response(tool_calls=[call], context_tokens=120)],
+            [_response("done")],  # no usage reported
+        ],
+        tools=[ping],
+    )
+    assert context == 120

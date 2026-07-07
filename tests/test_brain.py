@@ -313,3 +313,25 @@ def test_empty_string_content_yields_no_delta():
     # must not receive an empty delta for it.
     events = _events(_brain_streaming([_chunk(content=""), _chunk(content="hi")]))
     assert events[0] == TextDelta("hi")
+
+
+def test_usage_rider_is_captured_as_context_tokens():
+    # The usage rider arrives on a trailing chunk with NO choices — exactly
+    # the shape the empty-choices skip must not swallow.
+    chunks = [
+        _chunk(content="hi"),
+        SimpleNamespace(choices=[], usage=SimpleNamespace(total_tokens=26)),
+    ]
+    response = final_response(_brain_streaming(chunks).think([]))
+    assert response.context_tokens == 26
+
+
+def test_context_tokens_none_when_the_server_reports_no_usage():
+    response = final_response(_brain_streaming([_chunk(content="hi")]).think([]))
+    assert response.context_tokens is None
+
+
+def test_request_asks_for_the_usage_rider():
+    brain = _brain_streaming([_chunk(content="hi")])
+    _events(brain)
+    assert brain._client.last_kwargs["stream_options"] == {"include_usage": True}

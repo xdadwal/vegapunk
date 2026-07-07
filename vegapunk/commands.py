@@ -12,7 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from . import session_store
+from . import session_store, skills
+from .config import config
 from .session import Session
 
 # A handler takes the live context and the text after the command name.
@@ -25,6 +26,9 @@ class CommandContext:
 
     session: Session
     current_name: str | None = None
+    # A skill staged by /skill, to be folded into the user's NEXT message
+    # (name, body) — the CLI consumes and clears it; /new drops it.
+    pending_skill: tuple[str, str] | None = None
 
 
 @dataclass
@@ -96,6 +100,7 @@ def _exit(ctx: CommandContext, arg: str) -> CommandResult:
 def _new(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.session.reset()
     ctx.current_name = None  # next turn auto-names a fresh saved session
+    ctx.pending_skill = None  # a fresh conversation drops staged state too
     return CommandResult(output="(new conversation)")
 
 
@@ -124,6 +129,7 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     ctx.session.restore(messages)
     ctx.current_name = name
+    ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
     return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
 
@@ -131,6 +137,32 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
 @command("sessions", "List saved sessions")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=_format_sessions())
+
+
+@command("skills", "List available skills (markdown files under .vegapunk/skills/)")
+def _skills(ctx: CommandContext, arg: str) -> CommandResult:
+    rows = skills.list_skills()
+    if not rows:
+        return CommandResult(output=f"(no skills — add .md files under {skills.skills_dir()})")
+    return CommandResult(output="\n".join(f"  {s.name} — {s.description}" for s in rows))
+
+
+@command("skill", "Stage a skill for your next message: /skill <name>")
+def _skill(ctx: CommandContext, arg: str) -> CommandResult:
+    """Force a skill by hand — for when the model doesn't reach for it. The
+    body rides the next message instead of a use_skill round-trip."""
+    if not arg:
+        names = ", ".join(s.name for s in skills.list_skills()) or "(none installed)"
+        return CommandResult(output=f"Usage: /skill <name>. Available: {names}")
+    try:
+        canonical, body = skills.load_skill(arg)
+    except skills.SkillNotFound as exc:
+        names = ", ".join(exc.available) or "(none installed)"  # no second discovery pass
+        return CommandResult(output=f"No skill matches '{arg}'. Available: {names}")
+    if len(body) > config.output_char_cap:  # same cap as the use_skill tool
+        body = body[: config.output_char_cap] + "\n...[truncated]"
+    ctx.pending_skill = (canonical, body)
+    return CommandResult(output=f"(skill '{canonical}' will be included with your next message)")
 
 
 def _oneline(text: str | None, cap: int = 200) -> str:
