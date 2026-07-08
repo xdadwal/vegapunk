@@ -107,13 +107,49 @@ class Brain(ABC):
     def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
         ...
 
+    @property
+    def model_label(self) -> str:
+        """Short human-readable identity for the toolbar and banner."""
+        return "unknown-model"
+
+    @property
+    def context_window(self) -> int:
+        """Context window in tokens, for the fullness gauge; 0 means unknown
+        (the gauge then shows absolute tokens without a percentage)."""
+        return 0
+
+
+def create_brain(provider: str, cfg: Config = config) -> Brain:
+    """Build the Brain for a provider name ("local" or "claude").
+
+    The single selection point for the CLI's startup default and the /model
+    command. ClaudeBrain is imported lazily so the local-only setup never
+    pays for (or requires) the claude-agent-sdk import.
+    """
+    if provider == "local":
+        return DMRBrain(cfg)
+    if provider == "claude":
+        from .claude_brain import ClaudeBrain
+
+        return ClaudeBrain(cfg)
+    raise ValueError(f"Unknown provider {provider!r} — expected 'local' or 'claude'.")
+
 
 class DMRBrain(Brain):
     """A Brain backed by an OpenAI-compatible server (Docker Model Runner)."""
 
     def __init__(self, cfg: Config = config) -> None:
         self._model = cfg.model
+        self._context_window = cfg.context_window
         self._client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+
+    @property
+    def model_label(self) -> str:
+        return self._model
+
+    @property
+    def context_window(self) -> int:
+        return self._context_window
 
     def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
         kwargs: dict = {

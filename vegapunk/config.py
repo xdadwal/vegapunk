@@ -53,6 +53,19 @@ class Config:
     # n_ctx`). Set 0 if unknown — the gauge then shows tokens without a %.
     context_window: int = int(os.getenv("VEGAPUNK_CONTEXT_WINDOW", "131072"))
 
+    # Which brain to start with: "local" (the DMR model above) or "claude"
+    # (subscription-billed Claude via the bundled Claude Code CLI). Switch live
+    # with /model; this only sets the default at launch.
+    provider: str = os.getenv("VEGAPUNK_PROVIDER", "local")
+
+    # Claude model override (e.g. "sonnet", "opus", or a full model id).
+    # Empty means whatever the Claude Code account is configured to use.
+    claude_model: str = os.getenv("VEGAPUNK_CLAUDE_MODEL", "")
+
+    # Claude's context window (tokens), for the toolbar gauge — same role as
+    # context_window above but for the claude provider.
+    claude_context_window: int = int(os.getenv("VEGAPUNK_CLAUDE_CONTEXT_WINDOW", "200000"))
+
     # The REPL input history file (up/down recall, persisted across sessions).
     # Defaults under the current directory's root so state stays with the
     # project you launched in; override with VEGAPUNK_HISTORY_FILE. Stored in

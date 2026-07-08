@@ -9,8 +9,11 @@ continues once you answer.
 
 The model is served locally over an OpenAI-compatible API — by default
 [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) at
-`http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. The model and your files stay
-local; the only outbound traffic is the `fetch_url` / `search_web` tools, when the agent uses them.
+`http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. With this default `local`
+provider, the model and your files stay local; the only outbound traffic is the `fetch_url` /
+`search_web` tools, when the agent uses them. The optional `claude` provider trades that away
+deliberately: it sends the conversation (including tool results) to Anthropic, billed to your
+Claude subscription — see [The `claude` provider](#the-claude-provider).
 
 ## Requirements
 
@@ -72,6 +75,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
+| `/model [local\|claude]` | Show or switch the model mid-conversation |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
@@ -152,6 +156,21 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 | `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
 | `VEGAPUNK_SKILLS_DIR` | Directory of skill files (one `.md` each, advertised at startup) | `.vegapunk/skills` |
+| `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
+| `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
+| `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
+
+### The `claude` provider
+
+`/model claude` (or `VEGAPUNK_PROVIDER=claude`) runs turns on your Claude Pro/Max
+**subscription** — no API key. It works by driving the Claude Code CLI (bundled inside
+the `claude-agent-sdk` dependency) as a subprocess, which is the officially sanctioned
+way to spend a subscription from a program; usage draws from the same rate limits as
+your interactive Claude Code sessions. Auth comes from Claude Code itself: run
+`claude /login` once on the machine, or set `CLAUDE_CODE_OAUTH_TOKEN` (create a
+long-lived token with `claude setup-token`). Vegapunk stays in charge either way —
+Claude Code's own tools, settings, skills, and MCP servers are all disabled; Claude
+requests Vegapunk's tools through the same loop and approval gate as the local model.
 
 ## Tests
 
@@ -171,7 +190,8 @@ vegapunk/
   session_store.py # save/list/resume conversations on disk
   loop.py        # the agent loop: think → act (run tools) → observe → repeat
   session.py     # conversation state across turns
-  brain.py       # LLM backend (local model via the OpenAI SDK)
+  brain.py       # the swappable model layer: Brain ABC, local DMR backend, create_brain factory
+  claude_brain.py # Claude subscription backend (via the bundled Claude Code CLI)
   prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
   approval.py    # interactive approval gate for guarded tools
   config.py      # settings + the persona system prompt

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import session_store, skills
+from .brain import create_brain
 from .config import config
 from .session import Session
 
@@ -102,6 +103,23 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.current_name = None  # next turn auto-names a fresh saved session
     ctx.pending_skill = None  # a fresh conversation drops staged state too
     return CommandResult(output="(new conversation)")
+
+
+@command("model", "Show or switch the model: /model [local|claude]")
+def _model(ctx: CommandContext, arg: str) -> CommandResult:
+    if not arg:
+        return CommandResult(
+            output=f"Active: {ctx.session.brain.model_label}\n"
+            "Available: local (Docker Model Runner), claude (Claude subscription)"
+        )
+    try:
+        brain = create_brain(arg.lower())
+    except ValueError:
+        return CommandResult(output="Usage: /model [local|claude]")
+    ctx.session.swap_brain(brain)
+    return CommandResult(
+        output=f"(model switched to {brain.model_label} — the conversation continues)"
+    )
 
 
 @command("save", "Rename the current session: /save <name>")

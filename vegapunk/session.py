@@ -61,14 +61,30 @@ class Session:
             if context_tokens is not None:
                 self.context_tokens = context_tokens
             return reply
-        except (KeyboardInterrupt, GeneratorExit):
-            # Interrupted mid-generation (Ctrl-C lands here when it strikes
-            # inside a pull), or the consumer abandoned the stream mid-turn
-            # (``.close()`` throws GeneratorExit in at the paused yield):
-            # either way, roll the partial turn back out so the history stays
-            # consistent, then re-raise for the caller/close machinery.
+        except BaseException:
+            # Interrupted (Ctrl-C inside a pull), abandoned (``.close()``
+            # throws GeneratorExit in at the paused yield), or the turn failed
+            # outright (a brain/network error): whatever ended the turn early,
+            # roll the partial turn back out so history — and the autosave —
+            # never carry a half-turn, then re-raise for the caller.
             del self._messages[checkpoint:]
             raise
+
+    @property
+    def brain(self) -> Brain:
+        """The live model backend (for the toolbar and /model)."""
+        return self._brain
+
+    def swap_brain(self, brain: Brain) -> None:
+        """Switch the model mid-conversation.
+
+        History is OpenAI-shaped dicts — portable across brains — so the
+        conversation simply continues on the new model. The token footprint is
+        cleared: the old number describes the old model's context, and the new
+        one reports its own on the next turn.
+        """
+        self._brain = brain
+        self.context_tokens = None
 
     def reset(self) -> None:
         """Clear the conversation but keep the seeded system prompt.

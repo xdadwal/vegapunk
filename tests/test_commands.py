@@ -310,3 +310,53 @@ def test_skill_staged_body_is_capped(skills_home, monkeypatch):
     _, body = ctx.pending_skill
     assert body.endswith("...[truncated]")
     assert "x" * 51 not in body
+
+
+class _StubBrain(FakeBrain):
+    """A FakeBrain with a fixed identity, standing in for a real provider."""
+
+    def __init__(self, label: str) -> None:
+        super().__init__([])
+        self._label = label
+
+    @property
+    def model_label(self) -> str:
+        return self._label
+
+
+def test_model_without_arg_shows_the_active_model_and_choices():
+    out = dispatch("/model", _ctx()).output
+    assert "Active: unknown-model" in out  # FakeBrain's default identity
+    assert "local" in out
+    assert "claude" in out
+
+
+def test_model_switches_the_live_brain_and_keeps_history(monkeypatch):
+    stub = _StubBrain("claude:test")
+    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider: stub)
+    ctx = _ctx()
+    before = ctx.session.messages
+
+    res = dispatch("/model claude", ctx)
+
+    assert ctx.session.brain is stub
+    assert "claude:test" in res.output
+    assert ctx.session.messages == before  # the conversation survived the swap
+
+
+def test_model_with_unknown_provider_prints_usage(monkeypatch):
+    def _reject(provider):
+        raise ValueError(provider)
+
+    monkeypatch.setattr("vegapunk.commands.create_brain", _reject)
+    ctx = _ctx()
+    original = ctx.session.brain
+
+    res = dispatch("/model martian", ctx)
+
+    assert res.output == "Usage: /model [local|claude]"
+    assert ctx.session.brain is original  # nothing swapped
+
+
+def test_help_lists_model():
+    assert "/model" in dispatch("/help", _ctx()).output
