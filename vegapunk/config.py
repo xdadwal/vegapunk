@@ -38,9 +38,10 @@ class Config:
     output_char_cap: int = int(os.getenv("VEGAPUNK_OUTPUT_CAP", "10000"))
 
     # How many think->act->observe steps the agent may take in one turn before
-    # it stops. Higher gives the model room to recover from a failed step and
-    # try another approach; lower reins in a runaway loop.
-    max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "8"))
+    # it stops. Higher gives the model room for real multi-step tasks and to
+    # recover from failed steps; the limit exists as the runaway-loop backstop,
+    # not as a working budget.
+    max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "25"))
 
     # Color in the CLI: "auto" (color only when the stream is a terminal),
     # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR
@@ -65,6 +66,11 @@ class Config:
     # Claude's context window (tokens), for the toolbar gauge — same role as
     # context_window above but for the claude provider.
     claude_context_window: int = int(os.getenv("VEGAPUNK_CLAUDE_CONTEXT_WINDOW", "200000"))
+
+    # Claude's effort level: low|medium|high|xhigh|max. Empty means the SDK
+    # default ("high"). Adjust live with /effort. Validated by ClaudeBrain,
+    # not here — config must not import the SDK (local-only setups never do).
+    claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
     # The REPL input history file (up/down recall, persisted across sessions).
     # Defaults under the current directory's root so state stays with the

@@ -9,7 +9,7 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from . import session_store, skills
@@ -105,21 +105,56 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="(new conversation)")
 
 
-@command("model", "Show or switch the model: /model [local|claude]")
+@command("model", "Show or switch the model: /model [local|claude [model]]")
 def _model(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg:
         return CommandResult(
             output=f"Active: {ctx.session.brain.model_label}\n"
-            "Available: local (Docker Model Runner), claude (Claude subscription)"
+            "Available: local (Docker Model Runner), claude [model] (Claude subscription)"
         )
+    tokens = arg.split()
+    provider = tokens[0].lower()
+    model = tokens[1] if len(tokens) == 2 else ""
+    # Provider is validated here, not via create_brain's ValueError — that
+    # channel must stay free for real construction errors (e.g. a junk
+    # VEGAPUNK_CLAUDE_EFFORT), which deserve their own message, not "Usage:".
+    if len(tokens) > 2 or provider not in ("local", "claude") or (model and provider != "claude"):
+        return CommandResult(output="Usage: /model [local|claude [model]]")
+    cfg = replace(config, claude_model=model) if model else config
     try:
-        brain = create_brain(arg.lower())
-    except ValueError:
-        return CommandResult(output="Usage: /model [local|claude]")
+        brain = create_brain(provider, cfg)
+    except ValueError as exc:
+        return CommandResult(output=str(exc))
+    # Carry a /effort choice across claude→claude swaps (a claude→local→claude
+    # round trip loses it — the local brain has nowhere to hold it).
+    effort = getattr(ctx.session.brain, "effort", None)
+    if effort and hasattr(brain, "set_effort"):
+        brain.set_effort(effort)
     ctx.session.swap_brain(brain)
     return CommandResult(
         output=f"(model switched to {brain.model_label} — the conversation continues)"
     )
+
+
+@command("effort", "Show or set Claude's effort: /effort [low|medium|high|xhigh|max]")
+def _effort(ctx: CommandContext, arg: str) -> CommandResult:
+    brain = ctx.session.brain
+    # Duck-typed on set_effort — commands.py never imports ClaudeBrain or the
+    # SDK (local-only setups don't pay that import). hasattr, not getattr on
+    # `effort`: a Claude brain at the SDK default legitimately has effort=None.
+    if not hasattr(brain, "set_effort"):
+        return CommandResult(
+            output="(the local model has no effort setting — /model claude first)"
+        )
+    if not arg:
+        # None = unset; the SDK's documented default is "high".
+        current = brain.effort or "high (default)"
+        return CommandResult(output=f"Effort: {current}")
+    try:
+        brain.set_effort(arg.lower())
+    except ValueError as exc:
+        return CommandResult(output=str(exc))  # names the valid levels
+    return CommandResult(output=f"(effort set to {arg.lower()})")
 
 
 @command("save", "Rename the current session: /save <name>")

@@ -75,7 +75,8 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
-| `/model [local\|claude]` | Show or switch the model mid-conversation |
+| `/model [local\|claude [name]]` | Show or switch the model mid-conversation (e.g. `/model claude opus`) |
+| `/effort [low\|medium\|high\|xhigh\|max]` | Show or set Claude's effort level mid-session |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
@@ -149,7 +150,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_WORKSPACE` | Root directory the file/shell tools are sandboxed to | current directory |
 | `VEGAPUNK_SHELL_TIMEOUT` | Max seconds a shell command may run | `30` |
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
-| `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `8` |
+| `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
@@ -159,6 +160,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
+| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = the SDK default (`high`); adjust live with `/effort` | (empty) |
 
 ### The `claude` provider
 
@@ -171,6 +173,9 @@ your interactive Claude Code sessions. Auth comes from Claude Code itself: run
 long-lived token with `claude setup-token`). Vegapunk stays in charge either way —
 Claude Code's own tools, settings, skills, and MCP servers are all disabled; Claude
 requests Vegapunk's tools through the same loop and approval gate as the local model.
+Pick a model per switch (`/model claude opus` — alias or full id, validated by Claude Code) and
+trade speed for reasoning depth with `/effort`; both persist for the session, and a model switch
+keeps your effort choice.
 
 ## Tests
 

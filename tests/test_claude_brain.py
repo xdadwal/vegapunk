@@ -250,6 +250,43 @@ def test_identity_comes_from_claude_config_fields():
     assert ClaudeBrain(replace(config, claude_model="")).model_label == "claude"
 
 
+def test_effort_is_unset_by_default_and_omitted_from_options():
+    brain, recorded = _scripted([_text_event("hi"), _result()])
+    list(brain.think(_messages()))
+    assert brain.effort is None
+    assert recorded["options"].effort is None  # None = the SDK default ("high")
+
+
+def test_effort_from_config_reaches_the_options():
+    brain, recorded = _scripted(
+        [_text_event("hi"), _result()], cfg=replace(config, claude_effort="xhigh")
+    )
+    list(brain.think(_messages()))
+    assert brain.effort == "xhigh"
+    assert recorded["options"].effort == "xhigh"
+
+
+def test_set_effort_changes_subsequent_turns():
+    brain, recorded = _scripted([_text_event("hi"), _result()])
+    brain.set_effort("max")
+    list(brain.think(_messages()))
+    assert brain.effort == "max"
+    assert recorded["options"].effort == "max"
+
+
+def test_set_effort_rejects_unknown_levels_naming_the_valid_ones():
+    brain, _ = _scripted([])
+    with pytest.raises(ValueError) as excinfo:
+        brain.set_effort("turbo")
+    for level in ("low", "medium", "high", "xhigh", "max"):
+        assert level in str(excinfo.value)
+
+
+def test_junk_effort_env_fails_loudly_at_construction():
+    with pytest.raises(ValueError, match="turbo"):
+        ClaudeBrain(replace(config, claude_effort="turbo"))
+
+
 def test_create_brain_builds_the_claude_provider():
     assert isinstance(create_brain("claude"), ClaudeBrain)
 

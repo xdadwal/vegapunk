@@ -25,11 +25,13 @@ import sys
 import threading
 import uuid
 from collections.abc import Iterator
+from typing import cast, get_args
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     CLINotFoundError,
+    EffortLevel,
     ResultMessage,
     StreamEvent,
     TextBlock,
@@ -44,6 +46,18 @@ _AUTH_HINT = (
     "If this is an authentication problem: run `claude /login` once on this "
     "machine, or set CLAUDE_CODE_OAUTH_TOKEN (create one with `claude setup-token`)."
 )
+
+# The SDK's own level list, so /effort and the env validation can never drift
+# from what the CLI accepts.
+EFFORT_LEVELS: tuple[str, ...] = get_args(EffortLevel)
+
+
+def _validate_effort(level: str) -> EffortLevel:
+    if level not in EFFORT_LEVELS:
+        raise ValueError(
+            f"Unknown effort level {level!r} — expected one of: {', '.join(EFFORT_LEVELS)}."
+        )
+    return cast(EffortLevel, level)
 
 
 def _render_transcript(messages: list[dict]) -> tuple[str, str]:
@@ -298,6 +312,11 @@ class ClaudeBrain(Brain):
         self._model = cfg.claude_model  # "" means the Claude Code account default
         self._context_window = cfg.claude_context_window
         self._workspace_root = cfg.workspace_root
+        # None means the SDK default ("high"). A junk VEGAPUNK_CLAUDE_EFFORT
+        # fails loudly here — at launch, not mid-turn.
+        self._effort: EffortLevel | None = (
+            _validate_effort(cfg.claude_effort) if cfg.claude_effort else None
+        )
 
     @property
     def model_label(self) -> str:
@@ -306,6 +325,15 @@ class ClaudeBrain(Brain):
     @property
     def context_window(self) -> int:
         return self._context_window
+
+    @property
+    def effort(self) -> str | None:
+        """The current effort level; None means the SDK default ("high")."""
+        return self._effort
+
+    def set_effort(self, level: str) -> None:
+        """Change the effort for subsequent turns (the /effort command)."""
+        self._effort = _validate_effort(level)
 
     def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
         system_text, prompt = _render_transcript(messages)
@@ -319,6 +347,7 @@ class ClaudeBrain(Brain):
             max_turns=1,
             tools=[],  # no Claude Code built-ins — vega_tool fences are the only channel
             model=self._model or None,
+            effort=self._effort,  # None = the SDK default ("high")
             include_partial_messages=True,  # stream text as it generates
             # Isolation: without these the CLI loads the user's real Claude Code
             # settings, CLAUDE.md, skills, and MCP servers into Vegapunk's turn.

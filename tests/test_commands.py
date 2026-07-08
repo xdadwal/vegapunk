@@ -333,7 +333,7 @@ def test_model_without_arg_shows_the_active_model_and_choices():
 
 def test_model_switches_the_live_brain_and_keeps_history(monkeypatch):
     stub = _StubBrain("claude:test")
-    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider: stub)
+    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider, cfg: stub)
     ctx = _ctx()
     before = ctx.session.messages
 
@@ -345,17 +345,137 @@ def test_model_switches_the_live_brain_and_keeps_history(monkeypatch):
 
 
 def test_model_with_unknown_provider_prints_usage(monkeypatch):
-    def _reject(provider):
-        raise ValueError(provider)
-
-    monkeypatch.setattr("vegapunk.commands.create_brain", _reject)
+    calls: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_brain", lambda provider, cfg: calls.append(provider)
+    )
     ctx = _ctx()
     original = ctx.session.brain
 
     res = dispatch("/model martian", ctx)
 
-    assert res.output == "Usage: /model [local|claude]"
+    assert res.output == "Usage: /model [local|claude [model]]"
     assert ctx.session.brain is original  # nothing swapped
+    assert calls == []  # rejected before construction
+
+
+def test_model_claude_with_a_name_overrides_the_configured_model(monkeypatch):
+    seen: dict = {}
+
+    def _record(provider, cfg):
+        seen["provider"], seen["cfg"] = provider, cfg
+        return _StubBrain("claude:opus")
+
+    monkeypatch.setattr("vegapunk.commands.create_brain", _record)
+    res = dispatch("/model claude opus", _ctx())
+
+    assert seen["provider"] == "claude"
+    assert seen["cfg"].claude_model == "opus"
+    assert "claude:opus" in res.output
+
+
+def test_model_claude_without_a_name_keeps_the_configured_default(monkeypatch):
+    from vegapunk.commands import config as commands_config
+
+    seen: dict = {}
+
+    def _record(provider, cfg):
+        seen["cfg"] = cfg
+        return _StubBrain("claude")
+
+    monkeypatch.setattr("vegapunk.commands.create_brain", _record)
+    dispatch("/model claude", _ctx())
+
+    assert seen["cfg"] is commands_config  # untouched: VEGAPUNK_CLAUDE_MODEL still rules
+
+
+def test_model_rejects_a_model_name_for_local_and_extra_tokens(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_brain", lambda provider, cfg: calls.append(provider)
+    )
+    ctx = _ctx()
+
+    assert dispatch("/model local opus", ctx).output == "Usage: /model [local|claude [model]]"
+    assert dispatch("/model claude opus high", ctx).output == "Usage: /model [local|claude [model]]"
+    assert calls == []
+
+
+def test_model_surfaces_construction_errors_verbatim(monkeypatch):
+    def _explode(provider, cfg):
+        raise ValueError("Unknown effort level 'turbo' — expected one of: low, medium, high, xhigh, max.")
+
+    monkeypatch.setattr("vegapunk.commands.create_brain", _explode)
+    res = dispatch("/model claude", _ctx())
+
+    assert "Unknown effort level" in res.output  # a real error, not the usage line
+
+
+class _EffortStub(_StubBrain):
+    """A brain with the effort surface, standing in for ClaudeBrain."""
+
+    def __init__(self, label: str, effort: str | None = None) -> None:
+        super().__init__(label)
+        self.effort = effort
+
+    def set_effort(self, level: str) -> None:
+        self.effort = level
+
+
+def test_model_swap_carries_the_session_effort_choice(monkeypatch):
+    replacement = _EffortStub("claude:opus")
+    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider, cfg: replacement)
+    ctx = CommandContext(
+        session=Session(_EffortStub("claude", effort="xhigh"), tools=[], system_prompt="SYS")
+    )
+
+    dispatch("/model claude opus", ctx)
+
+    assert replacement.effort == "xhigh"  # /effort survived the model switch
+
+
+def _effort_ctx(effort: str | None = None) -> CommandContext:
+    return CommandContext(
+        session=Session(_EffortStub("claude", effort=effort), tools=[], system_prompt="SYS")
+    )
+
+
+def test_effort_on_the_local_brain_explains_it_is_unsupported():
+    ctx = _ctx()  # plain FakeBrain — no set_effort
+    for line in ("/effort", "/effort max"):
+        assert dispatch(line, ctx).output == (
+            "(the local model has no effort setting — /model claude first)"
+        )
+
+
+def test_effort_bare_shows_the_sdk_default_when_unset():
+    assert dispatch("/effort", _effort_ctx()).output == "Effort: high (default)"
+
+
+def test_effort_bare_shows_the_current_level():
+    assert dispatch("/effort", _effort_ctx("xhigh")).output == "Effort: xhigh"
+
+
+def test_effort_sets_the_level_case_insensitively():
+    ctx = _effort_ctx()
+    res = dispatch("/effort XHIGH", ctx)
+    assert ctx.session.brain.effort == "xhigh"
+    assert res.output == "(effort set to xhigh)"
+
+
+def test_effort_rejects_unknown_levels_with_the_valid_list():
+    class _Picky(_EffortStub):
+        def set_effort(self, level: str) -> None:
+            raise ValueError("Unknown effort level 'turbo' — expected one of: low, medium, high, xhigh, max.")
+
+    ctx = CommandContext(session=Session(_Picky("claude"), tools=[], system_prompt="SYS"))
+    out = dispatch("/effort turbo", ctx).output
+    for level in ("low", "medium", "high", "xhigh", "max"):
+        assert level in out
+
+
+def test_help_lists_effort():
+    assert "/effort" in dispatch("/help", _ctx()).output
 
 
 def test_help_lists_model():
