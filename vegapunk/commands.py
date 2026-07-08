@@ -192,11 +192,13 @@ def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=_format_sessions())
 
 
-@command("skills", "List available skills (markdown files under .vegapunk/skills/)")
+@command("skills", "List available skills (SKILL.md directories under .agents/skills/)")
 def _skills(ctx: CommandContext, arg: str) -> CommandResult:
     rows = skills.list_skills()
     if not rows:
-        return CommandResult(output=f"(no skills — add .md files under {skills.skills_dir()})")
+        return CommandResult(
+            output=f"(no skills — add <name>/SKILL.md directories under {skills.skills_dir()})"
+        )
     return CommandResult(output="\n".join(f"  {s.name} — {s.description}" for s in rows))
 
 
@@ -208,14 +210,17 @@ def _skill(ctx: CommandContext, arg: str) -> CommandResult:
         names = ", ".join(s.name for s in skills.list_skills()) or "(none installed)"
         return CommandResult(output=f"Usage: /skill <name>. Available: {names}")
     try:
-        canonical, body = skills.load_skill(arg)
+        skill, body = skills.load_skill(arg)
     except skills.SkillNotFound as exc:
         names = ", ".join(exc.available) or "(none installed)"  # no second discovery pass
         return CommandResult(output=f"No skill matches '{arg}'. Available: {names}")
     if len(body) > config.output_char_cap:  # same cap as the use_skill tool
         body = body[: config.output_char_cap] + "\n...[truncated]"
-    ctx.pending_skill = (canonical, body)
-    return CommandResult(output=f"(skill '{canonical}' will be included with your next message)")
+    note = skills.file_reference_note(skill)
+    if note:  # after the cap: the pointer to bundled files must never be truncated away
+        body = f"{body}\n\n{note}"
+    ctx.pending_skill = (skill.name, body)
+    return CommandResult(output=f"(skill '{skill.name}' will be included with your next message)")
 
 
 def _oneline(text: str | None, cap: int = 200) -> str:

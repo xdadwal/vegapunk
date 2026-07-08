@@ -219,12 +219,14 @@ def skills_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _write_skill(home, filename, text):
-    (home / filename).write_text(text, encoding="utf-8")
+def _write_skill(home, name, text):
+    """A skill in the Agent Skills layout: <name>/SKILL.md."""
+    (home / name).mkdir(parents=True, exist_ok=True)
+    (home / name / "SKILL.md").write_text(text, encoding="utf-8")
 
 
 def test_skills_lists_name_and_description(skills_home):
-    _write_skill(skills_home, "commit-message.md", "---\ndescription: Commit rules\n---\nbody")
+    _write_skill(skills_home, "commit-message","---\ndescription: Commit rules\n---\nbody")
     result = dispatch("/skills", _ctx())
     assert "commit-message — Commit rules" in result.output
 
@@ -236,7 +238,7 @@ def test_skills_empty_points_at_the_directory(skills_home):
 
 
 def test_skill_stages_for_the_next_message(skills_home):
-    _write_skill(skills_home, "commit-message.md", "---\ndescription: d\n---\nThe rules.")
+    _write_skill(skills_home, "commit-message","---\ndescription: d\n---\nThe rules.")
     ctx = _ctx()
     result = dispatch("/skill commit", ctx)  # forgiving partial match
     assert "will be included with your next message" in result.output
@@ -247,7 +249,7 @@ def test_skill_stages_for_the_next_message(skills_home):
 
 
 def test_skill_bare_shows_usage_and_names(skills_home):
-    _write_skill(skills_home, "commit-message.md", "body")
+    _write_skill(skills_home, "commit-message","body")
     ctx = _ctx()
     result = dispatch("/skill", ctx)
     assert "Usage: /skill" in result.output
@@ -256,7 +258,7 @@ def test_skill_bare_shows_usage_and_names(skills_home):
 
 
 def test_skill_unknown_name_corrects(skills_home):
-    _write_skill(skills_home, "commit-message.md", "body")
+    _write_skill(skills_home, "commit-message","body")
     ctx = _ctx()
     result = dispatch("/skill deploy", ctx)
     assert "No skill matches 'deploy'" in result.output
@@ -265,7 +267,7 @@ def test_skill_unknown_name_corrects(skills_home):
 
 
 def test_new_clears_a_staged_skill(skills_home):
-    _write_skill(skills_home, "commit-message.md", "body")
+    _write_skill(skills_home, "commit-message","body")
     ctx = _ctx()
     dispatch("/skill commit-message", ctx)
     assert ctx.pending_skill is not None
@@ -281,7 +283,7 @@ def test_help_lists_skill_commands(skills_home):
 def test_load_clears_a_staged_skill(skills_home, tmp_path):
     # Staged state belongs to the conversation it was staged in — restoring a
     # different one must drop it, exactly like /new does.
-    _write_skill(skills_home, "commit-message.md", "body")
+    _write_skill(skills_home, "commit-message","body")
     session_store.save_session("other", [{"role": "system", "content": "SYS"}])
     ctx = _ctx()
     dispatch("/skill commit-message", ctx)
@@ -291,8 +293,8 @@ def test_load_clears_a_staged_skill(skills_home, tmp_path):
 
 
 def test_skills_lists_survivors_when_a_file_is_degraded(skills_home, capsys):
-    _write_skill(skills_home, "good.md", "---\ndescription: Fine\n---\nbody")
-    _write_skill(skills_home, "empty.md", "")
+    _write_skill(skills_home, "good", "---\ndescription: Fine\n---\nbody")
+    _write_skill(skills_home, "empty", "")
     result = dispatch("/skills", _ctx())
     assert "good — Fine" in result.output
     assert "empty" not in result.output  # skipped (with a stderr note), not listed
@@ -303,7 +305,7 @@ def test_skill_staged_body_is_capped(skills_home, monkeypatch):
 
     from vegapunk.config import config as real_config
 
-    _write_skill(skills_home, "big.md", "x" * 500)
+    _write_skill(skills_home, "big", "x" * 500)
     monkeypatch.setattr("vegapunk.commands.config", replace(real_config, output_char_cap=50))
     ctx = _ctx()
     dispatch("/skill big", ctx)

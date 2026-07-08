@@ -95,11 +95,13 @@ class Config:
         os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
     ).expanduser()
 
-    # Where skills live — user-written markdown guides ("how to X") the agent
-    # pulls in on demand via the use_skill tool. One .md file per skill; each
-    # is advertised to the model as a one-line description at startup.
+    # Where skills live — reusable procedures in the Agent Skills format
+    # (https://agentskills.io): one directory per skill holding a SKILL.md,
+    # each advertised to the model as a one-line description at startup and
+    # pulled in on demand via the use_skill tool. The tool-agnostic .agents/
+    # location means skills written for other agents drop in unchanged.
     skills_dir: Path = Path(
-        os.getenv("VEGAPUNK_SKILLS_DIR", str(Path.cwd() / ".vegapunk" / "skills"))
+        os.getenv("VEGAPUNK_SKILLS_DIR", str(Path.cwd() / ".agents" / "skills"))
     ).expanduser()
 
     # Vegapunk's identity + how it operates. The "How you work" stanza keeps a

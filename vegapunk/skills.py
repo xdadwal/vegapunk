@@ -1,24 +1,32 @@
-"""Skills — user-written guides Vegapunk pulls in on demand.
+"""Skills — reusable procedures Vegapunk pulls in on demand.
 
-A skill is one markdown file under ``.vegapunk/skills/`` teaching the agent a
-repeatable procedure ("how to write a commit message for this repo"). The
-design is progressive disclosure at miniature scale: each skill costs the
+Vegapunk follows the Agent Skills format (https://agentskills.io): a skill is
+a directory under ``.agents/skills/`` containing a ``SKILL.md`` — YAML-style
+frontmatter over a markdown body — plus whatever ``scripts/``, ``references/``
+or ``assets/`` the body points at. The format is tool-agnostic: a skill
+written for any spec-following agent drops in here unchanged, and skills
+written here work elsewhere.
+
+The design is progressive disclosure at miniature scale: each skill costs the
 system prompt only a one-line ``name — description`` ad; the full body enters
 context only when the model calls ``use_skill`` (or the user stages one with
 ``/skill``). That keeps a shelf of skills nearly free until the moment one is
 actually needed.
 
-The skill's name is its slugified filename stem, so what's advertised is
-always a safe token the model can echo back verbatim. Files are read
-defensively (the ``memory.load_memory`` posture): a malformed file degrades
-loudly to something usable rather than being silently ignored. Skipping is
-the exception, and always announced on stderr: empty files (nothing to
-teach), unreadable ones, duplicate names, and names with no usable
-characters.
+Vegapunk consumes the spec leniently, per the house loud-degradation rule: a
+skill's identity is its DIRECTORY name, validated against the spec's naming
+rules — content can't spoof it; a frontmatter ``name`` that disagrees earns a
+stderr note and the directory wins; a missing ``description`` falls back to
+the first body line; unknown frontmatter keys (``license``, ``metadata``,
+``allowed-tools``, …) are ignored for forward compatibility. Skipping is the
+exception, and always announced on stderr: spec-invalid directory names,
+directories without a SKILL.md, empty bodies, unreadable manifests — and
+legacy flat ``*.md`` skills, which get a migration nudge.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +35,16 @@ from .config import config
 from .session_store import slugify
 
 # Advertised descriptions ride the system prompt every turn — keep them short.
+# (The spec allows up to 1024 chars; the ad is Vegapunk's own display, capped.)
 _DESCRIPTION_CAP = 100
+
+# The spec's naming rule: 1-64 chars of lowercase alphanumerics joined by
+# single hyphens — no edge hyphens, no doubles, nothing else.
+_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _valid_name(name: str) -> bool:
+    return len(name) <= 64 and _NAME_RE.match(name) is not None
 
 
 class SkillNotFound(Exception):
@@ -45,9 +62,14 @@ class SkillNotFound(Exception):
 
 @dataclass(frozen=True)
 class Skill:
-    name: str  # slugified filename stem — the model-facing id
+    name: str  # the directory name — the model-facing id
     description: str  # one normalized line, for the system-prompt ad
-    path: Path
+    path: Path  # the SKILL.md manifest
+
+    @property
+    def root(self) -> Path:
+        """The skill's directory — what its relative file references resolve against."""
+        return self.path.parent
 
 
 def skills_dir() -> Path:
@@ -65,8 +87,8 @@ def _normalize_description(text: str) -> str:
 
 
 def _fallback_description(body: str) -> str:
-    """When a file has no usable frontmatter description: its first non-empty
-    line, heading markers stripped — a title is a serviceable ad."""
+    """When a manifest has no usable frontmatter description: its first
+    non-empty line, heading markers stripped — a title is a serviceable ad."""
     for line in body.splitlines():
         stripped = line.strip().lstrip("#").strip()
         if stripped:
@@ -74,87 +96,113 @@ def _fallback_description(body: str) -> str:
     return ""
 
 
-def _parse(text: str, origin: Path) -> tuple[str, str]:
-    """Split a skill file into ``(description, body)``.
+def _parse(text: str, origin: Path) -> tuple[str, str, str]:
+    """Split a SKILL.md into ``(frontmatter name, description, body)``.
 
     Frontmatter is a minimal hand-parsed ``---`` block (no YAML dependency):
-    it exists iff line 1 is exactly ``---``; inside, lines split on the first
-    ``:`` and only ``description`` is honored (unknown keys are ignored, for
-    forward compatibility). Every malformed shape degrades to something usable
-    instead of silently dropping a file the user wrote: no fence or no
-    description → the first body line becomes the ad; an unclosed fence is
-    called out on stderr and the whole file is treated as body.
+    it exists iff line 1 is exactly ``---``; inside, only TOP-LEVEL lines (no
+    leading whitespace) split on the first ``:``, and only ``name`` and
+    ``description`` are honored — indented lines (a ``metadata:`` block's
+    members, list items) and unknown keys (``license``, ``allowed-tools``, …)
+    are ignored, for forward compatibility with the rest of the Agent Skills
+    spec. Every malformed shape degrades to something usable instead of
+    silently dropping a skill someone wrote: no fence or no description → the
+    first body line becomes the ad; an unclosed fence is called out on stderr
+    and the whole file is treated as body.
     """
     lines = text.splitlines()
     if not lines or lines[0].rstrip() != "---":
         body = text.strip()
-        return _fallback_description(body), body
+        return "", _fallback_description(body), body
 
-    description = ""
+    fields: dict[str, str] = {}
     for i, line in enumerate(lines[1:], start=1):
         if line.rstrip() == "---":
             body = "\n".join(lines[i + 1 :]).strip()
-            if description:
-                return description, body
-            return _fallback_description(body), body
+            description = fields.get("description") or _fallback_description(body)
+            return fields.get("name", ""), description, body
+        if not line or line[0].isspace():
+            continue  # a nested block's members are not top-level keys
         key, _, value = line.partition(":")
-        if key.strip() == "description":
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-                value = value[1:-1].strip()  # users copy YAML quoting habits
-            description = _normalize_description(value)
+        key = key.strip()
+        if key not in ("name", "description"):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1].strip()  # users copy YAML quoting habits
+        fields[key] = _normalize_description(value) if key == "description" else value
 
     print(
-        f"  [skills] {origin.name}: unclosed frontmatter; treating whole file as the skill body",
+        f"  [skills] {origin.parent.name}/{origin.name}: unclosed frontmatter; "
+        "treating whole file as the skill body",
         file=sys.stderr,
     )
     body = text.strip()
-    return _fallback_description(body), body
+    return "", _fallback_description(body), body
 
 
 def list_skills() -> list[Skill]:
-    """Discover skills: sorted ``*.md`` under ``skills_dir()``.
+    """Discover skills: sorted subdirectories of ``skills_dir()`` that hold a
+    ``SKILL.md``.
 
     Missing directory → ``[]`` (never created here — that's the user's move).
-    Never raises: unreadable and empty files are skipped with a stderr note,
-    duplicate slugs keep the first file in sorted order, and non-``.md`` files
-    are ignored silently (a stray ``.md~`` backup isn't an error).
+    Never raises: spec-invalid names, missing manifests, unreadable and empty
+    manifests are skipped with a stderr note, and a legacy flat ``*.md`` skill
+    gets a migration nudge; anything else (stray files, hidden directories) is
+    ignored silently. Directory names are unique by construction, so there is
+    no duplicate-name case to resolve.
     """
     directory = skills_dir()
     if not directory.is_dir():
         return []
     found: list[Skill] = []
-    seen: dict[str, Path] = {}
-    for path in sorted(directory.glob("*.md")):
-        name = slugify(path.stem)
-        if not name:
-            print(f"  [skills] {path.name}: name has no usable characters; skipped", file=sys.stderr)
-            continue
-        if name in seen:
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path.suffix == ".md":
+            stem = slugify(path.stem) or "skill-name"
             print(
-                f"  [skills] {path.name}: name clashes with {seen[name].name}; skipped",
+                f"  [skills] {path.name}: flat skill files are no longer read — "
+                f"move it to {stem}/SKILL.md (Agent Skills format)",
                 file=sys.stderr,
             )
+            continue
+        if not path.is_dir() or path.name.startswith("."):
+            continue  # a stray file or hidden directory isn't a skill, nor an error
+        name = path.name
+        if not _valid_name(name):
+            print(
+                f"  [skills] {name}/: not a valid skill name (lowercase letters, "
+                "digits, single hyphens, max 64); skipped",
+                file=sys.stderr,
+            )
+            continue
+        manifest = path / "SKILL.md"
+        if not manifest.is_file():
+            print(f"  [skills] {name}/: no SKILL.md; skipped", file=sys.stderr)
             continue
         try:
             # utf-8-sig: tolerate a BOM (Windows Notepad and friends write
             # one); plain utf-8 would leak it into line 1 and break fence
             # detection — silently, which our loud-degradation rule forbids.
-            text = path.read_text(encoding="utf-8-sig")
+            text = manifest.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError) as exc:
-            print(f"  [skills] could not read {path.name}: {exc}; skipped", file=sys.stderr)
+            print(f"  [skills] could not read {name}/SKILL.md: {exc}; skipped", file=sys.stderr)
             continue
-        description, body = _parse(text, path)
+        manifest_name, description, body = _parse(text, manifest)
         if not body:
-            print(f"  [skills] {path.name}: empty skill body; skipped", file=sys.stderr)
+            print(f"  [skills] {name}/SKILL.md: empty skill body; skipped", file=sys.stderr)
             continue
-        seen[name] = path
-        found.append(Skill(name=name, description=description, path=path))
+        if manifest_name and manifest_name != name:
+            print(
+                f"  [skills] {name}/SKILL.md says name '{manifest_name}' but the "
+                f"directory is '{name}'; using the directory name",
+                file=sys.stderr,
+            )
+        found.append(Skill(name=name, description=description, path=manifest))
     return found
 
 
-def load_skill(name: str) -> tuple[str, str]:
-    """Resolve ``name`` and return ``(canonical_name, body)``.
+def load_skill(name: str) -> tuple[Skill, str]:
+    """Resolve ``name`` and return the matched ``Skill`` with its full body.
 
     Matching is forgiving for a small model and a hurried human: the slugified
     name matches exactly, or a substring that matches exactly ONE skill name
@@ -165,7 +213,9 @@ def load_skill(name: str) -> tuple[str, str]:
     """
     skills = list_skills()
     names = [s.name for s in skills]
-    wanted = slugify(name)
+    # max_len matches the spec's 64-char name ceiling — slugify's default (40)
+    # would make a long-but-valid advertised name impossible to exact-match.
+    wanted = slugify(name, max_len=64)
     match = next((s for s in skills if s.name == wanted), None)
     if match is None and wanted:
         partial = [s for s in skills if wanted in s.name]
@@ -179,8 +229,33 @@ def load_skill(name: str) -> tuple[str, str]:
         text = match.path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:  # vanished/corrupted since discovery
         raise SkillNotFound(name, names) from exc
-    _description, body = _parse(text, match.path)
-    return match.name, body
+    _name, _description, body = _parse(text, match.path)
+    return match, body
+
+
+def file_reference_note(skill: Skill) -> str:
+    """A one-line pointer to the skill's bundled files, or ``""`` when it has
+    none.
+
+    The spec lets a body reference ``scripts/``, ``references/`` and
+    ``assets/`` by paths relative to the skill root; the model resolves those
+    with its file tools, so it needs to know where the skill lives — but only
+    when there is actually something there to read.
+    """
+    try:
+        # Hidden entries (.DS_Store and friends) aren't bundled files — same
+        # posture as discovery, which ignores hidden directories.
+        has_extras = any(
+            p.name != "SKILL.md" and not p.name.startswith(".") for p in skill.root.iterdir()
+        )
+    except OSError:  # the directory vanished mid-turn; the body still stands alone
+        return ""
+    if not has_extras:
+        return ""
+    return (
+        f"(Files this skill references live under {skill.root} — resolve its "
+        "relative paths from there.)"
+    )
 
 
 def as_system_block() -> str:
