@@ -40,9 +40,11 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 - **Persistent history** across sessions (`.vegapunk/history`), recalled with ↑/↓.
 - **Persistent memory** — durable facts and preferences you share are saved to `.vegapunk/memory.md`
   and auto-loaded into future sessions, so Vegapunk still knows them next time.
-- **Skills** — teach Vegapunk repeatable procedures by dropping markdown files in
-  `.vegapunk/skills/`; each is advertised to the model as one line, and its full instructions load
-  on demand when a task matches (or force one with `/skill <name>`). See [Skills](#skills).
+- **Skills** — teach Vegapunk repeatable procedures by dropping
+  [Agent Skills](https://agentskills.io) directories in `.agents/skills/` (the tool-agnostic
+  community format — skills written for other agents work unchanged); each is advertised to the
+  model as one line, and its full instructions load on demand when a task matches (or force one
+  with `/skill <name>`). See [Skills](#skills).
 - **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
   from your first message (`.vegapunk/sessions/`), so you can pick it back up later.
 - **Slash commands** (see below) — anything else you type goes to the model.
@@ -110,17 +112,27 @@ tool result), so a "no" can redirect it instead of dead-ending.
 
 ## Skills
 
-Skills teach Vegapunk repeatable procedures — one markdown file per skill under
-`.vegapunk/skills/`. The design is progressive disclosure: at startup every skill costs the system
-prompt only a one-line `name — description` ad, and the full body enters the conversation only
-when it's needed — either the model calls `use_skill` because your request matches a listed skill,
-or you force one with `/skill <name>` (its instructions then ride along with your next message).
+Skills teach Vegapunk repeatable procedures, in the community
+[Agent Skills](https://agentskills.io) format: one **directory per skill** under `.agents/skills/`,
+holding a `SKILL.md` (frontmatter + instructions) plus any `scripts/`, `references/`, or `assets/`
+the instructions point at. Because the format is tool-agnostic, a skill written for Claude Code or
+any other spec-following agent drops in unchanged — and Vegapunk's skills work elsewhere too.
 
-A skill's **name is its filename** (slugified: `My Skill.md` → `my-skill`). The description comes
-from a minimal frontmatter block; without one, the first line of the file serves as the ad:
+The design is progressive disclosure: at startup every skill costs the system prompt only a
+one-line `name — description` ad, and the full body enters the conversation only when it's
+needed — either the model calls `use_skill` because your request matches a listed skill, or you
+force one with `/skill <name>` (its instructions then ride along with your next message). A skill
+that bundles extra files gets a pointer to its directory so the model can read them on demand.
+
+```
+.agents/skills/
+└── commit-message/
+    └── SKILL.md
+```
 
 ```markdown
 ---
+name: commit-message
 description: How to write a commit message for this repo
 ---
 # Commit messages
@@ -130,13 +142,16 @@ description: How to write a commit message for this repo
 - The body explains why, not what.
 ```
 
-Malformed files degrade loudly rather than vanish (an unclosed frontmatter fence or missing
-description falls back to sensible defaults with a `[skills]` note on stderr); skipping is the
-exception and always announced — empty files, unreadable ones, duplicate names, and names with no
-usable characters. Skill bodies are capped at `VEGAPUNK_OUTPUT_CAP` characters like any
-other tool output. Skills are discovered at each use, but the ads in the system prompt are
-assembled once at launch — a skill added mid-session works via `use_skill` and `/skill`, but isn't
-advertised to the model until the next start.
+A skill's **name is its directory** (spec rules: lowercase letters, digits, single hyphens, max
+64 — content can't spoof identity, and a frontmatter `name` that disagrees is overruled with a
+note). Vegapunk consumes the spec leniently: a missing `description` falls back to the first body
+line, and unknown frontmatter keys (`license`, `compatibility`, `metadata`, `allowed-tools`) are
+ignored. Skipping is the exception and always announced with a `[skills]` note on stderr —
+spec-invalid names, directories without a `SKILL.md`, empty or unreadable manifests, and legacy
+flat `.md` files (which get a migration nudge). Skill bodies are capped at `VEGAPUNK_OUTPUT_CAP`
+characters like any other tool output. Skills are discovered at each use, but the ads in the
+system prompt are assembled once at launch — a skill added mid-session works via `use_skill` and
+`/skill`, but isn't advertised to the model until the next start.
 
 ## Configuration
 
@@ -156,7 +171,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
 | `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
 | `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
-| `VEGAPUNK_SKILLS_DIR` | Directory of skill files (one `.md` each, advertised at startup) | `.vegapunk/skills` |
+| `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
 | `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
@@ -202,7 +217,7 @@ vegapunk/
   config.py      # settings + the persona system prompt
   style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
-  skills.py      # skill discovery + on-demand loading (.vegapunk/skills/)
+  skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
   tools/         # one module per tool, plus the @tool registry
 tests/           # test suite
 ```

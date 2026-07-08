@@ -338,7 +338,8 @@ def skills_home(tmp_path, monkeypatch):
 
 
 def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
-    (skills_home / "commit-message.md").write_text(
+    (skills_home / "commit-message").mkdir()
+    (skills_home / "commit-message" / "SKILL.md").write_text(
         "---\ndescription: d\n---\nUse type(scope): summary.", encoding="utf-8"
     )
     brain = FakeBrain([_text("done"), _text("title"), _text("also done"), _text("title2")])
