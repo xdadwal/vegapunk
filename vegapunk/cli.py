@@ -15,7 +15,7 @@ from datetime import datetime
 
 from . import memory, session_store, skills, style
 from .approval import CLIApprover
-from .brain import DMRBrain, TextDelta
+from .brain import TextDelta, create_brain
 from .commands import CommandContext, dispatch
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
@@ -29,26 +29,27 @@ def _vega_prefix() -> str:
     return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
 
 
-def _context_gauge(used: int | None) -> str:
+def _context_gauge(used: int | None, window: int) -> str:
     """The toolbar's right side: how full the model's context window is —
     absolute tokens, and a percentage when the window size is known
-    (config.context_window; 0 means unknown). Empty before the first turn."""
+    (0 means unknown). Empty before the first turn."""
     if used is None:
         return ""
-    if config.context_window > 0:
+    if window > 0:
         # Deliberately uncapped: >100% means the conversation has overflowed
         # the configured window — capping would hide exactly that signal.
-        pct = round(100 * used / config.context_window)
-        return f"{used:,}/{config.context_window:,} tok ({pct}%) "
+        pct = round(100 * used / window)
+        return f"{used:,}/{window:,} tok ({pct}%) "
     return f"{used:,} tok "
 
 
 def _status_line(ctx: CommandContext) -> str:
     """The prompt's bottom-toolbar text: model and conversation name on the
     left, context-window fullness on the right. Re-evaluated every render, so
-    /save, /new, and each finished turn show up on the next prompt."""
-    left = f" {config.model} · {ctx.current_name or 'unsaved'}"
-    right = _context_gauge(ctx.session.context_tokens)
+    /save, /new, /model, and each finished turn show up on the next prompt.
+    Identity comes from the live brain, not config — /model swaps it."""
+    left = f" {ctx.session.brain.model_label} · {ctx.current_name or 'unsaved'}"
+    right = _context_gauge(ctx.session.context_tokens, ctx.session.brain.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
     # points, not display cells — good enough because model ids and session
@@ -67,7 +68,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         # mid-session is reachable via use_skill but not advertised until the
         # next launch (same staleness memory has).
         session = Session(
-            DMRBrain(),
+            create_brain(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
             ALL_TOOLS,
             system_prompt=config.system_prompt + memory.as_system_block() + skills.as_system_block(),
             approver=CLIApprover(),
@@ -80,7 +81,9 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
     print(
         style.paint(
-            f"model {config.model} · workspace {config.workspace_root}", style.DIM, sys.stdout
+            f"model {session.brain.model_label} · workspace {config.workspace_root}",
+            style.DIM,
+            sys.stdout,
         )
     )
 
@@ -148,6 +151,13 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # (rather than whenever the abandoned generator gets GC'd).
                 events.close()
             print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
+            continue
+        except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
+            # The turn is already rolled out of history (send()'s rollback),
+            # so show the error — Claude auth failures arrive here with their
+            # "run `claude /login`" hint — and keep the session (approvals,
+            # /model, staged skills) alive for the user to recover.
+            print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
             continue
         _autosave_turn(ctx)
 

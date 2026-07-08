@@ -392,3 +392,38 @@ def test_reset_and_restore_clear_the_stale_footprint():
 
     session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}])
     assert session.context_tokens is None  # unknown until the next turn reports it
+
+
+class _ExplodingBrain(Brain):
+    """Streams one delta, then dies — a network/auth failure mid-turn."""
+
+    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
+        yield TextDelta("par")
+        raise RuntimeError("backend down")
+
+
+def test_a_failed_turn_is_rolled_out_of_history():
+    session = Session(_ExplodingBrain(), tools=[], system_prompt="SYS")
+    events = session.send("hello")
+    with pytest.raises(RuntimeError, match="backend down"):
+        while True:
+            next(events)
+    # The half-turn never reaches history (or the autosave that reads it).
+    assert session.messages == [{"role": "system", "content": "SYS"}]
+
+
+def test_swap_brain_switches_the_live_brain_and_keeps_the_conversation():
+    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
+    _reply(session.send("hello"))
+
+    replacement = FakeBrain([_text("still here")])
+    session.swap_brain(replacement)
+
+    assert session.brain is replacement
+    # The old model's footprint would misdescribe the new one's context.
+    assert session.context_tokens is None
+    # History survives the swap — the conversation continues on the new brain.
+    assert [m["role"] for m in session.messages] == ["system", "user", "assistant"]
+    assert _reply(session.send("again")) == "still here"
+    seen = [(m["role"], m.get("content")) for m in replacement.seen_messages[0]]
+    assert ("user", "hello") in seen  # the new brain sees the prior turns

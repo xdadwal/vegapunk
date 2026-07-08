@@ -108,6 +108,8 @@ class _BoomSession:
     do that, but the CLI guards the events-not-yet-created window anyway — this
     pins that defensive branch."""
 
+    brain = FakeBrain([])  # main() reads session.brain for the banner
+
     def send(self, _user_input: str) -> str:
         raise KeyboardInterrupt
 
@@ -123,6 +125,8 @@ class _MidStreamInterruptSession:
     """send() dies mid-stream the way the real Session does when Ctrl-C lands
     inside a pull: the generator raises after rolling its history back."""
 
+    brain = FakeBrain([])  # main() reads session.brain for the banner
+
     def send(self, _user_input: str):
         def stream():
             yield TextDelta("par")
@@ -137,6 +141,29 @@ def test_ctrl_c_mid_generation_is_caught_after_partial_output(capsys):
     assert "vega> par" in out  # the partial text had already streamed
     assert "(interrupted)" in out  # the interrupt was caught mid-line
     assert "bye." in out  # and the loop survived
+
+
+class _FailingTurnSession:
+    """send() streams a little then raises, like ClaudeBrain when the backend
+    is unauthenticated or the subprocess dies — after rolling back, the real
+    Session re-raises exactly like this."""
+
+    brain = FakeBrain([])  # main() reads session.brain for the banner
+
+    def send(self, _user_input: str):
+        def stream():
+            yield TextDelta("par")
+            raise RuntimeError("Claude turn failed: run `claude /login` first")
+
+        return stream()
+
+
+def test_a_failed_turn_prints_the_error_and_the_repl_survives(capsys):
+    main(prompter=ScriptedPrompter(["go", "/exit"]), session=_FailingTurnSession())
+    out = capsys.readouterr().out
+    assert "[error]" in out
+    assert "claude /login" in out  # the actionable message reaches the user
+    assert "bye." in out  # the REPL lived on — /model local remains possible
 
 
 class _SuspendedReply:
@@ -159,6 +186,8 @@ class _SuspendedReply:
 
 
 class _SuspendedSession:
+    brain = FakeBrain([])  # main() reads session.brain for the banner
+
     def __init__(self) -> None:
         self.reply = _SuspendedReply()
 
@@ -210,31 +239,61 @@ def test_interrupted_note_is_yellow_when_forced(monkeypatch, capsys):
     assert f"{style.YELLOW}(interrupted){style.RESET}" in out
 
 
-def test_status_line_shows_model_and_session_name():
+class _LabeledBrain(FakeBrain):
+    """A FakeBrain with a declared identity, like a real provider has."""
+
+    def __init__(self, label: str, window: int = 0) -> None:
+        super().__init__([])
+        self._label, self._window = label, window
+
+    @property
+    def model_label(self) -> str:
+        return self._label
+
+    @property
+    def context_window(self) -> int:
+        return self._window
+
+
+def test_status_line_shows_the_live_brains_model_and_session_name():
     from vegapunk.cli import _status_line
     from vegapunk.commands import CommandContext
-    from vegapunk.config import config
 
-    ctx = CommandContext(session=_session([]))
+    ctx = CommandContext(session=Session(_LabeledBrain("ai/test"), tools=[], system_prompt="SYS"))
     # rstrip: the line is padded to the terminal width for the right gauge.
-    assert _status_line(ctx).rstrip() == f" {config.model} · unsaved"  # before the first autosave
+    assert _status_line(ctx).rstrip() == " ai/test · unsaved"  # before the first autosave
     ctx.current_name = "my-chat"
-    assert _status_line(ctx).rstrip() == f" {config.model} · my-chat"  # /save and autosave show live
+    assert _status_line(ctx).rstrip() == " ai/test · my-chat"  # /save and autosave show live
 
 
-def test_context_gauge_formats_absolute_and_percent(monkeypatch):
-    from dataclasses import replace
+def test_status_line_follows_a_model_switch():
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
 
+    ctx = CommandContext(session=Session(_LabeledBrain("ai/test"), tools=[], system_prompt="SYS"))
+    ctx.session.swap_brain(_LabeledBrain("claude"))
+    assert _status_line(ctx).rstrip() == " claude · unsaved"
+
+
+def test_context_gauge_formats_absolute_and_percent():
     from vegapunk.cli import _context_gauge
-    from vegapunk.config import config as real_config
 
-    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=131072))
-    assert _context_gauge(None) == ""  # before the first turn: no gauge
-    assert _context_gauge(13107) == "13,107/131,072 tok (10%) "
+    assert _context_gauge(None, 131072) == ""  # before the first turn: no gauge
+    assert _context_gauge(13107, 131072) == "13,107/131,072 tok (10%) "
 
     # Unknown window (0): absolute only — never a % against a guessed size.
-    monkeypatch.setattr("vegapunk.cli.config", replace(real_config, context_window=0))
-    assert _context_gauge(13107) == "13,107 tok "
+    assert _context_gauge(13107, 0) == "13,107 tok "
+
+
+def test_gauge_uses_the_live_brains_window():
+    from vegapunk.cli import _status_line
+    from vegapunk.commands import CommandContext
+
+    ctx = CommandContext(
+        session=Session(_LabeledBrain("claude", window=200000), tools=[], system_prompt="SYS")
+    )
+    ctx.session.context_tokens = 20000
+    assert _status_line(ctx).endswith("20,000/200,000 tok (10%) ")
 
 
 def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
@@ -246,12 +305,30 @@ def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.cli.shutil.get_terminal_size", lambda: os.terminal_size((80, 24))
     )
-    ctx = CommandContext(session=_session([]))
+    ctx = CommandContext(
+        session=Session(_LabeledBrain("ai/test", window=131072), tools=[], system_prompt="SYS")
+    )
     ctx.session.context_tokens = 500
     line = _status_line(ctx)
     assert len(line) == 80  # padded so the gauge lands on the right edge
     assert line.endswith("tok (0%) ")
     assert "unsaved" in line
+
+
+def test_main_builds_the_brain_from_the_configured_provider(monkeypatch, capsys):
+    from vegapunk.config import config
+
+    seen: dict = {}
+
+    def fake_create(provider):
+        seen["provider"] = provider
+        return _LabeledBrain("stub-model")
+
+    monkeypatch.setattr("vegapunk.cli.create_brain", fake_create)
+    main(prompter=ScriptedPrompter(["/exit"]))  # session=None: built from config
+
+    assert seen["provider"] == config.provider  # "local" unless VEGAPUNK_PROVIDER says otherwise
+    assert "model stub-model" in capsys.readouterr().out  # banner shows the live brain
 
 
 @pytest.fixture

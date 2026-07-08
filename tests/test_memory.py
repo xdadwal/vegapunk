@@ -113,6 +113,7 @@ def test_cli_main_seeds_session_with_memory(mem, monkeypatch):
     class _CapturingSession:
         def __init__(self, brain, tools, system_prompt="", **kwargs):
             captured["system_prompt"] = system_prompt
+            self.brain = brain  # main() reads session.brain for the banner
 
     monkeypatch.setattr("vegapunk.cli.Session", _CapturingSession)
 

@@ -9,17 +9,21 @@ capture-but-never-replay contract, malformed-JSON recovery — by driving
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from vegapunk.brain import (
+    Brain,
     BrainResponse,
     DMRBrain,
     ReasoningDelta,
     TextDelta,
+    create_brain,
     final_response,
 )
+from vegapunk.config import config
 
 
 def _chunk(finish_reason=None, **delta_fields):
@@ -335,3 +339,29 @@ def test_request_asks_for_the_usage_rider():
     brain = _brain_streaming([_chunk(content="hi")])
     _events(brain)
     assert brain._client.last_kwargs["stream_options"] == {"include_usage": True}
+
+
+def test_create_brain_builds_the_local_provider():
+    assert isinstance(create_brain("local"), DMRBrain)
+
+
+def test_create_brain_rejects_an_unknown_provider_by_name():
+    with pytest.raises(ValueError, match="martian"):
+        create_brain("martian")
+
+
+def test_dmr_brain_identity_comes_from_its_config():
+    brain = DMRBrain(replace(config, model="ai/test:latest", context_window=4096))
+    assert brain.model_label == "ai/test:latest"
+    assert brain.context_window == 4096
+
+
+def test_brain_identity_defaults_are_safe_for_any_subclass():
+    # Subclasses that don't declare an identity (fakes, future brains) must
+    # still render in the toolbar: a placeholder label and a %-less gauge.
+    class _Minimal(Brain):
+        def think(self, messages, tools=None):
+            yield BrainResponse(message={"role": "assistant", "content": None}, text=None)
+
+    assert _Minimal().model_label == "unknown-model"
+    assert _Minimal().context_window == 0
