@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from . import db, session_store, skills
+from . import db, memory, session_store, skills
 from .brain import create_brain
 from .config import config
 from .session import Session
@@ -197,6 +197,33 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
 @command("sessions", "List saved sessions")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=_format_sessions())
+
+
+@command("memory", "List or forget remembered facts: /memory [list | forget <id>]")
+def _memory(ctx: CommandContext, arg: str) -> CommandResult:
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    if sub in ("", "list"):
+        rows = memory.list_memory()
+        if not rows:
+            return CommandResult(output="(nothing remembered yet)")
+        lines = [f"  {m.id[:8]}  {m.created_at[:10]}  {_oneline(m.content)}" for m in rows]
+        return CommandResult(output="\n".join(lines))
+    if sub == "forget":
+        result = memory.forget_memory(rest)
+        if result.startswith("Forgot:"):
+            result += " (the system prompt updates next session)"
+        return CommandResult(output=result)
+    return CommandResult(output="Usage: /memory [list | forget <id>]")
+
+
+@command("backup", "Snapshot the database: /backup")
+def _backup(ctx: CommandContext, arg: str) -> CommandResult:
+    try:
+        path = db.backup_now()
+    except db.StoreError as exc:
+        return CommandResult(output=f"Backup failed: {exc}")
+    return CommandResult(output=f"Backed up to {path}")
 
 
 @command("skills", "List available skills (SKILL.md directories under .agents/skills/)")

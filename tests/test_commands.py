@@ -121,6 +121,60 @@ def test_load_missing_lists_what_exists():
     assert "No session 'ghost'" in res.output
 
 
+def test_memory_list_empty():
+    assert "(nothing remembered yet)" in dispatch("/memory", _ctx()).output
+
+
+def test_memory_list_shows_short_id_date_and_fact():
+    from vegapunk.memory import list_memory, save_memory
+
+    save_memory("prefers ruff over flake8")
+    saved = list_memory()[0]
+
+    out = dispatch("/memory list", _ctx()).output
+    assert saved.id[:8] in out
+    assert saved.created_at[:10] in out
+    assert "prefers ruff over flake8" in out
+
+
+def test_memory_forget_removes_by_prefix():
+    from vegapunk.memory import list_memory, save_memory
+
+    save_memory("keep me")
+    save_memory("forget me")
+    goner = next(m for m in list_memory() if m.content == "forget me")
+
+    res = dispatch(f"/memory forget {goner.id[:8]}", _ctx())
+    assert "Forgot: forget me" in res.output
+    assert "updates next session" in res.output  # honest about the staleness
+    assert [m.content for m in list_memory()] == ["keep me"]
+
+
+def test_memory_forget_unknown_prefix():
+    assert "No memory fact matches" in dispatch("/memory forget deadbeef", _ctx()).output
+
+
+def test_memory_bad_subcommand_shows_usage():
+    assert "Usage: /memory" in dispatch("/memory frobnicate", _ctx()).output
+
+
+def test_backup_writes_a_snapshot_file():
+    from vegapunk.memory import save_memory
+
+    save_memory("something to back up")
+    res = dispatch("/backup", _ctx())
+    assert res.output.startswith("Backed up to ")
+    path = res.output.removeprefix("Backed up to ").strip()
+    from pathlib import Path
+
+    assert Path(path).is_file()
+
+
+def test_help_lists_memory_and_backup():
+    out = dispatch("/help", _ctx()).output
+    assert "/memory" in out and "/backup" in out
+
+
 def _convo(n: int) -> list[dict]:
     """A conversation with n user/assistant turns (q0/a0 … q{n-1}/a{n-1})."""
     msgs: list[dict] = [{"role": "system", "content": "SYS"}]
