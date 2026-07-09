@@ -12,12 +12,11 @@ from __future__ import annotations
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.history import FileHistory
+from prompt_toolkit.history import History
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -25,7 +24,7 @@ from prompt_toolkit.output import Output
 
 from . import style
 from .commands import REGISTRY as _COMMAND_REGISTRY
-from .config import config
+from .db_history import DbHistory
 
 # The slash commands the REPL understands, offered as completions — derived from
 # the command registry so they never drift from what the REPL actually handles.
@@ -70,21 +69,19 @@ class PromptToolkitPrompter(Prompter):
 
     def __init__(
         self,
-        history_path: Path | None = None,
+        history: History | None = None,
         input: Input | None = None,
         output: Output | None = None,
         status: Callable[[], str] | None = None,
     ) -> None:
-        if history_path is None:
-            history_path = config.history_file
-        # FileHistory creates the file lazily but not its parent dir.
-        history_path.parent.mkdir(parents=True, exist_ok=True)
+        if history is None:
+            history = DbHistory()
         # Shaka gold for the person giving the orders — gated through the same
         # seam as everything else, so NO_COLOR/VEGAPUNK_COLOR strip it too.
         message = [("bold fg:ansiyellow", "you> ")] if style.enabled(sys.stdout) else "you> "
         self._session: PromptSession[str] = PromptSession(
             message=message,
-            history=FileHistory(str(history_path)),
+            history=history,
             multiline=False,  # Enter submits; Up/Down recall history
             key_bindings=_build_key_bindings(),
             enable_history_search=False,  # plain chronological recall, not prefix-search
