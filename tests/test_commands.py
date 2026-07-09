@@ -14,11 +14,6 @@ from vegapunk.commands import CommandContext, dispatch
 from vegapunk.session import Session
 
 
-@pytest.fixture(autouse=True)
-def _tmp_sessions(tmp_path, monkeypatch):
-    monkeypatch.setattr("vegapunk.session_store.sessions_dir", lambda: tmp_path)
-
-
 def _ctx() -> CommandContext:
     return CommandContext(session=Session(FakeBrain([]), tools=[], system_prompt="SYS"))
 

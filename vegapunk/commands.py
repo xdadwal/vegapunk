@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from . import session_store, skills
+from . import db, session_store, skills
 from .brain import create_brain
 from .config import config
 from .session import Session
@@ -162,11 +162,16 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
     if not name:
         return CommandResult(output="Usage: /save <name>")
-    if name != ctx.current_name and session_store.exists(name):
-        return CommandResult(output=f"A session named '{name}' already exists — choose another name.")
-    session_store.save_session(name, ctx.session.messages)
-    if ctx.current_name and ctx.current_name != name:
-        session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) file
+    try:
+        if name != ctx.current_name and session_store.exists(name):
+            return CommandResult(
+                output=f"A session named '{name}' already exists — choose another name."
+            )
+        session_store.save_session(name, ctx.session.messages)
+        if ctx.current_name and ctx.current_name != name:
+            session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) row
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
     return CommandResult(output=f"Saved as '{name}'.")
 
@@ -180,6 +185,8 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
         messages = session_store.load_session(name)
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not load '{name}': {exc}")
     ctx.session.restore(messages)
     ctx.current_name = name
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
