@@ -10,6 +10,7 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Callable
 
 from . import db, memory, session_store, skills
@@ -73,12 +74,23 @@ def dispatch(line: str, ctx: CommandContext) -> CommandResult | None:
     return cmd.handler(ctx, arg.strip())
 
 
+def _local_stamp(iso_utc: str) -> str:
+    """Render a stored UTC timestamp (db.utcnow format) as local-time
+    ``YYYY-MM-DD HH:MM`` — the minute lets same-day sessions be told apart.
+    Falls back to the raw date+time on an unparseable value."""
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return iso_utc[:16].replace("T", " ")
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
 def _format_sessions() -> str:
     rows = session_store.list_sessions(limit=5)
     if not rows:
         return "(no saved sessions)"
     return "\n".join(
-        f"  {name}  ({turns} turns, {updated_at[:10]})" for name, turns, updated_at in rows
+        f"  {name}  ({turns} turns, {_local_stamp(updated_at)})" for name, turns, updated_at in rows
     )
 
 
