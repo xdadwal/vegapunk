@@ -53,7 +53,9 @@ def test_save_session_overwrites_in_place():
     save_session("demo", [{"role": "user", "content": "one"}])
     save_session("demo", [{"role": "user", "content": "two"}])
     assert load_session("demo") == [{"role": "user", "content": "two"}]
-    assert list_sessions() == [("demo", 1)]  # still one row
+    rows = list_sessions()
+    assert len(rows) == 1  # still one row
+    assert rows[0][0] == "demo" and rows[0][1] == 1
 
 
 def test_load_missing_raises():
@@ -95,7 +97,29 @@ def test_list_sessions_counts_user_turns():
             {"role": "user", "content": "z"},
         ],
     )
-    assert dict(list_sessions())["a"] == 2  # two user turns
+    rows = list_sessions()
+    assert rows[0][0] == "a" and rows[0][1] == 2  # two user turns
+
+
+def test_list_sessions_orders_by_recency_with_dates_and_limit():
+    # Insert with controlled updated_at so ordering is deterministic.
+    stamps = {
+        "oldest": "2026-01-01T00:00:00.000000Z",
+        "middle": "2026-02-01T00:00:00.000000Z",
+        "newest": "2026-03-01T00:00:00.000000Z",
+    }
+    for slug, ts in stamps.items():
+        db.execute(
+            "INSERT INTO sessions (slug, messages, turns, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (slug, "[]", 0, ts, ts),
+        )
+
+    rows = list_sessions()
+    assert [name for name, _turns, _date in rows] == ["newest", "middle", "oldest"]  # descending
+    assert rows[0][2][:10] == "2026-03-01"  # date carried through
+
+    # Limit returns only the most recent N.
+    assert [name for name, _turns, _date in list_sessions(limit=2)] == ["newest", "middle"]
 
 
 def test_list_sessions_degrades_when_db_unavailable(monkeypatch, capsys):

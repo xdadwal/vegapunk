@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from test_session import FakeBrain  # sibling module (tests/ is on sys.path)
 
-from vegapunk import session_store
+from vegapunk import db, session_store
 from vegapunk.commands import CommandContext, dispatch
 from vegapunk.session import Session
 
@@ -119,6 +119,23 @@ def test_load_resumes_and_reports_turns():
 def test_load_missing_lists_what_exists():
     res = dispatch("/load ghost", _ctx())
     assert "No session 'ghost'" in res.output
+
+
+def test_sessions_shows_recent_five_newest_first_with_dates():
+    # Seven sessions with controlled timestamps; /sessions shows the newest five.
+    for i in range(7):
+        ts = f"2026-01-0{i + 1}T00:00:00.000000Z"
+        db.execute(
+            "INSERT INTO sessions (slug, messages, turns, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (f"chat-{i}", "[]", 0, ts, ts),
+        )
+
+    out = dispatch("/sessions", _ctx()).output
+    lines = out.splitlines()
+    assert len(lines) == 5  # capped at five
+    assert "chat-6" in lines[0] and "2026-01-07" in lines[0]  # newest first, with its date
+    assert "chat-2" in lines[-1]  # fifth-newest
+    assert "chat-1" not in out and "chat-0" not in out  # older ones dropped
 
 
 def test_memory_list_empty():

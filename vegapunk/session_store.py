@@ -83,12 +83,17 @@ def delete_session(name: str) -> None:
     db.execute("DELETE FROM sessions WHERE slug = ?", (name,))
 
 
-def list_sessions() -> list[tuple[str, int]]:
-    """Every saved session as ``(name, turns)``, sorted by name. Degrades to an
-    empty list (with a stderr note) if the database can't be read."""
+def list_sessions(limit: int | None = None) -> list[tuple[str, int, str]]:
+    """Saved sessions as ``(name, turns, updated_at)``, most recently updated
+    first. Pass ``limit`` to cap how many are returned. Degrades to an empty list
+    (with a stderr note) if the database can't be read."""
+    sql = "SELECT slug, turns, updated_at FROM sessions ORDER BY updated_at DESC, slug"
     try:
-        rows = db.query("SELECT slug, turns FROM sessions ORDER BY slug")
+        if limit is None:
+            rows = db.query(sql)
+        else:
+            rows = db.query(sql + " LIMIT ?", (limit,))
     except db.StoreError as exc:
         print(f"  [sessions] could not list: {exc}", file=sys.stderr)
         return []
-    return [(slug, turns) for slug, turns in rows]
+    return [(slug, turns, updated_at) for slug, turns, updated_at in rows]

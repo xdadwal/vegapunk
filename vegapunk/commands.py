@@ -74,10 +74,12 @@ def dispatch(line: str, ctx: CommandContext) -> CommandResult | None:
 
 
 def _format_sessions() -> str:
-    rows = session_store.list_sessions()
+    rows = session_store.list_sessions(limit=5)
     if not rows:
         return "(no saved sessions)"
-    return "\n".join(f"  {name} ({turns} turns)" for name, turns in rows)
+    return "\n".join(
+        f"  {name}  ({turns} turns, {updated_at[:10]})" for name, turns, updated_at in rows
+    )
 
 
 @command("help", "Show this help")
@@ -194,7 +196,7 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
 
 
-@command("sessions", "List saved sessions")
+@command("sessions", "List the 5 most recent saved conversations")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=_format_sessions())
 
