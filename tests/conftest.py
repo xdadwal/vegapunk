@@ -31,7 +31,6 @@ def _plain_color_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolated_vegapunk_home(tmp_path, monkeypatch):
     monkeypatch.setattr("vegapunk.db.db_path", lambda: tmp_path / "vegapunk.db")
-    monkeypatch.setattr("vegapunk.memory.memory_path", lambda: tmp_path / "memory.md")
     monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path / "skills")
     yield
     db.close_connection()
