@@ -12,5 +12,11 @@ __pycache__/
 # --- Vegapunk local state (REPL history, etc.) ---
 .vegapunk/
 
+# --- Vegapunk database (sessions, memory, input history) + backups ---
+/vegapunk.db
+/vegapunk.db-wal
+/vegapunk.db-shm
+/backups/
+
 # --- autoloop scratch (standing prompt) ---
 PROMPT.md

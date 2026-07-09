@@ -36,8 +36,9 @@ from .config import config
 
 SCHEMA_VERSION = 1
 
-# Design rationale for these tables lives in the migration plan (§3). Kept free of
-# SQL comments so ``executescript`` stays maximally portable across the driver.
+# Sessions store the message list as a JSON blob; memory rows carry an open
+# ``kind`` and an optional embedding for semantic recall. Kept free of SQL
+# comments so ``executescript`` stays maximally portable across the driver.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -197,8 +198,7 @@ def transaction() -> Iterator[turso.Connection]:
     """Group multiple writes into one commit.
 
     Commits on clean exit; rolls back and re-raises on failure (driver errors as
-    ``StoreError``, other exceptions unchanged). Used by the migration importer
-    and the embedding backfill.
+    ``StoreError``, other exceptions unchanged). Used by the embedding backfill.
     """
     conn = get_connection()
     try:

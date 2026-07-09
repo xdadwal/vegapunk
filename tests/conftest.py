@@ -35,11 +35,5 @@ def _isolated_vegapunk_home(tmp_path, monkeypatch):
     # No-network seam: embeddings off by default so tests never hit /embeddings.
     # Tests that exercise the embedding path re-patch this (a later patch wins).
     monkeypatch.setattr("vegapunk.embedding.enabled", lambda: False)
-    # Point the migration's legacy sources at nonexistent tmp paths so any test
-    # that drives cli.main never imports the developer's real .vegapunk/ state.
-    missing = tmp_path / "no-legacy"
-    monkeypatch.setattr("vegapunk.migrate.legacy_sessions_dir", lambda: missing / "sessions")
-    monkeypatch.setattr("vegapunk.migrate.legacy_memory_path", lambda: missing / "memory.md")
-    monkeypatch.setattr("vegapunk.migrate.legacy_history_path", lambda: missing / "history")
     yield
     db.close_connection()

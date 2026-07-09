@@ -173,11 +173,8 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
-| `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `.vegapunk/vegapunk.db` |
+| `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
-| `VEGAPUNK_HISTORY_FILE` | Legacy input-history file — read once by the first-run migration | `.vegapunk/history` |
-| `VEGAPUNK_MEMORY_FILE` | Legacy memory file — read once by the first-run migration | `.vegapunk/memory.md` |
-| `VEGAPUNK_SESSIONS_DIR` | Legacy conversations dir — read once by the first-run migration | `.vegapunk/sessions` |
 | `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
 | `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
@@ -186,21 +183,19 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 
 ### Data & backups
 
-Sessions, long-term memory, and REPL input history live in one embedded database at
-`.vegapunk/vegapunk.db` (via [Turso](https://github.com/tursodatabase/turso)). On first run,
-Vegapunk imports any pre-existing `.vegapunk/memory.md`, `.vegapunk/sessions/*.json`, and
-`.vegapunk/history` into it and leaves the originals in place.
+Sessions, long-term memory, and REPL input history live in one embedded database at `vegapunk.db`
+in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
 
 - **One process at a time.** Turso does not support multi-process access; a lock file guards
   against it, so a second `vegapunk` in the same directory is refused rather than risking
   corruption.
-- **Backups.** Vegapunk snapshots the database to `.vegapunk/backups/` at startup (at most daily,
-  keeping the newest three); take one any time with `/backup`.
+- **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
+  newest three); take one any time with `/backup`.
 - **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
   secrets" posture as before applies.
-- **Recovery.** The file is a standard SQLite database. With Vegapunk stopped, open
-  `.vegapunk/vegapunk.db` (or a snapshot) with any `sqlite3` client to read or export your data —
-  just never run two engines against it at once.
+- **Recovery.** The file is a standard SQLite database. With Vegapunk stopped, open `vegapunk.db`
+  (or a snapshot) with any `sqlite3` client to read or export your data — just never run two
+  engines against it at once.
 
 ### The `claude` provider
 
@@ -234,7 +229,6 @@ vegapunk/
   commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
-  migrate.py     # one-time import of legacy flat files into the database
   loop.py        # the agent loop: think → act (run tools) → observe → repeat
   session.py     # conversation state across turns
   brain.py       # the swappable model layer: Brain ABC, local DMR backend, create_brain factory

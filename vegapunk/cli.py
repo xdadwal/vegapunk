@@ -13,7 +13,7 @@ import shutil
 import sys
 from datetime import datetime
 
-from . import db, embedding, memory, migrate, session_store, skills, style
+from . import db, embedding, memory, session_store, skills, style
 from .approval import CLIApprover
 from .brain import TextDelta, create_brain
 from .commands import CommandContext, dispatch
@@ -60,11 +60,10 @@ def _status_line(ctx: CommandContext) -> str:
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
     # Persistence setup, before anything reads the database: take the
-    # single-process lock, fold any legacy flat files into the db, reconcile
-    # embeddings with the configured model, and snapshot if the last backup is
-    # stale. All but the lock are best-effort and never block the REPL.
+    # single-process lock, reconcile embeddings with the configured model, and
+    # snapshot if the last backup is stale. All but the lock are best-effort and
+    # never block the REPL.
     db.acquire_process_lock()
-    migrate.migrate_if_needed()
     embedding.sync_embeddings()
     db.backup_if_stale()
 

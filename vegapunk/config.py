@@ -73,12 +73,12 @@ class Config:
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
     # The embedded database holding sessions, long-term memory, and REPL input
-    # history. One Vegapunk process at a time (enforced with a lock file);
+    # history. Defaults to vegapunk.db at the project root (the launch
+    # directory). One Vegapunk process at a time (enforced with a lock file);
     # snapshot with /backup. Contents are readable with any sqlite3 client, so
-    # the no-secrets posture still applies. Defaults under the current directory,
-    # like the legacy flat-file paths below.
+    # the no-secrets posture still applies.
     db_file: Path = Path(
-        os.getenv("VEGAPUNK_DB_FILE", str(Path.cwd() / ".vegapunk" / "vegapunk.db"))
+        os.getenv("VEGAPUNK_DB_FILE", str(Path.cwd() / "vegapunk.db"))
     ).expanduser()
 
     # Embedding model for semantic memory recall, served by Docker Model Runner's
@@ -86,24 +86,6 @@ class Config:
     # `docker model pull ai/qwen3-embedding`). Empty disables embeddings — memory
     # still works; the recall tool falls back to plain text matching.
     embed_model: str = os.getenv("VEGAPUNK_EMBED_MODEL", "")
-
-    # Legacy flat-file location, read once by the first-run migration into
-    # db_file; no longer written. Override with VEGAPUNK_HISTORY_FILE.
-    history_file: Path = Path(
-        os.getenv("VEGAPUNK_HISTORY_FILE", str(Path.cwd() / ".vegapunk" / "history"))
-    ).expanduser()
-
-    # Legacy flat-file location, read once by the first-run migration into
-    # db_file; no longer written. Override with VEGAPUNK_MEMORY_FILE.
-    memory_file: Path = Path(
-        os.getenv("VEGAPUNK_MEMORY_FILE", str(Path.cwd() / ".vegapunk" / "memory.md"))
-    ).expanduser()
-
-    # Legacy flat-file location, read once by the first-run migration into
-    # db_file; no longer written. Override with VEGAPUNK_SESSIONS_DIR.
-    sessions_dir: Path = Path(
-        os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
-    ).expanduser()
 
     # Where skills live — reusable procedures in the Agent Skills format
     # (https://agentskills.io): one directory per skill holding a SKILL.md,
