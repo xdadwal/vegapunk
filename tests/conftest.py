@@ -32,5 +32,8 @@ def _plain_color_env(monkeypatch):
 def _isolated_vegapunk_home(tmp_path, monkeypatch):
     monkeypatch.setattr("vegapunk.db.db_path", lambda: tmp_path / "vegapunk.db")
     monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path / "skills")
+    # No-network seam: embeddings off by default so tests never hit /embeddings.
+    # Tests that exercise the embedding path re-patch this (a later patch wins).
+    monkeypatch.setattr("vegapunk.embedding.enabled", lambda: False)
     yield
     db.close_connection()

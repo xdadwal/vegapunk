@@ -8,9 +8,14 @@ in yet (that build step adds it), so recall here is pure text match.
 
 from __future__ import annotations
 
+import struct
+from dataclasses import replace
+
 import pytest
 
 from vegapunk import db
+from vegapunk.config import config
+from vegapunk.embedding import EmbeddingError
 from vegapunk.memory import (
     as_system_block,
     forget_memory,
@@ -21,6 +26,15 @@ from vegapunk.memory import (
 )
 from vegapunk.tools import ALL_TOOLS
 from vegapunk.tools.memory import remember
+
+
+def _insert_fact_with_vector(fact_id: str, content: str, vector: list[float]) -> None:
+    now = db.utcnow()
+    db.execute(
+        "INSERT INTO memory (id, kind, content, created_at, updated_at, embedding) "
+        "VALUES (?, 'fact', ?, ?, ?, ?)",
+        (fact_id, content, now, now, struct.pack(f"<{len(vector)}f", *vector)),
+    )
 
 
 def test_load_memory_empty_when_nothing_saved():
@@ -125,11 +139,82 @@ def test_recall_memory_matches_by_substring():
     assert recall_memory("nothing here") == []
 
 
+def test_recall_memory_orders_by_cosine_distance(monkeypatch):
+    from test_embedding import _fake_openai  # sibling test module (tests/ on sys.path)
+
+    _insert_fact_with_vector("a", "alpha", [1.0, 0.0, 0.0, 0.0])
+    _insert_fact_with_vector("b", "beta", [0.9, 0.1, 0.0, 0.0])
+    _insert_fact_with_vector("c", "gamma", [0.0, 0.0, 1.0, 0.0])
+    # The query embeds to [1,0,0,0]: nearest is alpha, then beta; gamma is orthogonal.
+    monkeypatch.setattr("vegapunk.embedding.enabled", lambda: True)
+    monkeypatch.setattr("vegapunk.embedding.config", replace(config, embed_model="m"))
+    monkeypatch.setattr("vegapunk.embedding.OpenAI", _fake_openai({"find": [1.0, 0.0, 0.0, 0.0]}))
+
+    hits = recall_memory("find", limit=2)
+    assert [h.content for h in hits] == ["alpha", "beta"]
+
+
+def test_recall_memory_like_fallback_when_disabled():
+    # A fact WITH an embedding, but embeddings disabled (conftest) -> text-match path.
+    _insert_fact_with_vector("x", "likes espresso", [1.0, 0.0, 0.0, 0.0])
+    assert [h.content for h in recall_memory("espresso")] == ["likes espresso"]
+
+
+def test_recall_memory_falls_back_to_text_when_vector_query_fails(monkeypatch, capsys):
+    from test_embedding import _fake_openai  # sibling test module
+
+    _insert_fact_with_vector("x", "likes espresso", [1.0, 0.0, 0.0, 0.0])
+    monkeypatch.setattr("vegapunk.embedding.enabled", lambda: True)
+    monkeypatch.setattr("vegapunk.embedding.config", replace(config, embed_model="m"))
+    monkeypatch.setattr("vegapunk.embedding.OpenAI", _fake_openai({"espresso": [1.0, 0.0, 0.0, 0.0]}))
+
+    # Make only the vector SELECT blow up; the LIKE fallback must still find the row.
+    real_query = db.query
+
+    def _query(sql, params=()):
+        if "vector_distance_cos" in sql:
+            raise db.StoreError("no vector support")
+        return real_query(sql, params)
+
+    monkeypatch.setattr("vegapunk.db.query", _query)
+
+    hits = recall_memory("espresso")
+    assert [h.content for h in hits] == ["likes espresso"]  # fell back, not empty
+    assert "using text match" in capsys.readouterr().err
+
+
+def test_save_memory_survives_embedding_failure(monkeypatch, capsys):
+    monkeypatch.setattr("vegapunk.embedding.enabled", lambda: True)
+    monkeypatch.setattr("vegapunk.embedding.config", replace(config, embed_model="m"))
+
+    def _boom(_texts):
+        raise EmbeddingError("backend down")
+
+    monkeypatch.setattr("vegapunk.embedding.embed", _boom)
+
+    result = save_memory("keep me anyway")
+    assert "keep me anyway" in result  # the fact is saved
+    stored = db.query("SELECT embedding FROM memory WHERE content = 'keep me anyway'")[0][0]
+    assert stored is None  # embedding is NULL, not lost
+    assert "embedding failed" in capsys.readouterr().err
+
+
 def test_remember_tool_saves_and_confirms():
     result = remember("works in the Pacific timezone")
 
     assert "works in the Pacific timezone" in result
     assert "works in the Pacific timezone" in load_memory()
+
+
+def test_recall_tool_registered_and_returns_hits():
+    from vegapunk.tools.memory import recall
+
+    tool = next(t for t in ALL_TOOLS if t.name == "recall")
+    assert tool.guarded is False  # read-only lookup, no approval gate
+
+    save_memory("likes espresso")
+    assert "likes espresso" in recall("espresso")
+    assert recall("nothing at all").startswith("No matching")
 
 
 def test_remember_tool_registered_and_unguarded():

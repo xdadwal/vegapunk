@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from . import db
+from . import db, embedding
 
 _HEX = frozenset("0123456789abcdef")
 
@@ -58,18 +58,19 @@ def save_memory(fact: str) -> str:
     """Store ``fact`` as a new ``kind='fact'`` row. Returns a confirmation, or a
     no-op notice for an empty fact. This is the ``remember`` tool's result string.
 
-    (Embeddings for semantic recall are attached here in a later build step; until
-    then the ``embedding`` column stays NULL and recall matches on text.)
+    An embedding is attached when embeddings are enabled; a failure to embed never
+    loses the fact (it is saved with a NULL embedding and backfilled next startup).
     """
     fact = fact.strip()
     if not fact:
         return "Nothing to remember — the fact was empty."
     now = db.utcnow()
+    vector = embedding.embed_one_or_none(fact)  # None when disabled or on failure
     try:
         db.execute(
             "INSERT INTO memory (id, kind, content, created_at, updated_at, embedding) "
-            "VALUES (?, 'fact', ?, ?, ?, NULL)",
-            (db.new_id(), fact, now, now),
+            "VALUES (?, 'fact', ?, ?, ?, ?)",
+            (db.new_id(), fact, now, now, vector),
         )
     except db.StoreError as exc:
         return f"Could not save to memory: {exc}"
@@ -119,14 +120,32 @@ def forget_memory(id_prefix: str) -> str:
 def recall_memory(query: str, limit: int = 5) -> list[Memory]:
     """Search remembered facts for ones related to ``query``.
 
-    Text match (case-insensitive substring), newest first. A later build step adds
-    a semantic (embedding) path in front of this; the text match stays as the
-    fallback for when embeddings are disabled or unavailable. ``[]`` (with a
-    stderr note) on a database error.
+    Semantic (embedding) similarity when embeddings are available, otherwise a
+    case-insensitive substring match — the same fallback covers a disabled model,
+    an embedding failure, or no vector hits. ``[]`` (with a stderr note) on a
+    database error.
     """
     q = query.strip()
     if not q:
         return []
+    if embedding.enabled():
+        vector = embedding.embed_one_or_none(q)
+        if vector is not None:
+            try:
+                rows = db.query(
+                    "SELECT id, kind, content, created_at, "
+                    "vector_distance_cos(embedding, ?) AS distance "
+                    "FROM memory WHERE embedding IS NOT NULL "
+                    "ORDER BY distance LIMIT ?",
+                    (vector, limit),
+                )
+            except db.StoreError as exc:
+                # Fall through to the text match rather than returning nothing —
+                # a plain LIKE hit is better than silence when the vector path fails.
+                print(f"  [memory] semantic recall failed, using text match: {exc}", file=sys.stderr)
+                rows = []
+            if rows:
+                return [Memory(id=r[0], kind=r[1], content=r[2], created_at=r[3]) for r in rows]
     try:
         rows = db.query(
             "SELECT id, kind, content, created_at FROM memory "
