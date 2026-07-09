@@ -9,6 +9,8 @@ tmp path and reply turns queue a second response for the auto-naming title call.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
 from test_session import FakeBrain, _text
@@ -210,6 +212,32 @@ def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):
     assert "vega> yo" in captured.out  # reply still shown
     assert "could not save" in captured.err  # degraded on stderr
     assert "bye." in captured.out  # survived to the next prompt and /exit
+
+
+def test_cli_main_migrates_legacy_files_on_first_run(tmp_path, monkeypatch, capsys):
+    # End-to-end startup smoke: with legacy flat files present, driving cli.main
+    # once must run the first-run migration before the REPL, importing them into
+    # the (conftest-isolated) database.
+    legacy = tmp_path / "legacy"
+    (legacy / "sessions").mkdir(parents=True)
+    (legacy / "sessions" / "old-chat.json").write_text(
+        json.dumps([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}]),
+        encoding="utf-8",
+    )
+    (legacy / "memory.md").write_text("- [2024-01-01] uses zsh\n", encoding="utf-8")
+    monkeypatch.setattr("vegapunk.migrate.legacy_sessions_dir", lambda: legacy / "sessions")
+    monkeypatch.setattr("vegapunk.migrate.legacy_memory_path", lambda: legacy / "memory.md")
+    monkeypatch.setattr("vegapunk.migrate.legacy_history_path", lambda: legacy / "history")
+
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+
+    assert "migrated 1 sessions, 1 memory facts" in capsys.readouterr().out
+
+    from vegapunk.memory import list_memory
+    from vegapunk.session_store import list_sessions
+
+    assert dict(list_sessions()) == {"old-chat": 1}
+    assert [m.content for m in list_memory()] == ["uses zsh"]
 
 
 def test_banner_shows_model_and_workspace(capsys):
