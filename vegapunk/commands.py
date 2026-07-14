@@ -208,9 +208,28 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
 
 
-@command("sessions", "List the 5 most recent saved conversations")
+@command("sessions", "List recent conversations, or delete one: /sessions [forget <name>]")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
-    return CommandResult(output=_format_sessions())
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    if not sub:
+        return CommandResult(output=_format_sessions())
+    if sub == "forget":
+        name = session_store.slugify(rest)
+        if not name:
+            return CommandResult(output="Usage: /sessions forget <name>")
+        try:
+            if not session_store.exists(name):
+                return CommandResult(output=f"No session '{name}' to forget.\n{_format_sessions()}")
+            session_store.delete_session(name)
+        except db.StoreError as exc:
+            return CommandResult(output=f"Could not forget '{name}': {exc}")
+        if ctx.current_name == name:
+            # The live conversation's saved copy is gone; the next turn re-saves
+            # it under a fresh name rather than resurrecting the deleted one.
+            ctx.current_name = None
+        return CommandResult(output=f"Forgot session '{name}'.")
+    return CommandResult(output="Usage: /sessions [forget <name>]")
 
 
 @command("memory", "List or forget remembered facts: /memory [list | forget <id>]")

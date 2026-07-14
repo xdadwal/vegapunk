@@ -75,7 +75,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 |---------|--------------|
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
-| `/sessions` | List the 5 most recently updated conversations (newest first) with turn counts and local timestamps |
+| `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
 | `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
 | `/backup` | Snapshot the database to `.vegapunk/backups/` |
 | `/skills` | List available skills |

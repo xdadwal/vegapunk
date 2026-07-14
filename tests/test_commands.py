@@ -150,6 +150,42 @@ def test_sessions_shows_recent_five_newest_first_with_timestamps():
     assert "chat-1" not in out and "chat-0" not in out  # older ones dropped
 
 
+def test_sessions_forget_deletes_a_saved_conversation():
+    ctx = _ctx()
+    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    dispatch("/save keeper", ctx)
+    dispatch("/save goner", ctx)  # renames keeper -> goner (drops keeper)
+    dispatch("/save keeper", _ctx())  # a separate session named keeper again
+
+    res = dispatch("/sessions forget goner", _ctx())
+    assert "Forgot session 'goner'" in res.output
+    remaining = dispatch("/sessions", _ctx()).output
+    assert "goner" not in remaining and "keeper" in remaining
+
+
+def test_sessions_forget_unknown_lists_what_exists():
+    res = dispatch("/sessions forget ghost", _ctx())
+    assert "No session 'ghost' to forget" in res.output
+
+
+def test_sessions_forget_requires_a_name():
+    assert "Usage: /sessions forget <name>" in dispatch("/sessions forget   ", _ctx()).output
+
+
+def test_sessions_bad_subcommand_shows_usage():
+    assert dispatch("/sessions frobnicate", _ctx()).output == "Usage: /sessions [forget <name>]"
+
+
+def test_sessions_forget_active_clears_current_name():
+    ctx = _ctx()
+    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    dispatch("/save active-one", ctx)
+    assert ctx.current_name == "active-one"
+
+    dispatch("/sessions forget active-one", ctx)
+    assert ctx.current_name is None  # the deleted session is no longer "current"
+
+
 def test_memory_list_empty():
     assert "(nothing remembered yet)" in dispatch("/memory", _ctx()).output
 
