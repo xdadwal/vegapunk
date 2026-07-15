@@ -12,5 +12,15 @@ __pycache__/
 # --- Vegapunk local state (REPL history, etc.) ---
 .vegapunk/
 
+# --- Vegapunk database (paths are repo-root-relative; the leading / anchors to
+#     this .gitignore's directory, not the host filesystem root) ---
+/vegapunk.db*
+/backups/
+
+# --- Generated / local artifacts (kept out of source; drop scratch files here) ---
+/artifacts/
+/skills-lock.json
+.DS_Store
+
 # --- autoloop scratch (standing prompt) ---
 PROMPT.md

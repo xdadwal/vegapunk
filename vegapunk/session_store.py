@@ -1,50 +1,40 @@
-"""Save, list, and resume named conversations on disk.
+"""Save, list, and resume named conversations in the embedded database.
 
-Pure file IO over message lists — one JSON file per session under
-``.vegapunk/sessions/``. Plaintext and human-editable (saved turns can include
-remembered facts), so the same no-secrets posture as the history/memory files.
-Names are slugified before they ever touch the filesystem, so a model- or
-user-supplied title can never escape the sessions directory.
+One row per session (``sessions.slug`` is the natural key), holding the message
+list as a JSON blob plus a turn count and timestamps. Names are slugified before
+they are ever used as a key, so a model- or user-supplied title stays ``[a-z0-9-]``.
+All storage failures surface as ``db.StoreError`` (an ``OSError``), so callers can
+degrade rather than crash — matching the old flat-file store's posture.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+import sys
 
-from .config import config
+from . import db
 
 
 class SessionNotFound(Exception):
     """No saved session by that name."""
 
 
-def sessions_dir() -> Path:
-    """The directory saved sessions live in (a function so tests monkeypatch it,
-    mirroring ``memory.memory_path``)."""
-    return config.sessions_dir
-
-
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
 
 
 def slugify(text: str, *, max_len: int = 40) -> str:
-    """Reduce free text to a safe filename stem of ``[a-z0-9-]`` only.
+    """Reduce free text to a safe key of ``[a-z0-9-]`` only.
 
-    Returns ``""`` when nothing usable remains. Traversal-safe: no slashes, dots,
-    or ``..`` survive, so a slug can never escape the sessions directory.
+    Returns ``""`` when nothing usable remains. No slashes, dots, or ``..``
+    survive, so a slug is always a safe, self-contained identifier.
     """
     slug = _NON_SLUG.sub("-", text.strip().lower()).strip("-")
     return slug[:max_len].strip("-")
 
 
-def _path(name: str) -> Path:
-    return sessions_dir() / f"{name}.json"
-
-
 def exists(name: str) -> bool:
-    return _path(name).is_file()
+    return bool(db.query("SELECT 1 FROM sessions WHERE slug = ?", (name,)))
 
 
 def unique_name(stem: str) -> str:
@@ -60,40 +50,50 @@ def unique_name(stem: str) -> str:
 
 
 def save_session(name: str, messages: list[dict]) -> None:
-    """Write ``messages`` to ``<name>.json``, creating the directory on first use."""
-    path = _path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(messages, indent=2), encoding="utf-8")
+    """Persist ``messages`` under ``name`` (insert or overwrite). Raises
+    ``db.StoreError`` on failure; ``created_at`` is preserved across overwrites."""
+    turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
+    now = db.utcnow()
+    db.execute(
+        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(slug) DO UPDATE SET "
+        "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at",
+        (name, json.dumps(messages), turns, now, now),
+    )
 
 
 def load_session(name: str) -> list[dict]:
-    """Return the messages saved under ``name``, or raise ``SessionNotFound``."""
-    path = _path(name)
-    if not path.is_file():
+    """Return the messages saved under ``name``, or raise ``SessionNotFound``.
+
+    A blob that won't parse is database corruption, not a missing session, so it
+    raises ``db.StoreError`` rather than masquerading as ``SessionNotFound``.
+    """
+    rows = db.query("SELECT messages FROM sessions WHERE slug = ?", (name,))
+    if not rows:
         raise SessionNotFound(name)
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(rows[0][0])
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise db.StoreError(f"session '{name}' is corrupt: {exc}") from exc
 
 
 def delete_session(name: str) -> None:
-    """Remove a saved session if present (used to rename — drop the old file)."""
-    _path(name).unlink(missing_ok=True)
+    """Remove a saved session if present (used to rename — drop the old row)."""
+    db.execute("DELETE FROM sessions WHERE slug = ?", (name,))
 
 
-def list_sessions() -> list[tuple[str, int]]:
-    """Every saved session as ``(name, turns)``, sorted by name.
-
-    A turn is one user message. Unreadable or corrupt files are skipped rather
-    than crashing the listing.
-    """
-    directory = sessions_dir()
-    if not directory.is_dir():
+def list_sessions(limit: int | None = None) -> list[tuple[str, int, str]]:
+    """Saved sessions as ``(name, turns, updated_at)``, most recently updated
+    first. Pass ``limit`` to cap how many are returned. Degrades to an empty list
+    (with a stderr note) if the database can't be read."""
+    sql = "SELECT slug, turns, updated_at FROM sessions ORDER BY updated_at DESC, slug"
+    try:
+        if limit is None:
+            rows = db.query(sql)
+        else:
+            rows = db.query(sql + " LIMIT ?", (limit,))
+    except db.StoreError as exc:
+        print(f"  [sessions] could not list: {exc}", file=sys.stderr)
         return []
-    out: list[tuple[str, int]] = []
-    for path in sorted(directory.glob("*.json")):
-        try:
-            messages = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
-        out.append((path.stem, turns))
-    return out
+    return [(slug, turns, updated_at) for slug, turns, updated_at in rows]

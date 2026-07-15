@@ -20,12 +20,6 @@ from vegapunk.prompter import ScriptedPrompter
 from vegapunk.session import Session
 
 
-@pytest.fixture(autouse=True)
-def _tmp_sessions(tmp_path, monkeypatch):
-    # Keep auto-save off the real repo and deterministic.
-    monkeypatch.setattr("vegapunk.session_store.sessions_dir", lambda: tmp_path)
-
-
 def _session(responses):
     return Session(FakeBrain(responses), tools=[], system_prompt="SYS")
 

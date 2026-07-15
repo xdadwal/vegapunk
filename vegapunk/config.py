@@ -72,28 +72,20 @@ class Config:
     # not here — config must not import the SDK (local-only setups never do).
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
-    # The REPL input history file (up/down recall, persisted across sessions).
-    # Defaults under the current directory's root so state stays with the
-    # project you launched in; override with VEGAPUNK_HISTORY_FILE. Stored in
-    # plaintext, so avoid pasting secrets into the prompt.
-    history_file: Path = Path(
-        os.getenv("VEGAPUNK_HISTORY_FILE", str(Path.cwd() / ".vegapunk" / "history"))
+    # The embedded database holding sessions, long-term memory, and REPL input
+    # history. Defaults to vegapunk.db at the project root (the launch
+    # directory). One Vegapunk process at a time (enforced with a lock file);
+    # snapshot with /backup. Contents are readable with any sqlite3 client, so
+    # the no-secrets posture still applies.
+    db_file: Path = Path(
+        os.getenv("VEGAPUNK_DB_FILE", str(Path.cwd() / "vegapunk.db"))
     ).expanduser()
 
-    # Vegapunk's long-term memory: durable facts/preferences it should still know
-    # next session. Auto-loaded into the system prompt at startup and appended to
-    # by the `remember` tool. Plaintext and human-editable, so avoid saving
-    # secrets. Defaults under the current directory, like history_file.
-    memory_file: Path = Path(
-        os.getenv("VEGAPUNK_MEMORY_FILE", str(Path.cwd() / ".vegapunk" / "memory.md"))
-    ).expanduser()
-
-    # Where saved conversations live (one JSON file per session). Conversations
-    # auto-save here each turn under a model-chosen name. Plaintext and
-    # human-editable, so — like memory — avoid pasting secrets into a chat.
-    sessions_dir: Path = Path(
-        os.getenv("VEGAPUNK_SESSIONS_DIR", str(Path.cwd() / ".vegapunk" / "sessions"))
-    ).expanduser()
+    # Embedding model for semantic memory recall, served by Docker Model Runner's
+    # OpenAI-compatible /embeddings endpoint (e.g. "ai/qwen3-embedding" after
+    # `docker model pull ai/qwen3-embedding`). Empty disables embeddings — memory
+    # still works; the recall tool falls back to plain text matching.
+    embed_model: str = os.getenv("VEGAPUNK_EMBED_MODEL", "")
 
     # Where skills live — reusable procedures in the Agent Skills format
     # (https://agentskills.io): one directory per skill holding a SKILL.md,

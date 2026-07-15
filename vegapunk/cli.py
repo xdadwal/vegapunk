@@ -13,7 +13,7 @@ import shutil
 import sys
 from datetime import datetime
 
-from . import memory, session_store, skills, style
+from . import db, embedding, memory, session_store, skills, style
 from .approval import CLIApprover
 from .brain import TextDelta, create_brain
 from .commands import CommandContext, dispatch
@@ -59,6 +59,14 @@ def _status_line(ctx: CommandContext) -> str:
 
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
+    # Persistence setup, before anything reads the database: take the
+    # single-process lock, reconcile embeddings with the configured model, and
+    # snapshot if the last backup is stale. All but the lock are best-effort and
+    # never block the REPL.
+    db.acquire_process_lock()
+    embedding.sync_embeddings()
+    db.backup_if_stale()
+
     # Defaults are built here (not as argument defaults) so tests can inject a
     # scripted prompter / fake-brain session and never touch the model or a TTY.
     if session is None:

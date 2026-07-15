@@ -5,5 +5,8 @@ openai>=1.0
 claude-agent-sdk>=0.2
 psutil>=5.9
 prompt_toolkit>=3.0.52
+# Embedded Turso database (import name: turso). Beta — the startup backup in
+# vegapunk/db.py exists because of this.
+pyturso>=0.6.1
 requests>=2.31
 beautifulsoup4>=4.12

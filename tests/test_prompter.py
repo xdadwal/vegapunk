@@ -21,7 +21,7 @@ from vegapunk.prompter import PromptToolkitPrompter, ScriptedPrompter
 
 
 def _prompter(tmp_path, inp):
-    return PromptToolkitPrompter(history_path=tmp_path / "history", input=inp, output=DummyOutput())
+    return PromptToolkitPrompter(history=InMemoryHistory(), input=inp, output=DummyOutput())
 
 
 def test_plain_line_submits(tmp_path):
@@ -44,16 +44,19 @@ def test_esc_enter_inserts_newline(tmp_path):
         assert _prompter(tmp_path, inp).prompt() == "first\nmore"
 
 
-def test_history_persists_to_file(tmp_path):
-    history_path = tmp_path / "history"
+def test_history_persists_to_db(tmp_path):
+    # Drive a prompter with the default DbHistory, then prove a fresh DbHistory
+    # reads the entry back from the (conftest-isolated) database.
+    from vegapunk.db_history import DbHistory
+
     with create_pipe_input() as inp:
         inp.send_text("remember me\r")
-        PromptToolkitPrompter(history_path=history_path, input=inp, output=DummyOutput()).prompt()
-    assert "remember me" in history_path.read_text()
+        PromptToolkitPrompter(input=inp, output=DummyOutput()).prompt()
+    assert "remember me" in list(DbHistory().load_history_strings())
 
 
-def test_prompter_uses_whole_line_command_completer(tmp_path):
-    completer = PromptToolkitPrompter(history_path=tmp_path / "history")._session.completer
+def test_prompter_uses_whole_line_command_completer():
+    completer = PromptToolkitPrompter(history=InMemoryHistory())._session.completer
     assert isinstance(completer, WordCompleter)
     # Slash-command prefix → suggests the command; a normal sentence → stays silent.
     assert [c.text for c in completer.get_completions(Document("/cl", 3), CompleteEvent())] == ["/clear"]
@@ -82,24 +85,24 @@ def test_scripted_prompter_raises_queued_exception():
     assert p.prompt() == "after"
 
 
-def test_status_callable_is_wired_to_the_bottom_toolbar(tmp_path):
+def test_status_callable_is_wired_to_the_bottom_toolbar():
     status = lambda: " gemma · my-chat"  # noqa: E731 — mirrors the CLI's wiring
-    prompter = PromptToolkitPrompter(history_path=tmp_path / "history", status=status)
+    prompter = PromptToolkitPrompter(history=InMemoryHistory(), status=status)
     assert prompter._session.bottom_toolbar is status  # re-evaluated per render
 
 
-def test_prompt_message_is_plain_off_a_tty(tmp_path):
+def test_prompt_message_is_plain_off_a_tty():
     # Under pytest stdout isn't a TTY and the suite pins color mode "auto",
     # so the constructor must pick the plain string, not style tuples.
-    prompter = PromptToolkitPrompter(history_path=tmp_path / "history")
+    prompter = PromptToolkitPrompter(history=InMemoryHistory())
     assert prompter._session.message == "you> "
 
 
-def test_prompt_message_is_gold_when_color_forced(tmp_path, monkeypatch):
+def test_prompt_message_is_gold_when_color_forced(monkeypatch):
     from dataclasses import replace
 
     from vegapunk import style
 
     monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
-    prompter = PromptToolkitPrompter(history_path=tmp_path / "history")
+    prompter = PromptToolkitPrompter(history=InMemoryHistory())
     assert prompter._session.message == [("bold fg:ansiyellow", "you> ")]

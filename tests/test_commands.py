@@ -9,14 +9,9 @@ from __future__ import annotations
 import pytest
 from test_session import FakeBrain  # sibling module (tests/ is on sys.path)
 
-from vegapunk import session_store
+from vegapunk import db, session_store
 from vegapunk.commands import CommandContext, dispatch
 from vegapunk.session import Session
-
-
-@pytest.fixture(autouse=True)
-def _tmp_sessions(tmp_path, monkeypatch):
-    monkeypatch.setattr("vegapunk.session_store.sessions_dir", lambda: tmp_path)
 
 
 def _ctx() -> CommandContext:
@@ -124,6 +119,125 @@ def test_load_resumes_and_reports_turns():
 def test_load_missing_lists_what_exists():
     res = dispatch("/load ghost", _ctx())
     assert "No session 'ghost'" in res.output
+
+
+def test_sessions_shows_recent_five_newest_first_with_timestamps():
+    from vegapunk.commands import _local_stamp
+
+    # Seven sessions with distinct times (some sharing a day) so the timestamp,
+    # not just the date, is what tells them apart.
+    stamps = [
+        "2026-01-06T09:00:00.000000Z",
+        "2026-01-06T14:30:00.000000Z",  # same day as above, later
+        "2026-01-07T08:00:00.000000Z",
+        "2026-01-07T20:15:00.000000Z",
+        "2026-01-08T10:00:00.000000Z",
+        "2026-01-09T11:00:00.000000Z",
+        "2026-01-10T12:00:00.000000Z",
+    ]
+    for i, ts in enumerate(stamps):
+        db.execute(
+            "INSERT INTO sessions (slug, messages, turns, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (f"chat-{i}", "[]", 0, ts, ts),
+        )
+
+    out = dispatch("/sessions", _ctx()).output
+    lines = out.splitlines()
+    assert len(lines) == 5  # capped at five
+    assert "chat-6" in lines[0]  # newest first
+    assert _local_stamp(stamps[6]) in lines[0]  # shows the full local timestamp (tz-robust)
+    assert "chat-2" in lines[-1]  # fifth-newest
+    assert "chat-1" not in out and "chat-0" not in out  # older ones dropped
+
+
+def test_sessions_forget_deletes_a_saved_conversation():
+    ctx = _ctx()
+    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    dispatch("/save keeper", ctx)
+    dispatch("/save goner", ctx)  # renames keeper -> goner (drops keeper)
+    dispatch("/save keeper", _ctx())  # a separate session named keeper again
+
+    res = dispatch("/sessions forget goner", _ctx())
+    assert "Forgot session 'goner'" in res.output
+    remaining = dispatch("/sessions", _ctx()).output
+    assert "goner" not in remaining and "keeper" in remaining
+
+
+def test_sessions_forget_unknown_lists_what_exists():
+    res = dispatch("/sessions forget ghost", _ctx())
+    assert "No session 'ghost' to forget" in res.output
+
+
+def test_sessions_forget_requires_a_name():
+    assert "Usage: /sessions forget <name>" in dispatch("/sessions forget   ", _ctx()).output
+
+
+def test_sessions_bad_subcommand_shows_usage():
+    assert dispatch("/sessions frobnicate", _ctx()).output == "Usage: /sessions [forget <name>]"
+
+
+def test_sessions_forget_active_clears_current_name():
+    ctx = _ctx()
+    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    dispatch("/save active-one", ctx)
+    assert ctx.current_name == "active-one"
+
+    dispatch("/sessions forget active-one", ctx)
+    assert ctx.current_name is None  # the deleted session is no longer "current"
+
+
+def test_memory_list_empty():
+    assert "(nothing remembered yet)" in dispatch("/memory", _ctx()).output
+
+
+def test_memory_list_shows_short_id_date_and_fact():
+    from vegapunk.memory import list_memory, save_memory
+
+    save_memory("prefers ruff over flake8")
+    saved = list_memory()[0]
+
+    out = dispatch("/memory list", _ctx()).output
+    assert saved.id[:8] in out
+    assert saved.created_at[:10] in out
+    assert "prefers ruff over flake8" in out
+
+
+def test_memory_forget_removes_by_prefix():
+    from vegapunk.memory import list_memory, save_memory
+
+    save_memory("keep me")
+    save_memory("forget me")
+    goner = next(m for m in list_memory() if m.content == "forget me")
+
+    res = dispatch(f"/memory forget {goner.id[:8]}", _ctx())
+    assert "Forgot: forget me" in res.output
+    assert "updates next session" in res.output  # honest about the staleness
+    assert [m.content for m in list_memory()] == ["keep me"]
+
+
+def test_memory_forget_unknown_prefix():
+    assert "No memory fact matches" in dispatch("/memory forget deadbeef", _ctx()).output
+
+
+def test_memory_bad_subcommand_shows_usage():
+    assert "Usage: /memory" in dispatch("/memory frobnicate", _ctx()).output
+
+
+def test_backup_writes_a_snapshot_file():
+    from vegapunk.memory import save_memory
+
+    save_memory("something to back up")
+    res = dispatch("/backup", _ctx())
+    assert res.output.startswith("Backed up to ")
+    path = res.output.removeprefix("Backed up to ").strip()
+    from pathlib import Path
+
+    assert Path(path).is_file()
+
+
+def test_help_lists_memory_and_backup():
+    out = dispatch("/help", _ctx()).output
+    assert "/memory" in out and "/backup" in out
 
 
 def _convo(n: int) -> list[dict]:

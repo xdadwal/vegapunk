@@ -37,16 +37,19 @@ python3 -m venv .venv
 
 This starts an interactive REPL (it needs the model endpoint to be reachable). The REPL offers:
 
-- **Persistent history** across sessions (`.vegapunk/history`), recalled with ↑/↓.
-- **Persistent memory** — durable facts and preferences you share are saved to `.vegapunk/memory.md`
-  and auto-loaded into future sessions, so Vegapunk still knows them next time.
+- **Persistent history** across sessions (recalled with ↑/↓), stored in the database.
+- **Persistent memory** — durable facts and preferences you share are saved and auto-loaded into
+  future sessions, so Vegapunk still knows them next time. Prune them with `/memory forget <id>`,
+  and (optionally) search them semantically with the `recall` tool — set `VEGAPUNK_EMBED_MODEL` to
+  an embedding model your endpoint serves and Vegapunk embeds facts for similarity search, falling
+  back to plain text matching otherwise.
 - **Skills** — teach Vegapunk repeatable procedures by dropping
   [Agent Skills](https://agentskills.io) directories in `.agents/skills/` (the tool-agnostic
   community format — skills written for other agents work unchanged); each is advertised to the
   model as one line, and its full instructions load on demand when a task matches (or force one
   with `/skill <name>`). See [Skills](#skills).
 - **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
-  from your first message (`.vegapunk/sessions/`), so you can pick it back up later.
+  from your first message, so you can pick it back up later.
 - **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
@@ -72,7 +75,9 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 |---------|--------------|
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
-| `/sessions` | List saved conversations and their turn counts |
+| `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
+| `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
+| `/backup` | Snapshot the database to `.vegapunk/backups/` |
 | `/skills` | List available skills |
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
@@ -168,14 +173,29 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
-| `VEGAPUNK_HISTORY_FILE` | REPL input-history file | `.vegapunk/history` |
-| `VEGAPUNK_MEMORY_FILE` | Long-term memory file (auto-loaded into the system prompt) | `.vegapunk/memory.md` |
-| `VEGAPUNK_SESSIONS_DIR` | Directory for saved conversations (one JSON file each) | `.vegapunk/sessions` |
+| `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
+| `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
 | `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
 | `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
 | `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = the SDK default (`high`); adjust live with `/effort` | (empty) |
+
+### Data & backups
+
+Sessions, long-term memory, and REPL input history live in one embedded database at `vegapunk.db`
+in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
+
+- **One process at a time.** Turso does not support multi-process access; a lock file guards
+  against it, so a second `vegapunk` in the same directory is refused rather than risking
+  corruption.
+- **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
+  newest three); take one any time with `/backup`.
+- **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
+  secrets" posture as before applies.
+- **Recovery.** The file is a standard SQLite database. With Vegapunk stopped, open `vegapunk.db`
+  (or a snapshot) with any `sqlite3` client to read or export your data — just never run two
+  engines against it at once.
 
 ### The `claude` provider
 
@@ -206,17 +226,20 @@ keeps your effort choice.
 vegapunk/
   __main__.py    # `python -m vegapunk` entry → cli.main()
   cli.py         # interactive REPL and command dispatch
-  commands.py    # slash commands (/help, /save, /load, /sessions, /new, /exit)
-  session_store.py # save/list/resume conversations on disk
+  commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
+  db.py          # the embedded Turso database: connection, schema, lock, backups
+  session_store.py # save/list/resume conversations in the database
   loop.py        # the agent loop: think → act (run tools) → observe → repeat
   session.py     # conversation state across turns
   brain.py       # the swappable model layer: Brain ABC, local DMR backend, create_brain factory
   claude_brain.py # Claude subscription backend (via the bundled Claude Code CLI)
   prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
+  db_history.py  # REPL input history backed by the database
   approval.py    # interactive approval gate for guarded tools
   config.py      # settings + the persona system prompt
   style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
+  embedding.py   # optional embeddings for semantic memory recall
   skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
   tools/         # one module per tool, plus the @tool registry
 tests/           # test suite

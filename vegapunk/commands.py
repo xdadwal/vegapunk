@@ -10,9 +10,10 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Callable
 
-from . import session_store, skills
+from . import db, memory, session_store, skills
 from .brain import create_brain
 from .config import config
 from .session import Session
@@ -73,11 +74,24 @@ def dispatch(line: str, ctx: CommandContext) -> CommandResult | None:
     return cmd.handler(ctx, arg.strip())
 
 
+def _local_stamp(iso_utc: str) -> str:
+    """Render a stored UTC timestamp (db.utcnow format) as local-time
+    ``YYYY-MM-DD HH:MM`` — the minute lets same-day sessions be told apart.
+    Falls back to the raw date+time on an unparseable value."""
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return iso_utc[:16].replace("T", " ")
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
 def _format_sessions() -> str:
-    rows = session_store.list_sessions()
+    rows = session_store.list_sessions(limit=5)
     if not rows:
         return "(no saved sessions)"
-    return "\n".join(f"  {name} ({turns} turns)" for name, turns in rows)
+    return "\n".join(
+        f"  {name}  ({turns} turns, {_local_stamp(updated_at)})" for name, turns, updated_at in rows
+    )
 
 
 @command("help", "Show this help")
@@ -162,11 +176,16 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
     if not name:
         return CommandResult(output="Usage: /save <name>")
-    if name != ctx.current_name and session_store.exists(name):
-        return CommandResult(output=f"A session named '{name}' already exists — choose another name.")
-    session_store.save_session(name, ctx.session.messages)
-    if ctx.current_name and ctx.current_name != name:
-        session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) file
+    try:
+        if name != ctx.current_name and session_store.exists(name):
+            return CommandResult(
+                output=f"A session named '{name}' already exists — choose another name."
+            )
+        session_store.save_session(name, ctx.session.messages)
+        if ctx.current_name and ctx.current_name != name:
+            session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) row
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
     return CommandResult(output=f"Saved as '{name}'.")
 
@@ -180,6 +199,8 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
         messages = session_store.load_session(name)
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not load '{name}': {exc}")
     ctx.session.restore(messages)
     ctx.current_name = name
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
@@ -187,9 +208,55 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
 
 
-@command("sessions", "List saved sessions")
+@command("sessions", "List recent conversations, or delete one: /sessions [forget <name>]")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
-    return CommandResult(output=_format_sessions())
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    if not sub:
+        return CommandResult(output=_format_sessions())
+    if sub == "forget":
+        name = session_store.slugify(rest)
+        if not name:
+            return CommandResult(output="Usage: /sessions forget <name>")
+        try:
+            if not session_store.exists(name):
+                return CommandResult(output=f"No session '{name}' to forget.\n{_format_sessions()}")
+            session_store.delete_session(name)
+        except db.StoreError as exc:
+            return CommandResult(output=f"Could not forget '{name}': {exc}")
+        if ctx.current_name == name:
+            # The live conversation's saved copy is gone; the next turn re-saves
+            # it under a fresh name rather than resurrecting the deleted one.
+            ctx.current_name = None
+        return CommandResult(output=f"Forgot session '{name}'.")
+    return CommandResult(output="Usage: /sessions [forget <name>]")
+
+
+@command("memory", "List or forget remembered facts: /memory [list | forget <id>]")
+def _memory(ctx: CommandContext, arg: str) -> CommandResult:
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    if sub in ("", "list"):
+        rows = memory.list_memory()
+        if not rows:
+            return CommandResult(output="(nothing remembered yet)")
+        lines = [f"  {m.id[:8]}  {m.created_at[:10]}  {_oneline(m.content)}" for m in rows]
+        return CommandResult(output="\n".join(lines))
+    if sub == "forget":
+        result = memory.forget_memory(rest)
+        if result.startswith("Forgot:"):
+            result += " (the system prompt updates next session)"
+        return CommandResult(output=result)
+    return CommandResult(output="Usage: /memory [list | forget <id>]")
+
+
+@command("backup", "Snapshot the database: /backup")
+def _backup(ctx: CommandContext, arg: str) -> CommandResult:
+    try:
+        path = db.backup_now()
+    except db.StoreError as exc:
+        return CommandResult(output=f"Backup failed: {exc}")
+    return CommandResult(output=f"Backed up to {path}")
 
 
 @command("skills", "List available skills (SKILL.md directories under .agents/skills/)")
