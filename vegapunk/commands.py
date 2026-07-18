@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
-from . import db, memory, session_store, skills
+from . import db, memory, scheduler, session_store, skills
 from .brain import create_brain
 from .config import config
 from .session import Session
@@ -248,6 +248,46 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
             result += " (the system prompt updates next session)"
         return CommandResult(output=result)
     return CommandResult(output="Usage: /memory [list | forget <id>]")
+
+
+def _format_tasks() -> str:
+    tasks = scheduler.list_tasks()
+    if not tasks:
+        return "(no scheduled tasks)"
+    lines = []
+    for t in tasks:
+        # last_status is None until the task has run once; show "pending" then.
+        status = t.last_status or "pending"
+        lines.append(
+            f"  {t.id[:8]}  every {t.interval_seconds}s  next {_local_stamp(t.next_run_at)}  "
+            f"[{status}]  {_oneline(t.prompt)}"
+        )
+    return "\n".join(lines)
+
+
+@command("schedule", "Manage scheduled tasks: /schedule [list | add <seconds> <prompt> | remove <id>]")
+def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
+    sub, _, rest = arg.partition(" ")
+    sub = sub.strip().lower()
+    if sub in ("", "list"):
+        return CommandResult(output=_format_tasks())
+    if sub == "add":
+        # "<seconds> <prompt>": the first token is the interval, the rest is the
+        # prompt. Validation of the interval's sign and the prompt's emptiness
+        # lives in scheduler.add_task; here we just parse and hand off.
+        interval_str, _, prompt = rest.strip().partition(" ")
+        if not interval_str or not prompt.strip():
+            return CommandResult(output="Usage: /schedule add <seconds> <prompt>")
+        try:
+            interval = int(interval_str)
+        except ValueError:
+            return CommandResult(
+                output="Usage: /schedule add <seconds> <prompt>  (seconds must be a whole number)"
+            )
+        return CommandResult(output=scheduler.add_task(prompt, interval))
+    if sub == "remove":
+        return CommandResult(output=scheduler.remove_task(rest))
+    return CommandResult(output="Usage: /schedule [list | add <seconds> <prompt> | remove <id>]")
 
 
 @command("backup", "Snapshot the database: /backup")

@@ -223,6 +223,73 @@ def test_memory_bad_subcommand_shows_usage():
     assert "Usage: /memory" in dispatch("/memory frobnicate", _ctx()).output
 
 
+def test_schedule_list_empty():
+    assert "(no scheduled tasks)" in dispatch("/schedule", _ctx()).output
+
+
+def test_schedule_add_creates_a_task():
+    from vegapunk.scheduler import list_tasks
+
+    res = dispatch("/schedule add 300 poll example.com and remember changes", _ctx())
+
+    assert "Scheduled task" in res.output
+    tasks = list_tasks()
+    assert len(tasks) == 1
+    assert tasks[0].prompt == "poll example.com and remember changes"
+    assert tasks[0].interval_seconds == 300
+
+
+def test_schedule_list_shows_id_interval_status_and_prompt():
+    from vegapunk.scheduler import list_tasks
+
+    dispatch("/schedule add 60 do the thing", _ctx())
+    task = list_tasks()[0]
+
+    out = dispatch("/schedule list", _ctx()).output
+    assert task.id[:8] in out
+    assert "every 60s" in out
+    assert "do the thing" in out
+    assert "[pending]" in out  # never run yet -> pending, not a stored status
+
+
+def test_schedule_add_requires_seconds_and_prompt():
+    assert "Usage: /schedule add" in dispatch("/schedule add", _ctx()).output
+    assert "Usage: /schedule add" in dispatch("/schedule add 60", _ctx()).output  # no prompt
+
+
+def test_schedule_add_rejects_non_numeric_seconds():
+    res = dispatch("/schedule add soon do a thing", _ctx())
+    assert "whole number" in res.output
+
+
+def test_schedule_add_surfaces_scheduler_validation():
+    # scheduler.add_task owns the sign check; the command passes its message through.
+    assert "positive" in dispatch("/schedule add 0 do a thing", _ctx()).output
+
+
+def test_schedule_remove_deletes_by_prefix():
+    from vegapunk.scheduler import list_tasks
+
+    dispatch("/schedule add 60 goner", _ctx())
+    task = list_tasks()[0]
+
+    res = dispatch(f"/schedule remove {task.id[:8]}", _ctx())
+    assert "Removed" in res.output
+    assert list_tasks() == []
+
+
+def test_schedule_remove_unknown_prefix():
+    assert "No scheduled task matches" in dispatch("/schedule remove deadbeef", _ctx()).output
+
+
+def test_schedule_bad_subcommand_shows_usage():
+    assert "Usage: /schedule" in dispatch("/schedule frobnicate", _ctx()).output
+
+
+def test_help_lists_schedule():
+    assert "/schedule" in dispatch("/help", _ctx()).output
+
+
 def test_backup_writes_a_snapshot_file():
     from vegapunk.memory import save_memory
 

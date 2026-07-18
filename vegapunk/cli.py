@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
+from collections.abc import Generator
 from datetime import datetime
 
 from . import db, embedding, memory, session_store, skills, style
@@ -19,6 +21,7 @@ from .brain import TextDelta, create_brain
 from .commands import CommandContext, dispatch
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
+from .scheduler import Scheduler
 from .session import Session
 from .tools import ALL_TOOLS
 
@@ -58,6 +61,36 @@ def _status_line(ctx: CommandContext) -> str:
     return left + " " * max(pad, 1) + right
 
 
+def _render_reply(events: Generator[TextDelta, None, str]) -> None:
+    """Stream a turn's reply to stdout: the ``vega>`` prefix on the first text
+    delta, then each fragment as it arrives, with the line closed at the end. A
+    reply with no text still gets its (blank) prompt line, so the user sees the
+    turn ended rather than a silently missing reply.
+
+    Pulled out of ``main``'s loop so that loop can wrap a whole turn in the
+    shared scheduler lock without the rendering pushing it too deep to read. The
+    pull-by-``next`` shape is kept (rather than a ``for``) so a Ctrl-C landing
+    between pulls still surfaces from here for ``main`` to catch and roll back.
+    """
+    streamed = False
+    line_open = False
+    while True:
+        try:
+            event = next(events)
+        except StopIteration:  # .value carries the reply; already rendered
+            break
+        if isinstance(event, TextDelta) and event.text:
+            if not streamed:
+                print(_vega_prefix(), end="", flush=True)
+                streamed = True
+            print(event.text, end="", flush=True)
+            line_open = not event.text.endswith("\n")
+    if not streamed:
+        print(_vega_prefix())  # an empty reply still gets its prompt line
+    elif line_open:
+        print()
+
+
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
     # Persistence setup, before anything reads the database: take the
     # single-process lock, reconcile embeddings with the configured model, and
@@ -95,79 +128,84 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         )
     )
 
-    while True:
-        try:
-            user_input = prompter.prompt().strip()
-        except EOFError:  # Ctrl-D
-            print("\nbye.")
-            return
-        except KeyboardInterrupt:  # Ctrl-C while waiting for input
-            print("\n" + style.paint("(interrupted — type /exit to quit)", style.YELLOW, sys.stdout))
-            continue
-
-        if not user_input:
-            continue
-
-        result = dispatch(user_input, ctx)
-        if result is not None:  # it was a slash command
-            if result.output:
-                print(result.output)
-            if result.exit:
+    # The background scheduler shares this lock — and the live brain — with the
+    # foreground REPL: a due task and a typed turn take strict turns on the one
+    # model and the one Turso connection, never overlapping. The provider is
+    # ``lambda: session.brain`` (not a snapshot) so a /model swap mid-session is
+    # honored by the next scheduled run.
+    lock = threading.Lock()
+    scheduler = Scheduler(lambda: session.brain, ALL_TOOLS, lock)
+    scheduler.start()
+    try:
+        while True:
+            try:
+                user_input = prompter.prompt().strip()
+            except EOFError:  # Ctrl-D
+                print("\nbye.")
                 return
-            continue
+            except KeyboardInterrupt:  # Ctrl-C while waiting for input
+                print("\n" + style.paint("(interrupted — type /exit to quit)", style.YELLOW, sys.stdout))
+                continue
 
-        if ctx.pending_skill is not None:
-            # A /skill staging rides this message: body first, imperatively
-            # framed (the channel this model follows), then the request. The
-            # closing marker keeps a body that ends in examples or quotes from
-            # bleeding into the request. The combined turn enters history and
-            # autosave as-is — an honest record of what the model actually saw.
-            name, body = ctx.pending_skill
-            user_input = (
-                f"[Skill '{name}' — follow these instructions for this request:]\n"
-                f"{body}\n[End of skill instructions. The request:]\n{user_input}"
-            )
-            ctx.pending_skill = None
+            if not user_input:
+                continue
 
-        events = None
-        try:
-            # send() is a generator — nothing runs until the first next().
-            # The loop guarantees the whole reply arrives as TextDeltas, so
-            # rendering is just: print what you're handed, as you're handed it.
-            events = session.send(user_input)
-            streamed = False
-            line_open = False
-            while True:
+            # From here down we touch the one model and the one Turso connection
+            # the scheduler also uses, so hold the shared lock across the whole
+            # turn — command dispatch and its DB writes, the model turn, and the
+            # autosave. Only the idle prompt wait above runs unlocked, which is
+            # exactly when a due background task should be free to run.
+            with lock:
+                result = dispatch(user_input, ctx)
+                if result is not None:  # it was a slash command
+                    if result.output:
+                        print(result.output)
+                    if result.exit:
+                        return
+                    continue
+
+                if ctx.pending_skill is not None:
+                    # A /skill staging rides this message: body first, imperatively
+                    # framed (the channel this model follows), then the request. The
+                    # closing marker keeps a body that ends in examples or quotes from
+                    # bleeding into the request. The combined turn enters history and
+                    # autosave as-is — an honest record of what the model actually saw.
+                    name, body = ctx.pending_skill
+                    user_input = (
+                        f"[Skill '{name}' — follow these instructions for this request:]\n"
+                        f"{body}\n[End of skill instructions. The request:]\n{user_input}"
+                    )
+                    ctx.pending_skill = None
+
+                events = None
                 try:
-                    event = next(events)
-                except StopIteration:  # .value carries the reply; already rendered
-                    break
-                if isinstance(event, TextDelta) and event.text:
-                    if not streamed:
-                        print(_vega_prefix(), end="", flush=True)
-                        streamed = True
-                    print(event.text, end="", flush=True)
-                    line_open = not event.text.endswith("\n")
-            if not streamed:
-                print(_vega_prefix())  # an empty reply still gets its prompt line
-            elif line_open:
-                print()
-        except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
-            if events is not None:
-                # Closing throws GeneratorExit into the paused send(), which
-                # rolls the partial turn out of history deterministically
-                # (rather than whenever the abandoned generator gets GC'd).
-                events.close()
-            print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
-            continue
-        except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
-            # The turn is already rolled out of history (send()'s rollback),
-            # so show the error — Claude auth failures arrive here with their
-            # "run `claude /login`" hint — and keep the session (approvals,
-            # /model, staged skills) alive for the user to recover.
-            print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
-            continue
-        _autosave_turn(ctx)
+                    # send() is a generator — nothing runs until the first next().
+                    # The loop guarantees the whole reply arrives as TextDeltas, so
+                    # rendering is just: print what you're handed, as you're handed it.
+                    events = session.send(user_input)
+                    _render_reply(events)
+                except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
+                    if events is not None:
+                        # Closing throws GeneratorExit into the paused send(), which
+                        # rolls the partial turn out of history deterministically
+                        # (rather than whenever the abandoned generator gets GC'd).
+                        events.close()
+                    print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
+                    continue
+                except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
+                    # The turn is already rolled out of history (send()'s rollback),
+                    # so show the error — Claude auth failures arrive here with their
+                    # "run `claude /login`" hint — and keep the session (approvals,
+                    # /model, staged skills) alive for the user to recover.
+                    print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
+                    continue
+                _autosave_turn(ctx)
+    finally:
+        # Stop the ticker on every exit path (/exit, Ctrl-D, or an error escaping
+        # the loop). It's a daemon thread — the process could exit without this —
+        # but stopping deterministically joins any task in flight rather than
+        # leaving it to the interpreter's reaper.
+        scheduler.stop()
 
 
 def _autosave_turn(ctx: CommandContext) -> None:
