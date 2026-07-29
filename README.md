@@ -194,16 +194,19 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 Sessions, long-term memory, and REPL input history live in one embedded database at `vegapunk.db`
 in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
 
-- **One process at a time.** Turso does not support multi-process access; a lock file guards
-  against it, so a second `vegapunk` in the same directory is refused rather than risking
-  corruption.
+- **One process at a time.** A lock file refuses a second `vegapunk` in the same directory. This is
+  policy, not a storage limit — connections enable Turso's experimental `multiprocess_wal`, which
+  coordinates several processes through a sibling `.tshm` file — but nothing yet coordinates two
+  REPLs, which would both autosave the same conversation and run the same due task. Multi-process
+  access needs 64-bit Linux/macOS and a local filesystem (not NFS/SMB).
 - **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
   newest three); take one any time with `/backup`.
 - **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
   secrets" posture as before applies.
-- **Recovery.** The file is a standard SQLite database. With Vegapunk stopped, open `vegapunk.db`
-  (or a snapshot) with any `sqlite3` client to read or export your data — just never run two
-  engines against it at once.
+- **Recovery.** The file is a standard SQLite database, so any `sqlite3` client can open
+  `vegapunk.db` (or a snapshot) to read or export your data. Worth knowing that Turso's
+  multi-process coordination format is experimental and may change between releases — which is
+  what the automatic backups are insurance for.
 
 ### The `claude` provider
 

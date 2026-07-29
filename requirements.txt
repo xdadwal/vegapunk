@@ -6,7 +6,10 @@ claude-agent-sdk>=0.2
 psutil>=5.9
 prompt_toolkit>=3.0.52
 # Embedded Turso database (import name: turso). Beta — the startup backup in
-# vegapunk/db.py exists because of this.
-pyturso>=0.6.1
+# vegapunk/db.py exists because of this. The 0.7.1 floor is load-bearing, not
+# hygiene: multi-process access (`multiprocess_wal`) only actually works from
+# 0.7.1 on, and the scheduler worker depends on it. Note 0.7.1 also regressed
+# thread-safety for a shared connection, which vegapunk/db.py's _conn_lock covers.
+pyturso>=0.7.1
 requests>=2.31
 beautifulsoup4>=4.12
