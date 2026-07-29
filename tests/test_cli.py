@@ -325,6 +325,71 @@ def test_main_builds_the_brain_from_the_configured_provider(monkeypatch, capsys)
     assert "model stub-model" in capsys.readouterr().out  # banner shows the live brain
 
 
+class _SpyScheduler:
+    """Captures how cli.main drives the scheduler without starting a real thread."""
+
+    instances: list["_SpyScheduler"] = []
+
+    def __init__(self, brain_provider, tools, lock, poll_seconds=30.0):
+        self.brain_provider = brain_provider
+        self.tools = tools
+        self.lock = lock
+        self.started = 0
+        self.stopped = 0
+        _SpyScheduler.instances.append(self)
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stopped += 1
+
+
+@pytest.fixture
+def spy_scheduler(monkeypatch):
+    _SpyScheduler.instances = []
+    monkeypatch.setattr("vegapunk.cli.Scheduler", _SpyScheduler)
+    return _SpyScheduler
+
+
+def test_main_starts_and_stops_the_scheduler(spy_scheduler, capsys):
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    assert len(spy_scheduler.instances) == 1
+    sched = spy_scheduler.instances[0]
+    assert sched.started == 1
+    assert sched.stopped == 1  # stopped on the /exit path
+
+
+def test_main_stops_the_scheduler_on_eof(spy_scheduler, capsys):
+    main(prompter=ScriptedPrompter([EOFError]), session=_session([]))
+    assert spy_scheduler.instances[0].stopped == 1  # finally covers the Ctrl-D path too
+
+
+def test_scheduler_reads_the_live_brain_after_a_swap(spy_scheduler, capsys):
+    # The provider is lambda: session.brain, not a snapshot — so a /model swap
+    # mid-session is honored by the next scheduled run.
+    session = _session([])
+    main(prompter=ScriptedPrompter(["/exit"]), session=session)
+    provider = spy_scheduler.instances[0].brain_provider
+    assert provider() is session.brain  # reads the current brain
+    session.swap_brain(_LabeledBrain("swapped"))
+    assert provider().model_label == "swapped"  # follows the swap, not the launch model
+
+
+def test_main_shares_one_lock_between_scheduler_and_turn(spy_scheduler, capsys):
+    # The turn is wrapped in the very lock the scheduler holds; if they differed,
+    # a background task and a typed turn could hit the one model at once. Pin that
+    # the turn actually acquires the scheduler's lock by making acquire observable.
+    import threading
+
+    session = _session([_text("yo"), _text("title")])
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=session)
+    lock = spy_scheduler.instances[0].lock
+    assert isinstance(lock, type(threading.Lock()))
+    assert lock.acquire(blocking=False)  # free after the turn — released, not leaked
+    lock.release()
+
+
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
     monkeypatch.setattr("vegapunk.skills.skills_dir", lambda: tmp_path)

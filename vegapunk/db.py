@@ -22,7 +22,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import turso
@@ -66,6 +66,18 @@ CREATE TABLE IF NOT EXISTS input_history (
     entry TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    next_run_at TEXT NOT NULL,
+    last_run_at TEXT,
+    last_status TEXT,
+    last_result TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(enabled, next_run_at);
 """
 
 
@@ -84,13 +96,39 @@ def db_path() -> Path:
     return config.db_file
 
 
+# The one place the timestamp format lives. utcnow() and utcnow_plus() share it
+# so a future format change can't desync "now" stamps from "due" stamps.
+_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
 def utcnow() -> str:
     """ISO-8601 UTC with microseconds, e.g. ``2026-07-09T12:34:56.123456Z``.
 
     Fixed width and lexicographically sortable; the microseconds keep same-second
     rows ordered without a separate sequence column.
     """
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return datetime.now(timezone.utc).strftime(_STAMP_FORMAT)
+
+
+def utcnow_plus(seconds: float) -> str:
+    """The ``utcnow()`` stamp for ``seconds`` in the future — same format and
+    width, so it compares lexicographically against ``utcnow()`` to answer "is
+    this scheduled task due yet?" without a datetime round-trip at the comparison.
+    """
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).strftime(_STAMP_FORMAT)
+
+
+def stamp_plus(stamp: str, seconds: float) -> str:
+    """The stamp ``seconds`` after a given ``utcnow()``-format ``stamp`` — same
+    format and width, so the result stays lexicographically comparable.
+
+    Lets a caller advance a schedule from a *recorded* instant rather than only
+    from wall-clock now, so the "ran at" and "next due" stamps derive from one
+    clock read instead of two (see ``scheduler.record_run``). Parses via the
+    shared ``_STAMP_FORMAT`` so parse and format can't drift apart.
+    """
+    parsed = datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=timezone.utc)
+    return (parsed + timedelta(seconds=seconds)).strftime(_STAMP_FORMAT)
 
 
 def new_id() -> str:
