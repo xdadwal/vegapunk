@@ -9,11 +9,13 @@ replies stream to stdout token by token as the model generates them.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 import sys
-import threading
 from collections.abc import Generator
 from datetime import datetime
+from pathlib import Path
 
 from . import db, embedding, memory, session_store, skills, style
 from .approval import CLIApprover
@@ -21,7 +23,6 @@ from .brain import TextDelta, create_brain
 from .commands import CommandContext, dispatch
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
-from .scheduler import Scheduler
 from .session import Session
 from .tools import ALL_TOOLS
 
@@ -67,10 +68,9 @@ def _render_reply(events: Generator[TextDelta, None, str]) -> None:
     reply with no text still gets its (blank) prompt line, so the user sees the
     turn ended rather than a silently missing reply.
 
-    Pulled out of ``main``'s loop so that loop can wrap a whole turn in the
-    shared scheduler lock without the rendering pushing it too deep to read. The
-    pull-by-``next`` shape is kept (rather than a ``for``) so a Ctrl-C landing
-    between pulls still surfaces from here for ``main`` to catch and roll back.
+    Kept out of ``main``'s loop, which has enough going on. The pull-by-``next``
+    shape is deliberate (rather than a ``for``) so a Ctrl-C landing between pulls
+    still surfaces from here for ``main`` to catch and roll back.
     """
     streamed = False
     line_open = False
@@ -128,18 +128,28 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         )
     )
 
-    # The background scheduler shares this lock — and the live brain — with the
-    # foreground REPL: a due task and a typed turn never overlap on the one model
-    # and the one Turso connection. Holding it here is what claims priority for
-    # the human: the ticker takes it without blocking and skips its tick while a
-    # typed turn owns it, so a due task waits for a quiet moment instead of
-    # queueing ahead of your next turn. The provider is ``lambda: session.brain``
-    # (not a snapshot) so a /model swap mid-session is honored by the next run.
-    lock = threading.Lock()
-    scheduler = Scheduler(lambda: session.brain, ALL_TOOLS, lock)
-    scheduler.start()
+    # Scheduled tasks run in their own process, not a thread here: nothing to
+    # serialize against your turns, and its trace goes to its own log instead of
+    # landing on top of your prompt. Coordination is entirely through the
+    # database — /schedule writes rows, the worker polls them.
+    worker, worker_log = _start_worker()
+    warned_worker_died = False
     try:
         while True:
+            # A worker that died (lock contention, bad model config) would
+            # otherwise mean scheduled tasks silently stop happening. Said once,
+            # before the prompt, pointing at the log that explains why.
+            if worker is not None and worker.poll() is not None and not warned_worker_died:
+                print(
+                    style.paint(
+                        f"[scheduler] worker exited ({worker.returncode}) — scheduled tasks "
+                        f"are not running; see {worker_log}",
+                        style.YELLOW,
+                        sys.stdout,
+                    )
+                )
+                warned_worker_died = True
+
             try:
                 user_input = prompter.prompt().strip()
             except EOFError:  # Ctrl-D
@@ -152,62 +162,123 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             if not user_input:
                 continue
 
-            # From here down we touch the one model and the one Turso connection
-            # the scheduler also uses, so hold the shared lock across the whole
-            # turn — command dispatch and its DB writes, the model turn, and the
-            # autosave. Only the idle prompt wait above runs unlocked, which is
-            # exactly when a due background task should be free to run.
-            with lock:
-                result = dispatch(user_input, ctx)
-                if result is not None:  # it was a slash command
-                    if result.output:
-                        print(result.output)
-                    if result.exit:
-                        return
-                    continue
+            result = dispatch(user_input, ctx)
+            if result is not None:  # it was a slash command
+                if result.output:
+                    print(result.output)
+                if result.exit:
+                    return
+                continue
 
-                if ctx.pending_skill is not None:
-                    # A /skill staging rides this message: body first, imperatively
-                    # framed (the channel this model follows), then the request. The
-                    # closing marker keeps a body that ends in examples or quotes from
-                    # bleeding into the request. The combined turn enters history and
-                    # autosave as-is — an honest record of what the model actually saw.
-                    name, body = ctx.pending_skill
-                    user_input = (
-                        f"[Skill '{name}' — follow these instructions for this request:]\n"
-                        f"{body}\n[End of skill instructions. The request:]\n{user_input}"
-                    )
-                    ctx.pending_skill = None
+            if ctx.pending_skill is not None:
+                # A /skill staging rides this message: body first, imperatively
+                # framed (the channel this model follows), then the request. The
+                # closing marker keeps a body that ends in examples or quotes from
+                # bleeding into the request. The combined turn enters history and
+                # autosave as-is — an honest record of what the model actually saw.
+                name, body = ctx.pending_skill
+                user_input = (
+                    f"[Skill '{name}' — follow these instructions for this request:]\n"
+                    f"{body}\n[End of skill instructions. The request:]\n{user_input}"
+                )
+                ctx.pending_skill = None
 
-                events = None
-                try:
-                    # send() is a generator — nothing runs until the first next().
-                    # The loop guarantees the whole reply arrives as TextDeltas, so
-                    # rendering is just: print what you're handed, as you're handed it.
-                    events = session.send(user_input)
-                    _render_reply(events)
-                except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
-                    if events is not None:
-                        # Closing throws GeneratorExit into the paused send(), which
-                        # rolls the partial turn out of history deterministically
-                        # (rather than whenever the abandoned generator gets GC'd).
-                        events.close()
-                    print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
-                    continue
-                except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
-                    # The turn is already rolled out of history (send()'s rollback),
-                    # so show the error — Claude auth failures arrive here with their
-                    # "run `claude /login`" hint — and keep the session (approvals,
-                    # /model, staged skills) alive for the user to recover.
-                    print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
-                    continue
-                _autosave_turn(ctx)
+            events = None
+            try:
+                # send() is a generator — nothing runs until the first next().
+                # The loop guarantees the whole reply arrives as TextDeltas, so
+                # rendering is just: print what you're handed, as you're handed it.
+                events = session.send(user_input)
+                _render_reply(events)
+            except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
+                if events is not None:
+                    # Closing throws GeneratorExit into the paused send(), which
+                    # rolls the partial turn out of history deterministically
+                    # (rather than whenever the abandoned generator gets GC'd).
+                    events.close()
+                print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
+                continue
+            except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
+                # The turn is already rolled out of history (send()'s rollback),
+                # so show the error — Claude auth failures arrive here with their
+                # "run `claude /login`" hint — and keep the session (approvals,
+                # /model, staged skills) alive for the user to recover.
+                print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
+                continue
+            _autosave_turn(ctx)
     finally:
-        # Stop the ticker on every exit path (/exit, Ctrl-D, or an error escaping
-        # the loop). It's a daemon thread — the process could exit without this —
-        # but stopping deterministically joins any task in flight rather than
-        # leaving it to the interpreter's reaper.
-        scheduler.stop()
+        # Every exit path (/exit, Ctrl-D, or an error escaping the loop). The
+        # worker also watches for us dying, but that is the kill -9 backstop —
+        # stopping it here is what makes an ordinary quit leave nothing behind.
+        _stop_worker(worker)
+
+
+def _start_worker() -> tuple[subprocess.Popen | None, Path]:
+    """Spawn the scheduler worker, returning it and the log it writes to.
+
+    Its output goes to ``scheduler.log`` beside the database rather than to this
+    terminal — that separation is the entire reason the worker is a process, so
+    letting it inherit our stderr would give it all back. The database path is
+    passed explicitly rather than relying on a shared cwd, so parent and child can
+    never disagree about which file they mean.
+
+    Returns ``None`` for the process if it couldn't be spawned: a session without
+    scheduled tasks is degraded, not broken, so the REPL reports it and carries on
+    instead of refusing to start.
+    """
+    log_path = db.db_path().parent / "scheduler.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log = open(log_path, "a", buffering=1)  # line-buffered: tail -f shows ticks live
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "vegapunk.scheduler_worker"],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            env={**os.environ, "VEGAPUNK_DB_FILE": str(db.db_path())},
+        )
+    except OSError as exc:
+        print(
+            style.paint(
+                f"  [scheduler] could not start the worker ({exc}) — scheduled tasks are off",
+                style.YELLOW,
+                sys.stderr,
+            ),
+            file=sys.stderr,
+        )
+        return None, log_path
+    return proc, log_path
+
+
+def _stop_worker(worker: subprocess.Popen | None, timeout: float = 5.0) -> None:
+    """Stop the scheduler worker, escalating to a kill if it doesn't go.
+
+    SIGTERM first: the ticker checks for a stop between tasks, so a worker that is
+    merely idling exits at once. A worker *inside* a task can't honor it — the stop
+    flag isn't read again until the model call returns, and a turn routinely
+    outlasts ``timeout`` — so that one gets killed, and the run is lost.
+
+    Losing it is the cheap outcome, deliberately chosen over the alternatives:
+    ``record_run`` never ran, so the task keeps its old ``next_run_at`` and simply
+    runs again later. Waiting out a full turn would hang ``/exit`` for as long as
+    the model felt like taking, and leaving the worker to finish would block the
+    *next* session's worker on the scheduler lock.
+    """
+    if worker is None or worker.poll() is not None:
+        return
+    worker.terminate()
+    try:
+        worker.wait(timeout)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        print(
+            style.paint(
+                "  [scheduler] a task was still running — it was stopped and stays due",
+                style.DIM,
+                sys.stderr,
+            ),
+            file=sys.stderr,
+        )
 
 
 def _autosave_turn(ctx: CommandContext) -> None:

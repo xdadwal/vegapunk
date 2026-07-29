@@ -55,7 +55,9 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   cadence. Set one up with `/schedule add <seconds> <prompt>`, or just ask — the model can schedule
   one for you with the `schedule_task` tool. Runs are unattended, so they're fail-closed: read-only
   tools work, while gated tools (`write_file`, `run_shell`) are blocked with no human to approve
-  them. Your typed turns take priority — a due task waits for a quiet moment.
+  them. They execute in a **separate worker process** the REPL starts and stops with it, so a due
+  task never delays your typing and its tool trace goes to `scheduler.log` beside the database
+  rather than onto your prompt. See [Scheduled tasks](#scheduled-tasks).
 - **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
@@ -188,6 +190,8 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
 | `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = the SDK default (`high`); adjust live with `/effort` | (empty) |
+| `VEGAPUNK_SCHEDULER_MODEL` | Brain for [scheduled tasks](#scheduled-tasks), as `provider[:model]` (e.g. `local`, `claude:opus`); empty = inherit `VEGAPUNK_PROVIDER`/`VEGAPUNK_CLAUDE_MODEL`. A live `/model` swap never reaches the worker | (empty) |
+| `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's Claude turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
 
 ### Data & backups
 
@@ -207,6 +211,31 @@ in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
   `vegapunk.db` (or a snapshot) to read or export your data. Worth knowing that Turso's
   multi-process coordination format is experimental and may change between releases — which is
   what the automatic backups are insurance for.
+
+### Scheduled tasks
+
+`/schedule add <seconds> <prompt>` saves a prompt to run on a repeating interval (minimum 60s).
+The runs happen in a **separate worker process**, `vegapunk.scheduler_worker`, which the REPL
+starts at launch and stops when you quit — you never run it yourself.
+
+- **Your prompt stays yours.** The worker has its own database connection and model client, so a
+  due task never blocks a typed turn, and its `[think]`/`[tool]` trace goes to `scheduler.log`
+  beside the database instead of landing on top of your prompt. `tail -f scheduler.log` to watch.
+- **Only while a session is open.** The worker is stopped when the REPL exits, and exits by itself
+  if the REPL is killed outright. Nothing runs when Vegapunk isn't. Quitting mid-task stops that run
+  rather than making you wait out a model turn — it wasn't recorded, so the task stays due and
+  simply runs again next time.
+- **Fail-closed.** Unattended runs get no approval prompt, so gated tools (`write_file`,
+  `run_shell`) are refused; read-only tools work normally.
+- **Its own model.** Because it's a separate process, a live `/model` swap deliberately does *not*
+  reach scheduled runs — otherwise switching providers would silently start billing background work
+  to your subscription. The worker uses `VEGAPUNK_SCHEDULER_MODEL` (spelled `provider[:model]`,
+  e.g. `claude:opus`), falling back to the provider/model the REPL launched with. Set it to `local`
+  to keep unattended runs on the free model while your own turns use Claude. `scheduler.log` records
+  which model it came up with.
+
+If the worker can't start (a bad model spec, or another one already running), the REPL says so once
+and points at the log rather than leaving scheduled tasks silently not happening.
 
 ### The `claude` provider
 
@@ -250,6 +279,8 @@ vegapunk/
   config.py      # settings + the persona system prompt
   style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
+  scheduler.py   # scheduled-task store + the ticker that runs what's due
+  scheduler_worker.py # the worker process the REPL spawns to run those tasks
   embedding.py   # optional embeddings for semantic memory recall
   skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
   tools/         # one module per tool, plus the @tool registry

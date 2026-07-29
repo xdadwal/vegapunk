@@ -319,32 +319,28 @@ def _safe_rollback(conn: turso.Connection) -> None:
         pass
 
 
-_lock_fd: int | None = None
+# Held for the process lifetime, keyed by lock-file suffix: the fd must stay open
+# *and* referenced or the kernel drops the lock. One entry per role — locks are
+# per *role*, not per database, which is what lets the REPL and its scheduler
+# worker hold the same file open at once while still refusing a second of either.
+_lock_fds: dict[str, int] = {}
 
 
-def acquire_process_lock() -> None:
-    """Take an exclusive advisory lock so only one Vegapunk uses the db at a time.
+def _acquire_exclusive_lock(suffix: str, contention_message: str) -> None:
+    """Take an exclusive advisory lock on ``<db path><suffix>``, or exit(1).
 
-    A deliberate policy, no longer a storage limit: with ``multiprocess_wal`` the
-    driver coordinates concurrent processes safely, but nothing in Vegapunk yet
-    *coordinates* two of them (two REPLs would both autosave the same conversation
-    slug and both run the same due task). So the second one is still turned away.
-    The scheduler-worker split is what lifts this, and it needs one specific extra
-    process rather than any number — so expect this to become a narrower guard,
-    not a deleted one.
-
-    The lock fd is held for the process lifetime — the kernel releases it on exit
-    or crash, so there is no stale lock to clean up. Exits the process with a
-    friendly message on contention. No-op (with a note) where ``fcntl`` is absent.
+    The kernel releases the fd on exit or crash, so there is no stale lock to
+    clean up. No-op (with a note) where ``fcntl`` is absent, and likewise if the
+    lock file can't be opened at all — a guard that can't be taken must not stop
+    Vegapunk from running.
     """
-    global _lock_fd
     if fcntl is None:
         print(
             "  [db] file locking unavailable on this platform — single-process guard off",
             file=sys.stderr,
         )
         return
-    lock_path = Path(str(db_path()) + ".lock")
+    lock_path = Path(str(db_path()) + suffix)
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
@@ -355,12 +351,37 @@ def acquire_process_lock() -> None:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(fd)
-        print(
-            f"another Vegapunk is already using {db_path()} — run one at a time",
-            file=sys.stderr,
-        )
+        print(contention_message, file=sys.stderr)
         raise SystemExit(1)
-    _lock_fd = fd
+    _lock_fds[suffix] = fd
+
+
+def acquire_process_lock() -> None:
+    """Refuse a second interactive Vegapunk on this database.
+
+    A deliberate policy, not a storage limit: with ``multiprocess_wal`` the driver
+    coordinates concurrent processes safely — the scheduler worker relies on
+    exactly that — but nothing coordinates two *REPLs*, which would both autosave
+    the same conversation slug. So this guards the interactive role only, and the
+    worker takes ``acquire_scheduler_lock`` instead. It must never take this one:
+    its parent REPL already holds it, so it would refuse to start.
+    """
+    _acquire_exclusive_lock(
+        ".lock", f"another Vegapunk is already using {db_path()} — run one at a time"
+    )
+
+
+def acquire_scheduler_lock() -> None:
+    """Refuse a second scheduler worker on this database.
+
+    Its own file, independent of the REPL's: the worker runs *alongside* a REPL by
+    design. What this stops is two tickers — a hand-started worker plus the one the
+    REPL spawns — both finding the same task due and running it twice.
+    """
+    _acquire_exclusive_lock(
+        ".scheduler.lock",
+        f"another Vegapunk scheduler is already running for {db_path()}",
+    )
 
 
 def backup_now() -> Path:

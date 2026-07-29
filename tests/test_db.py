@@ -156,6 +156,37 @@ def test_process_lock_refuses_second_holder(tmp_path, monkeypatch):
         held.close()
 
 
+def test_scheduler_lock_refuses_a_second_worker(tmp_path, monkeypatch):
+    dbfile = tmp_path / "locked.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
+    held = open(str(dbfile) + ".scheduler.lock", "w")
+    try:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit):
+            db.acquire_scheduler_lock()
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+
+
+def test_repl_and_scheduler_locks_are_independent(tmp_path, monkeypatch):
+    # The design rests on this: the worker runs *alongside* the REPL, so a held
+    # REPL lock must not turn the worker away, or the scheduler could never start.
+    dbfile = tmp_path / "both.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
+    repl_lock = open(str(dbfile) + ".lock", "w")
+    try:
+        fcntl.flock(repl_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # a REPL is running
+
+        db.acquire_scheduler_lock()  # the worker still starts — different file
+
+        with pytest.raises(SystemExit):
+            db.acquire_process_lock()  # but a second REPL is still refused
+    finally:
+        fcntl.flock(repl_lock.fileno(), fcntl.LOCK_UN)
+        repl_lock.close()
+
+
 def test_backup_now_creates_readable_snapshot():
     # Store a row (with a vector blob) then snapshot it.
     vec = struct.pack("<4f", 1.0, 0.0, 0.0, 0.0)

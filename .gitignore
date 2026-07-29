@@ -16,6 +16,7 @@ __pycache__/
 #     this .gitignore's directory, not the host filesystem root) ---
 /vegapunk.db*
 /backups/
+/scheduler.log
 
 # --- Generated / local artifacts (kept out of source; drop scratch files here) ---
 /artifacts/
