@@ -11,6 +11,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import struct
+import subprocess
+import sys
+import threading
 import time
 
 import pytest
@@ -69,6 +72,73 @@ def test_connection_follows_db_path_seam(tmp_path, monkeypatch):
     # Reconnects to the fresh file, which has its own (empty) sessions table.
     assert db.query("SELECT count(*) FROM sessions") == [(0,)]
     assert other.is_file()
+
+
+def test_busy_timeout_is_set():
+    # Not tuning: with multi-process access enabled and no busy timeout, two
+    # processes writing at once lose most of their statements to "database is
+    # locked" instead of queueing behind each other.
+    assert db.query("PRAGMA busy_timeout") == [(db._BUSY_TIMEOUT_MS,)]
+
+
+def test_multiprocess_wal_is_enabled(tmp_path, monkeypatch):
+    # The capability the scheduler-worker split rests on: a SECOND OS PROCESS can
+    # open and write this database while this one holds it open. Asserted through
+    # behavior rather than by reading _EXPERIMENTAL_FEATURES, because the driver
+    # silently ignores unknown feature names — a typo there would otherwise leave
+    # us in single-process mode with a green test. The child reaches the same file
+    # via VEGAPUNK_DB_FILE, the way a real worker process would.
+    dbfile = tmp_path / "shared.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
+    db.get_connection()  # held open for the duration of the child's write
+
+    child = (
+        "from vegapunk import db; "
+        "db.execute(\"INSERT INTO input_history (entry, created_at) "
+        "VALUES ('from-child', 't')\")"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", child],
+        env={**os.environ, "VEGAPUNK_DB_FILE": str(dbfile)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert done.returncode == 0, f"child process failed:\n{done.stdout}\n{done.stderr}"
+    # The parent reads, on its own live connection, what another process wrote.
+    assert db.query("SELECT entry FROM input_history WHERE entry = 'from-child'") == [
+        ("from-child",)
+    ]
+
+
+def test_connection_is_safe_to_share_across_threads():
+    # db.py owns the serialization: pyturso 0.7.1 panics the Rust core when two
+    # threads use one connection ("end_write_tx called while write lock not held"),
+    # and a panic is not a catchable exception. Two threads do share it here — the
+    # scheduler's ticker mid-task, and the main thread writing input history at the
+    # prompt, the latter outside the lock the CLI wraps its turns in.
+    errors: list[Exception] = []
+
+    def writer(n: int) -> None:
+        try:
+            for i in range(60):
+                db.execute(
+                    "INSERT INTO input_history (entry, created_at) VALUES (?, ?)",
+                    (f"t{n}-{i}", db.utcnow()),
+                )
+                db.query("SELECT count(*) FROM input_history")
+        except BaseException as exc:  # noqa: BLE001 — a Rust panic arrives as BaseException
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert errors == []
+    assert db.query("SELECT count(*) FROM input_history") == [(480,)]  # every write landed
 
 
 def test_process_lock_refuses_second_holder(tmp_path, monkeypatch):

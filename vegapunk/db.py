@@ -7,17 +7,42 @@ That keeps a beta dependency swappable and lets callers handle failures through 
 single ``StoreError`` (which subclasses ``OSError`` so existing best-effort
 handlers keep working).
 
-Single process at a time: Turso does not support multi-process access to one file,
-so ``acquire_process_lock`` takes an advisory lock at startup. The file is a
-standard SQLite database in WAL mode — any ``sqlite3`` client can read it (or a
-``/backup`` snapshot) when Vegapunk is not running, which is the recovery path if
-the beta driver ever misbehaves.
+Multi-process capable, on purpose. Turso used to take an *exclusive* lock at
+``connect`` time — a second process could not open the file at all — which is why
+the driver floor here is 0.7.1 and why every connection asks for the experimental
+``multiprocess_wal`` feature: several processes coordinate WAL reads, writes, and
+checkpoints through a sibling ``.tshm`` file. This is what the scheduler-worker
+split needs; ``acquire_process_lock`` still turns a second *REPL* away, but that
+is now policy rather than a storage limit (see its docstring). Two costs come
+with the feature: it is 64-bit-Unix-only (elsewhere the flag is accepted and
+silently does nothing, leaving single-process mode), and it must not live on a
+network filesystem.
+
+``_BUSY_TIMEOUT_MS`` is not optional under that feature. WAL still admits one
+writer at a time, so without a busy timeout two processes writing at once lose
+most of their statements to "database is locked" rather than queueing.
+
+One connection, serialized by ``_conn_lock``. pyturso 0.7.1 does *not* tolerate
+two threads sharing a connection: the Rust core panics with "end_write_tx called
+while write lock not held according to connection state" (0.6.1 was fine, so this
+came with the upgrade). Two threads genuinely do reach it — the scheduler's ticker
+runs a task's turn while the main thread sits at the prompt, where ``db_history``
+reads and writes ``input_history`` outside the lock the CLI wraps its turns in —
+so the serialization lives here, in the module that owns the connection, rather
+than being spread across callers who would each have to know to bring their own.
+A panic is not a catchable exception, so this is a hard requirement, not hardening.
+
+The file stays a standard SQLite database in WAL mode: any ``sqlite3`` client can
+read it (or a ``/backup`` snapshot), which is the recovery path if the beta driver
+ever misbehaves. Its on-disk coordination format is explicitly experimental and
+may change between Turso releases, which is what ``/backup`` is insurance for.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -140,6 +165,25 @@ def new_id() -> str:
 _conn: turso.Connection | None = None
 _conn_path: Path | None = None
 
+# Guards the one connection against concurrent use from two threads. Re-entrant
+# because ``transaction()`` holds it across a caller's whole block, and code inside
+# that block may reach back into this module's own helpers on the same thread. See
+# the module docstring: without this, pyturso 0.7.1 panics rather than raising.
+_conn_lock = threading.RLock()
+
+# Turso features to enable on every connection, comma-separated. ``multiprocess_wal``
+# is what lets a second process (the scheduler worker) open this file at all.
+# Unknown names here are *silently ignored* by the driver, so a typo degrades to
+# single-process mode without complaint — ``test_multiprocess_wal_is_enabled``
+# proves the capability rather than trusting the string.
+_EXPERIMENTAL_FEATURES = "multiprocess_wal"
+
+# How long a statement waits for another writer's lock before failing with
+# "database is locked". Required, not tuning: with multi-process access enabled and
+# no timeout, two processes writing concurrently lose the large majority of their
+# statements instead of briefly queueing.
+_BUSY_TIMEOUT_MS = 5000
+
 
 def get_connection() -> turso.Connection:
     """Return the process-wide connection, opening + bootstrapping it on first use.
@@ -149,25 +193,28 @@ def get_connection() -> turso.Connection:
     file can't be opened or the on-disk schema is newer than this code.
     """
     global _conn, _conn_path
-    path = db_path()
-    if _conn is not None and _conn_path == path:
-        return _conn
-    close_connection()
-    conn: turso.Connection | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = turso.connect(str(path))
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _check_version(conn)
-    except StoreError:
-        _safe_close(conn)
-        raise
-    except (turso.Error, OSError) as exc:
-        _safe_close(conn)
-        raise StoreError(f"could not open database at {path}: {exc}") from exc
-    _conn, _conn_path = conn, path
-    return conn
+    with _conn_lock:
+        path = db_path()
+        if _conn is not None and _conn_path == path:
+            return _conn
+        close_connection()
+        conn: turso.Connection | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            conn = turso.connect(str(path), experimental_features=_EXPERIMENTAL_FEATURES)
+            # Before any statement that could meet another process's writer.
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            conn.executescript(_SCHEMA)
+            conn.commit()
+            _check_version(conn)
+        except StoreError:
+            _safe_close(conn)
+            raise
+        except (turso.Error, OSError) as exc:
+            _safe_close(conn)
+            raise StoreError(f"could not open database at {path}: {exc}") from exc
+        _conn, _conn_path = conn, path
+        return conn
 
 
 def _check_version(conn: turso.Connection) -> None:
@@ -204,31 +251,38 @@ def _safe_close(conn: turso.Connection | None) -> None:
 def close_connection() -> None:
     """Close and forget the process-wide connection (tests, shutdown)."""
     global _conn, _conn_path
-    _safe_close(_conn)
-    _conn, _conn_path = None, None
+    with _conn_lock:
+        _safe_close(_conn)
+        _conn, _conn_path = None, None
 
 
 def query(sql: str, params: tuple = ()) -> list[tuple]:
     """Run a SELECT and return all rows. Wraps driver errors as ``StoreError``."""
-    conn = get_connection()
-    try:
-        cur = conn.execute(sql, params) if params else conn.execute(sql)
-        return cur.fetchall()
-    except turso.Error as exc:
-        raise StoreError(f"query failed ({sql.split()[0] if sql.split() else '?'}): {exc}") from exc
+    with _conn_lock:
+        conn = get_connection()
+        try:
+            cur = conn.execute(sql, params) if params else conn.execute(sql)
+            return cur.fetchall()
+        except turso.Error as exc:
+            raise StoreError(
+                f"query failed ({sql.split()[0] if sql.split() else '?'}): {exc}"
+            ) from exc
 
 
 def execute(sql: str, params: tuple = ()) -> None:
     """Run a single write statement and commit. Wraps driver errors as ``StoreError``."""
-    conn = get_connection()
-    try:
-        if params:
-            conn.execute(sql, params)
-        else:
-            conn.execute(sql)
-        conn.commit()
-    except turso.Error as exc:
-        raise StoreError(f"write failed ({sql.split()[0] if sql.split() else '?'}): {exc}") from exc
+    with _conn_lock:
+        conn = get_connection()
+        try:
+            if params:
+                conn.execute(sql, params)
+            else:
+                conn.execute(sql)
+            conn.commit()
+        except turso.Error as exc:
+            raise StoreError(
+                f"write failed ({sql.split()[0] if sql.split() else '?'}): {exc}"
+            ) from exc
 
 
 @contextmanager
@@ -237,21 +291,25 @@ def transaction() -> Iterator[turso.Connection]:
 
     Commits on clean exit; rolls back and re-raises on failure (driver errors as
     ``StoreError``, other exceptions unchanged). Used by the embedding backfill.
+
+    Holds ``_conn_lock`` for the whole block: the caller writes straight to the
+    yielded connection, so no other thread may touch it until the commit lands.
     """
-    conn = get_connection()
-    try:
-        yield conn
-    except turso.Error as exc:
-        _safe_rollback(conn)
-        raise StoreError(f"transaction failed: {exc}") from exc
-    except BaseException:
-        _safe_rollback(conn)
-        raise
-    else:
+    with _conn_lock:
+        conn = get_connection()
         try:
-            conn.commit()
+            yield conn
         except turso.Error as exc:
-            raise StoreError(f"commit failed: {exc}") from exc
+            _safe_rollback(conn)
+            raise StoreError(f"transaction failed: {exc}") from exc
+        except BaseException:
+            _safe_rollback(conn)
+            raise
+        else:
+            try:
+                conn.commit()
+            except turso.Error as exc:
+                raise StoreError(f"commit failed: {exc}") from exc
 
 
 def _safe_rollback(conn: turso.Connection) -> None:
@@ -267,9 +325,16 @@ _lock_fd: int | None = None
 def acquire_process_lock() -> None:
     """Take an exclusive advisory lock so only one Vegapunk uses the db at a time.
 
-    Turso does not support multi-process access; a second writer can corrupt the
-    WAL. The lock fd is held for the process lifetime — the kernel releases it on
-    exit or crash, so there is no stale lock to clean up. Exits the process with a
+    A deliberate policy, no longer a storage limit: with ``multiprocess_wal`` the
+    driver coordinates concurrent processes safely, but nothing in Vegapunk yet
+    *coordinates* two of them (two REPLs would both autosave the same conversation
+    slug and both run the same due task). So the second one is still turned away.
+    The scheduler-worker split is what lifts this, and it needs one specific extra
+    process rather than any number — so expect this to become a narrower guard,
+    not a deleted one.
+
+    The lock fd is held for the process lifetime — the kernel releases it on exit
+    or crash, so there is no stale lock to clean up. Exits the process with a
     friendly message on contention. No-op (with a note) where ``fcntl`` is absent.
     """
     global _lock_fd
@@ -307,21 +372,22 @@ def backup_now() -> Path:
     Must not be called from inside a ``transaction()`` block: ``VACUUM INTO`` fails
     with an open write transaction on the shared connection.
     """
-    conn = get_connection()
-    backups_dir = db_path().parent / "backups"
-    try:
-        backups_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise StoreError(f"could not create backups dir {backups_dir}: {exc}") from exc
-    dest = backups_dir / f"vegapunk-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
-    # The directory part of dest is user-controlled (VEGAPUNK_DB_FILE / cwd may
-    # contain a quote), so escape per SQL string-literal rules.
-    escaped = str(dest).replace("'", "''")
-    try:
-        conn.execute(f"VACUUM INTO '{escaped}'")
-    except turso.Error as exc:
-        raise StoreError(f"backup failed: {exc}") from exc
-    return dest
+    with _conn_lock:
+        conn = get_connection()
+        backups_dir = db_path().parent / "backups"
+        try:
+            backups_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StoreError(f"could not create backups dir {backups_dir}: {exc}") from exc
+        dest = backups_dir / f"vegapunk-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
+        # The directory part of dest is user-controlled (VEGAPUNK_DB_FILE / cwd may
+        # contain a quote), so escape per SQL string-literal rules.
+        escaped = str(dest).replace("'", "''")
+        try:
+            conn.execute(f"VACUUM INTO '{escaped}'")
+        except turso.Error as exc:
+            raise StoreError(f"backup failed: {exc}") from exc
+        return dest
 
 
 def backup_if_stale(max_age_hours: int = 24, keep: int = 3) -> None:
