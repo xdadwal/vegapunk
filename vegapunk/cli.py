@@ -130,7 +130,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
 
     # The background scheduler shares this lock — and the live brain — with the
     # foreground REPL: a due task and a typed turn never overlap on the one model
-    # and the one Turso connection. Holding it here is what claims priority for
+    # and the one SQLite connection. Holding it here is what claims priority for
     # the human: the ticker takes it without blocking and skips its tick while a
     # typed turn owns it, so a due task waits for a quiet moment instead of
     # queueing ahead of your next turn. The provider is ``lambda: session.brain``
@@ -152,7 +152,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             if not user_input:
                 continue
 
-            # From here down we touch the one model and the one Turso connection
+            # From here down we touch the one model and the one SQLite connection
             # the scheduler also uses, so hold the shared lock across the whole
             # turn — command dispatch and its DB writes, the model turn, and the
             # autosave. Only the idle prompt wait above runs unlocked, which is

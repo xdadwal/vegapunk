@@ -1,31 +1,45 @@
-"""The embedded Turso database — one file for sessions, memory, and input history.
+"""The embedded SQLite database — one file for sessions, memory, and input history.
 
-Every other module talks to the database *only* through this module's turso-free
+Every other module talks to the database *only* through this module's driver-free
 surface (``query``/``execute``/``transaction`` plus the small helpers), so the
-``import turso`` line and the driver's exception type live in exactly one place.
-That keeps a beta dependency swappable and lets callers handle failures through a
-single ``StoreError`` (which subclasses ``OSError`` so existing best-effort
-handlers keep working).
+``import sqlite3`` line and the driver's exception type live in exactly one place.
+That kept the driver swappable, which is how this module moved off the beta
+``pyturso`` driver without a line changing elsewhere, and it lets callers handle
+failures through a single ``StoreError`` (which subclasses ``OSError`` so existing
+best-effort handlers keep working).
 
-Single process at a time: Turso does not support multi-process access to one file,
-so ``acquire_process_lock`` takes an advisory lock at startup. The file is a
-standard SQLite database in WAL mode — any ``sqlite3`` client can read it (or a
-``/backup`` snapshot) when Vegapunk is not running, which is the recovery path if
-the beta driver ever misbehaves.
+One connection, serialized by ``_conn_lock``. ``sqlite3.threadsafety`` is 1 on a
+stock CPython build — SQLite compiled multi-thread, not serialized — so a single
+connection must never be used by two threads at once, and two threads genuinely do
+reach it: the scheduler's ticker runs a task's turn while the main thread sits at
+the prompt, where ``db_history`` reads and writes ``input_history`` *outside* the
+lock the CLI wraps its turns in. So the serialization lives here, in the module
+that owns the connection, rather than being spread across callers who would each
+have to know to bring their own. ``check_same_thread=False`` is paired with that
+lock, not a substitute for it.
+
+Single process at a time: ``acquire_process_lock`` takes an advisory lock at
+startup. That is now *policy*, not a driver limit — the file is standard SQLite in
+WAL mode, which handles concurrent processes correctly — and it is the guard the
+scheduler-worker split will lift. WAL also means any ``sqlite3`` client can read
+the file (or a ``/backup`` snapshot) while Vegapunk is running, which is the
+recovery path.
 """
 
 from __future__ import annotations
 
+import math
 import os
+import sqlite3
+import struct
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-import turso
 
 try:
     import fcntl
@@ -133,15 +147,59 @@ def stamp_plus(stamp: str, seconds: float) -> str:
 
 def new_id() -> str:
     """A fresh opaque identifier (uuid4 hex) — no rowid dependence, so rows stay
-    stable under a future Turso Cloud sync."""
+    stable under a future replication/sync scheme."""
     return uuid.uuid4().hex
 
 
-_conn: turso.Connection | None = None
+_conn: sqlite3.Connection | None = None
 _conn_path: Path | None = None
 
+# Guards the one connection against concurrent use from two threads — see the
+# module docstring on why that can't be left to callers. Re-entrant because
+# ``transaction()`` holds it across a caller's whole block, and code inside that
+# block may reach back into this module's own helpers on the same thread.
+_conn_lock = threading.RLock()
 
-def get_connection() -> turso.Connection:
+# How long a statement waits for another writer's lock before giving up with
+# "database is locked". Matters across *processes* (WAL admits one writer at a
+# time), so it is what keeps a scheduler worker and the REPL from failing writes
+# on contention rather than briefly queueing.
+_BUSY_TIMEOUT_MS = 5000
+
+
+# Returned for any pair of vectors that can't be compared. Real cosine distance
+# tops out at 2.0 (exactly opposed vectors), so this sits strictly past every real
+# answer and sorts such a row last under ``ORDER BY distance`` — where SQL NULL
+# would sort it *first*.
+_UNRANKABLE_DISTANCE = 3.0
+
+
+def _vector_distance_cos(a: bytes | None, b: bytes | None) -> float:
+    """Cosine distance (1 - cosine similarity) between two float32 blobs.
+
+    Turso shipped this as a built-in SQL function and stdlib SQLite has no vector
+    support at all, so ``memory``'s semantic-recall ``ORDER BY`` gets it from here
+    — this module being the one place that knows what the driver does and doesn't
+    provide. Vectors are the little-endian float32 blobs ``embedding.pack`` writes.
+
+    Unrankable input yields ``_UNRANKABLE_DISTANCE`` rather than an error or NULL:
+    a missing blob, a length mismatch (an embed-model change caught mid-flight), or
+    a zero vector, whose cosine is undefined. One odd row must neither poison the
+    whole query — the caller would fall back to plain text matching — nor float to
+    the top of the results.
+    """
+    if not a or not b or len(a) != len(b) or len(a) % 4:
+        return _UNRANKABLE_DISTANCE
+    count = len(a) // 4  # equal lengths, whole float32s: unpack can't fail past here
+    va = struct.unpack(f"<{count}f", a)
+    vb = struct.unpack(f"<{count}f", b)
+    norms = math.sqrt(sum(x * x for x in va)) * math.sqrt(sum(y * y for y in vb))
+    if norms == 0.0:
+        return _UNRANKABLE_DISTANCE
+    return 1.0 - sum(x * y for x, y in zip(va, vb)) / norms
+
+
+def get_connection() -> sqlite3.Connection:
     """Return the process-wide connection, opening + bootstrapping it on first use.
 
     Keyed on ``db_path()``: when the seam changes (how tests get isolation), the
@@ -149,28 +207,42 @@ def get_connection() -> turso.Connection:
     file can't be opened or the on-disk schema is newer than this code.
     """
     global _conn, _conn_path
-    path = db_path()
-    if _conn is not None and _conn_path == path:
-        return _conn
-    close_connection()
-    conn: turso.Connection | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = turso.connect(str(path))
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _check_version(conn)
-    except StoreError:
-        _safe_close(conn)
-        raise
-    except (turso.Error, OSError) as exc:
-        _safe_close(conn)
-        raise StoreError(f"could not open database at {path}: {exc}") from exc
-    _conn, _conn_path = conn, path
-    return conn
+    with _conn_lock:
+        path = db_path()
+        if _conn is not None and _conn_path == path:
+            return _conn
+        close_connection()
+        conn: sqlite3.Connection | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # check_same_thread=False because several threads legitimately share
+            # this connection; _conn_lock — not the driver's own check — is what
+            # keeps them off it at the same time.
+            conn = sqlite3.connect(str(path), check_same_thread=False)
+            # WAL before anything else: it is what lets a reader (or a future
+            # scheduler process) work alongside a writer. Persistent, so this
+            # re-asserts rather than changes an existing file.
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            # Replaces the vector function Turso had built in; registered before
+            # any query runs so semantic recall never sees it missing.
+            conn.create_function(
+                "vector_distance_cos", 2, _vector_distance_cos, deterministic=True
+            )
+            conn.executescript(_SCHEMA)
+            conn.commit()
+            _check_version(conn)
+        except StoreError:
+            _safe_close(conn)
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            _safe_close(conn)
+            raise StoreError(f"could not open database at {path}: {exc}") from exc
+        _conn, _conn_path = conn, path
+        return conn
 
 
-def _check_version(conn: turso.Connection) -> None:
+def _check_version(conn: sqlite3.Connection) -> None:
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     if row is None:
         conn.execute(
@@ -192,72 +264,83 @@ def _check_version(conn: turso.Connection) -> None:
         )
 
 
-def _safe_close(conn: turso.Connection | None) -> None:
+def _safe_close(conn: sqlite3.Connection | None) -> None:
     if conn is None:
         return
     try:
         conn.close()
-    except turso.Error:
+    except sqlite3.Error:
         pass
 
 
 def close_connection() -> None:
     """Close and forget the process-wide connection (tests, shutdown)."""
     global _conn, _conn_path
-    _safe_close(_conn)
-    _conn, _conn_path = None, None
+    with _conn_lock:
+        _safe_close(_conn)
+        _conn, _conn_path = None, None
 
 
 def query(sql: str, params: tuple = ()) -> list[tuple]:
     """Run a SELECT and return all rows. Wraps driver errors as ``StoreError``."""
-    conn = get_connection()
-    try:
-        cur = conn.execute(sql, params) if params else conn.execute(sql)
-        return cur.fetchall()
-    except turso.Error as exc:
-        raise StoreError(f"query failed ({sql.split()[0] if sql.split() else '?'}): {exc}") from exc
+    with _conn_lock:
+        conn = get_connection()
+        try:
+            cur = conn.execute(sql, params) if params else conn.execute(sql)
+            return cur.fetchall()
+        except sqlite3.Error as exc:
+            raise StoreError(
+                f"query failed ({sql.split()[0] if sql.split() else '?'}): {exc}"
+            ) from exc
 
 
 def execute(sql: str, params: tuple = ()) -> None:
     """Run a single write statement and commit. Wraps driver errors as ``StoreError``."""
-    conn = get_connection()
-    try:
-        if params:
-            conn.execute(sql, params)
-        else:
-            conn.execute(sql)
-        conn.commit()
-    except turso.Error as exc:
-        raise StoreError(f"write failed ({sql.split()[0] if sql.split() else '?'}): {exc}") from exc
+    with _conn_lock:
+        conn = get_connection()
+        try:
+            if params:
+                conn.execute(sql, params)
+            else:
+                conn.execute(sql)
+            conn.commit()
+        except sqlite3.Error as exc:
+            raise StoreError(
+                f"write failed ({sql.split()[0] if sql.split() else '?'}): {exc}"
+            ) from exc
 
 
 @contextmanager
-def transaction() -> Iterator[turso.Connection]:
+def transaction() -> Iterator[sqlite3.Connection]:
     """Group multiple writes into one commit.
 
     Commits on clean exit; rolls back and re-raises on failure (driver errors as
     ``StoreError``, other exceptions unchanged). Used by the embedding backfill.
+
+    Holds ``_conn_lock`` for the whole block: the caller writes straight to the
+    yielded connection, so no other thread may touch it until the commit lands.
     """
-    conn = get_connection()
-    try:
-        yield conn
-    except turso.Error as exc:
-        _safe_rollback(conn)
-        raise StoreError(f"transaction failed: {exc}") from exc
-    except BaseException:
-        _safe_rollback(conn)
-        raise
-    else:
+    with _conn_lock:
+        conn = get_connection()
         try:
-            conn.commit()
-        except turso.Error as exc:
-            raise StoreError(f"commit failed: {exc}") from exc
+            yield conn
+        except sqlite3.Error as exc:
+            _safe_rollback(conn)
+            raise StoreError(f"transaction failed: {exc}") from exc
+        except BaseException:
+            _safe_rollback(conn)
+            raise
+        else:
+            try:
+                conn.commit()
+            except sqlite3.Error as exc:
+                raise StoreError(f"commit failed: {exc}") from exc
 
 
-def _safe_rollback(conn: turso.Connection) -> None:
+def _safe_rollback(conn: sqlite3.Connection) -> None:
     try:
         conn.rollback()
-    except turso.Error:
+    except sqlite3.Error:
         pass
 
 
@@ -267,9 +350,14 @@ _lock_fd: int | None = None
 def acquire_process_lock() -> None:
     """Take an exclusive advisory lock so only one Vegapunk uses the db at a time.
 
-    Turso does not support multi-process access; a second writer can corrupt the
-    WAL. The lock fd is held for the process lifetime — the kernel releases it on
-    exit or crash, so there is no stale lock to clean up. Exits the process with a
+    A deliberate policy, no longer a driver limit: WAL admits concurrent processes
+    safely, but nothing in Vegapunk yet *coordinates* two of them (two REPLs would
+    both autosave the same conversation slug and both run the same due task), so
+    the second one is still turned away. Lifting this is the scheduler-worker
+    split's job, which needs one specific extra process rather than any number.
+
+    The lock fd is held for the process lifetime — the kernel releases it on exit
+    or crash, so there is no stale lock to clean up. Exits the process with a
     friendly message on contention. No-op (with a note) where ``fcntl`` is absent.
     """
     global _lock_fd
@@ -301,27 +389,29 @@ def acquire_process_lock() -> None:
 def backup_now() -> Path:
     """Snapshot the database to a timestamped file under ``backups/`` and return it.
 
-    Uses ``VACUUM INTO`` (there is no backup API), which also consolidates the WAL
-    into one clean, ``sqlite3``-readable file. Raises ``StoreError`` on failure.
+    Uses ``VACUUM INTO`` rather than the driver's ``Connection.backup``: it
+    consolidates the WAL and compacts free pages, so the snapshot is one clean,
+    minimal, ``sqlite3``-readable file. Raises ``StoreError`` on failure.
 
     Must not be called from inside a ``transaction()`` block: ``VACUUM INTO`` fails
     with an open write transaction on the shared connection.
     """
-    conn = get_connection()
-    backups_dir = db_path().parent / "backups"
-    try:
-        backups_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise StoreError(f"could not create backups dir {backups_dir}: {exc}") from exc
-    dest = backups_dir / f"vegapunk-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
-    # The directory part of dest is user-controlled (VEGAPUNK_DB_FILE / cwd may
-    # contain a quote), so escape per SQL string-literal rules.
-    escaped = str(dest).replace("'", "''")
-    try:
-        conn.execute(f"VACUUM INTO '{escaped}'")
-    except turso.Error as exc:
-        raise StoreError(f"backup failed: {exc}") from exc
-    return dest
+    with _conn_lock:
+        conn = get_connection()
+        backups_dir = db_path().parent / "backups"
+        try:
+            backups_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StoreError(f"could not create backups dir {backups_dir}: {exc}") from exc
+        dest = backups_dir / f"vegapunk-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
+        # The directory part of dest is user-controlled (VEGAPUNK_DB_FILE / cwd may
+        # contain a quote), so escape per SQL string-literal rules.
+        escaped = str(dest).replace("'", "''")
+        try:
+            conn.execute(f"VACUUM INTO '{escaped}'")
+        except sqlite3.Error as exc:
+            raise StoreError(f"backup failed: {exc}") from exc
+        return dest
 
 
 def backup_if_stale(max_age_hours: int = 24, keep: int = 3) -> None:

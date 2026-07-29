@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import struct
+import threading
 import time
 
 import pytest
@@ -71,6 +72,103 @@ def test_connection_follows_db_path_seam(tmp_path, monkeypatch):
     assert other.is_file()
 
 
+def test_connection_opens_in_wal_mode():
+    # WAL is what lets a reader — or a future scheduler process — work alongside
+    # the REPL's writes. Losing it silently would strand that whole direction.
+    assert db.query("PRAGMA journal_mode") == [("wal",)]
+
+
+def test_busy_timeout_is_set():
+    # Without it a writer meeting another writer's lock fails outright instead of
+    # briefly queueing, which is how cross-process contention shows up.
+    assert db.query("PRAGMA busy_timeout") == [(db._BUSY_TIMEOUT_MS,)]
+
+
+def _vec(*values: float) -> bytes:
+    return struct.pack(f"<{len(values)}f", *values)
+
+
+def test_vector_distance_cos_is_registered_in_sql():
+    # memory's semantic recall orders by this function in SQL. The stdlib driver
+    # has no vector support, so db.py registers it — if that regresses, recall
+    # degrades silently to text matching instead of failing loudly.
+    (identical,) = db.query("SELECT vector_distance_cos(?, ?)", (_vec(1, 0, 0), _vec(1, 0, 0)))[0]
+    (orthogonal,) = db.query("SELECT vector_distance_cos(?, ?)", (_vec(1, 0, 0), _vec(0, 1, 0)))[0]
+    (opposed,) = db.query("SELECT vector_distance_cos(?, ?)", (_vec(1, 0, 0), _vec(-1, 0, 0)))[0]
+    assert identical == pytest.approx(0.0)
+    assert orthogonal == pytest.approx(1.0)
+    assert opposed == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        (_vec(1, 0, 0), _vec(1, 0)),  # dimension mismatch (embed model changed)
+        (_vec(0, 0, 0), _vec(1, 0, 0)),  # zero vector — cosine undefined
+        (None, _vec(1, 0, 0)),  # no embedding stored
+        (b"\x01\x02", _vec(1, 0, 0)),  # not a whole number of float32s
+    ],
+)
+def test_vector_distance_cos_ranks_unrankable_input_last(a, b):
+    # A number past every real distance, not NULL: under ORDER BY distance a NULL
+    # would sort such a row *first*, putting the least comparable fact at the top
+    # of recall. It must also beat 2.0, which an exactly-opposed pair really scores.
+    assert db.query("SELECT vector_distance_cos(?, ?)", (a, b)) == [(3.0,)]
+    assert db._UNRANKABLE_DISTANCE > 2.0
+
+
+def test_ordering_puts_unrankable_rows_behind_real_matches():
+    # 'opposed' scores the worst *real* distance (2.0), so it pins that unrankable
+    # rows sort behind even the least similar genuine match.
+    for fact_id, vector in [
+        ("near", _vec(1, 0, 0)),
+        ("far", _vec(0, 1, 0)),
+        ("opposed", _vec(-1, 0, 0)),
+        ("bad", _vec(1, 0)),
+    ]:
+        db.execute(
+            "INSERT INTO memory (id, kind, content, created_at, updated_at, embedding) "
+            "VALUES (?,?,?,?,?,?)",
+            (fact_id, "fact", fact_id, "t", "t", vector),
+        )
+
+    rows = db.query(
+        "SELECT id FROM memory WHERE embedding IS NOT NULL "
+        "ORDER BY vector_distance_cos(embedding, ?)",
+        (_vec(1, 0, 0),),
+    )
+
+    assert [r[0] for r in rows] == ["near", "far", "opposed", "bad"]
+
+
+def test_connection_is_safe_to_share_across_threads():
+    # db.py owns the serialization: sqlite3.threadsafety is 1 on a stock build, so
+    # one connection must not be used by two threads at once — and two do reach it,
+    # the scheduler's ticker mid-task and the main thread writing input history at
+    # the prompt, the latter outside the lock the CLI wraps its turns in.
+    errors: list[Exception] = []
+
+    def writer(n: int) -> None:
+        try:
+            for i in range(20):
+                db.execute(
+                    "INSERT INTO input_history (entry, created_at) VALUES (?, ?)",
+                    (f"t{n}-{i}", db.utcnow()),
+                )
+                db.query("SELECT count(*) FROM input_history")
+        except Exception as exc:  # noqa: BLE001 — the test's job is to report any failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert errors == []
+    assert db.query("SELECT count(*) FROM input_history") == [(120,)]  # every write landed
+
+
 def test_process_lock_refuses_second_holder(tmp_path, monkeypatch):
     dbfile = tmp_path / "locked.db"
     monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
@@ -95,8 +193,7 @@ def test_backup_now_creates_readable_snapshot():
     )
     dest = db.backup_now()
     assert dest.is_file()
-    # Escape hatch: read the SNAPSHOT (a separate file with an independent lock)
-    # with stdlib sqlite3 — no pyturso needed to recover data.
+    # Escape hatch: a snapshot is a plain SQLite file any client can recover from.
     snap = sqlite3.connect(str(dest))
     try:
         assert snap.execute("SELECT content FROM memory WHERE id = 'id1'").fetchone() == ("hello",)

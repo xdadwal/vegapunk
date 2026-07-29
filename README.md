@@ -192,18 +192,19 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 ### Data & backups
 
 Sessions, long-term memory, and REPL input history live in one embedded database at `vegapunk.db`
-in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
+in the launch directory, in WAL mode via the standard library's `sqlite3` — no database driver to
+install.
 
-- **One process at a time.** Turso does not support multi-process access; a lock file guards
-  against it, so a second `vegapunk` in the same directory is refused rather than risking
-  corruption.
+- **One process at a time.** A lock file refuses a second `vegapunk` in the same directory. This is
+  policy, not a storage limit: WAL handles concurrent processes safely, but nothing yet coordinates
+  two REPLs (both would autosave the same conversation and run the same due task).
 - **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
   newest three); take one any time with `/backup`.
 - **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
   secrets" posture as before applies.
-- **Recovery.** The file is a standard SQLite database. With Vegapunk stopped, open `vegapunk.db`
-  (or a snapshot) with any `sqlite3` client to read or export your data — just never run two
-  engines against it at once.
+- **Recovery.** The file is a standard SQLite database, so any `sqlite3` client can open
+  `vegapunk.db` (or a snapshot) to read or export your data — WAL means you can even read it while
+  Vegapunk is running.
 
 ### The `claude` provider
 
@@ -235,7 +236,7 @@ vegapunk/
   __main__.py    # `python -m vegapunk` entry → cli.main()
   cli.py         # interactive REPL and command dispatch
   commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
-  db.py          # the embedded Turso database: connection, schema, lock, backups
+  db.py          # the embedded SQLite database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the agent loop: think → act (run tools) → observe → repeat
   session.py     # conversation state across turns

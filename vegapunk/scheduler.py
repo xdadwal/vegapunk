@@ -46,7 +46,7 @@ _COLUMNS = (
 # summary, bounded so one run can't bloat the row.
 _RESULT_CAP = 2000
 
-# Floor on a task's repeat interval. Scheduled runs share the one model and Turso
+# Floor on a task's repeat interval. Scheduled runs share the one model and SQLite
 # connection with the foreground, and each one is a full agent turn — tokens, tool
 # calls, and a model round-trip. A sub-minute cadence would have the ticker filling
 # every quiet moment with model work for little benefit, and would sit below the
@@ -240,7 +240,7 @@ class Scheduler:
     scheduled tasks have come due, in the same process as the interactive session.
 
     Serialization is the whole point of the shared ``lock``. Vegapunk runs one
-    model and one Turso connection; a background task turn and a foreground
+    model and one SQLite connection; a background task turn and a foreground
     (user-typed) turn must never touch either at the same time. The CLI guards
     its own ``session.send`` with the very lock it hands here, so the two turn
     kinds never overlap.
@@ -329,7 +329,7 @@ class Scheduler:
         Every acquisition is non-blocking: if a typed turn holds the lock, this
         gives up rather than queueing, and the tasks — still due, since only
         ``record_run`` advances a schedule — are picked up on a later tick. That
-        applies to the poll itself (the Turso connection is shared with the
+        applies to the poll itself (the SQLite connection is shared with the
         foreground) and to each run, with the lock released between tasks so a
         waiting user turn gets in at the seam. Bails out early once a stop has
         been signaled, so shutdown never starts a fresh task turn.
