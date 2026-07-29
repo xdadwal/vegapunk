@@ -24,7 +24,8 @@ def schedule_task(prompt: str, interval_seconds: int) -> str:
     ``prompt`` runs as if the user typed it, so write it as a self-contained
     instruction (e.g. "fetch https://example.com and remember any headline that
     changed since last time"). The first run happens one interval from now, not
-    immediately.
+    immediately. The interval must be at least 60 seconds — anything shorter is
+    refused, so pick a cadence in minutes or hours, not seconds.
 
     The scheduled run is unattended, so it can only use read-only tools like
     fetch_url, search_web, recall, and remember — tools that write files or run

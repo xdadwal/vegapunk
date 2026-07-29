@@ -9,7 +9,6 @@ rather than the wall clock, so the due-query tests stay deterministic.
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Iterator
 
 import pytest
@@ -79,10 +78,19 @@ def test_add_task_empty_prompt_is_noop():
     assert list_tasks() == []  # no row written
 
 
-def test_add_task_rejects_non_positive_interval():
-    assert "positive" in add_task("something", 0)
-    assert "positive" in add_task("something", -5)
-    assert list_tasks() == []  # nothing written on either rejection
+def test_add_task_rejects_interval_below_minimum():
+    # The 60s floor keeps the ticker from starving interactive turns; anything
+    # under it (including zero/negative) is refused before a row is written.
+    assert "at least 60" in add_task("something", 59)
+    assert "at least 60" in add_task("something", 0)
+    assert "at least 60" in add_task("something", -5)
+    assert list_tasks() == []  # nothing written on any rejection
+
+
+def test_add_task_accepts_the_minimum_interval():
+    result = add_task("right at the floor", 60)
+    assert "Scheduled task" in result
+    assert list_tasks()[0].interval_seconds == 60
 
 
 def test_add_task_degrades_when_db_unavailable(monkeypatch):
@@ -385,25 +393,72 @@ def test_run_due_now_skips_tasks_not_yet_due():
     assert list_tasks()[0].last_status is None
 
 
-def test_run_due_now_serializes_on_the_shared_lock():
+def test_run_due_now_yields_to_a_held_lock_instead_of_queueing():
     # The shared lock is what keeps a background task turn and a foreground user
-    # turn off the single model/DB connection at once. While the lock is held,
-    # run_due_now must not run any task; it proceeds only once the lock frees.
+    # turn off the single model/DB connection at once. A held lock means a typed
+    # turn is in flight, and the ticker must *give up* rather than queue behind
+    # it: the task stays due (only record_run advances a schedule) and runs on a
+    # later tick, so a background job never sits in line ahead of your next turn.
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     brain = _RecordingBrain()
     lock = threading.Lock()
     scheduler = Scheduler(lambda: brain, [], lock)
 
     lock.acquire()  # stand in for a foreground turn holding the lock
-    worker = threading.Thread(target=scheduler.run_due_now)
-    worker.start()
-    try:
-        time.sleep(0.05)  # give the worker time to block on the lock
-        assert brain.calls == 0  # cannot have run — we hold the lock
-    finally:
-        lock.release()
-        worker.join(timeout=2)
-    assert brain.calls == 1  # ran once the lock was free
+    scheduler.run_due_now()  # returns at once — no blocking, no run
+
+    assert brain.calls == 0  # cannot have run — we hold the lock
+    assert list_tasks()[0].last_status is None  # and nothing was recorded
+    assert list_tasks()[0].next_run_at == "2000-01-01T00:00:00.000000Z"  # still due
+
+    lock.release()  # the turn ends; the next tick picks the task up
+    scheduler.run_due_now()
+
+    assert brain.calls == 1
+
+
+class _GrantingLock:
+    """Stand-in for the shared lock that grants only the first ``grants``
+    acquisitions, then refuses.
+
+    Lets a test place a foreground turn at an exact seam — between two task runs
+    — without racing real threads for a lock whose handoff order isn't
+    guaranteed. Only the surface ``run_due_now`` uses is implemented.
+    """
+
+    def __init__(self, grants: int) -> None:
+        self._grants = grants
+        self.denied = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._grants > 0:
+            self._grants -= 1
+            return True
+        self.denied += 1
+        return False
+
+    def release(self) -> None:
+        pass
+
+
+def test_run_due_now_stops_at_the_seam_when_a_turn_takes_the_lock():
+    # The lock is released between tasks so a waiting user turn gets in at the
+    # seam. When it does, the rest of the due batch is abandoned for a later
+    # tick rather than run — a user turn waits out at most one task, never the
+    # whole batch. Two grants: the due-tasks poll, then the first run.
+    _insert_task("a" * 32, "first", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
+    _insert_task("b" * 32, "second", "2000-01-01T00:00:01.000000Z", interval_seconds=60)
+    brain = _RecordingBrain()
+    lock = _GrantingLock(grants=2)
+    scheduler = Scheduler(lambda: brain, [], lock)  # type: ignore[arg-type]
+
+    scheduler.run_due_now()
+
+    assert brain.calls == 1  # only the first task ran
+    assert lock.denied == 1  # the second run was refused at the seam
+    by_id = {t.id: t for t in list_tasks()}
+    assert by_id["a" * 32].last_status == "ok"
+    assert by_id["b" * 32].last_status is None  # untouched, still due
 
 
 def test_run_due_now_bails_out_when_stop_is_signaled():
@@ -506,6 +561,6 @@ def test_schedule_task_tool_surfaces_validation():
     # Validation lives in add_task; the tool passes the message straight through.
     from vegapunk.tools.scheduler import schedule_task
 
-    assert "positive" in schedule_task("do a thing", 0)
+    assert "at least 60" in schedule_task("do a thing", 30)
     assert "Nothing to schedule" in schedule_task("   ", 60)
     assert list_tasks() == []  # neither rejection wrote a row

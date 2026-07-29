@@ -263,8 +263,8 @@ def test_schedule_add_rejects_non_numeric_seconds():
 
 
 def test_schedule_add_surfaces_scheduler_validation():
-    # scheduler.add_task owns the sign check; the command passes its message through.
-    assert "positive" in dispatch("/schedule add 0 do a thing", _ctx()).output
+    # scheduler.add_task owns the interval floor; the command passes its message through.
+    assert "at least 60" in dispatch("/schedule add 30 do a thing", _ctx()).output
 
 
 def test_schedule_remove_deletes_by_prefix():

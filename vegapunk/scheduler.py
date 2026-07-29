@@ -46,6 +46,14 @@ _COLUMNS = (
 # summary, bounded so one run can't bloat the row.
 _RESULT_CAP = 2000
 
+# Floor on a task's repeat interval. Scheduled runs share the one model and Turso
+# connection with the foreground, and each one is a full agent turn — tokens, tool
+# calls, and a model round-trip. A sub-minute cadence would have the ticker filling
+# every quiet moment with model work for little benefit, and would sit below the
+# poll cadence besides. Sixty seconds is the smallest interval that stays out of
+# the way; finer-grained polling belongs to a purpose-built watcher, not this.
+_MIN_INTERVAL_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class ScheduledTask:
@@ -85,14 +93,14 @@ def add_task(prompt: str, interval_seconds: int) -> str:
     The first run lands one interval from now (not immediately), so creating a
     task never fires a model turn inline — important once the model itself can
     create tasks mid-turn. Returns a confirmation naming the new short id, or a
-    usage note for an empty prompt or a non-positive interval. This is the
-    ``schedule_task`` tool's and ``/schedule add``'s result string.
+    usage note for an empty prompt or an interval below ``_MIN_INTERVAL_SECONDS``.
+    This is the ``schedule_task`` tool's and ``/schedule add``'s result string.
     """
     prompt = prompt.strip()
     if not prompt:
         return "Nothing to schedule — the prompt was empty."
-    if interval_seconds <= 0:
-        return "Interval must be a positive number of seconds."
+    if interval_seconds < _MIN_INTERVAL_SECONDS:
+        return f"Interval must be at least {_MIN_INTERVAL_SECONDS} seconds."
     now = db.utcnow()
     task_id = db.new_id()
     try:
@@ -235,10 +243,21 @@ class Scheduler:
     model and one Turso connection; a background task turn and a foreground
     (user-typed) turn must never touch either at the same time. The CLI guards
     its own ``session.send`` with the very lock it hands here, so the two turn
-    kinds take strict turns: a due task that starts running makes a waiting user
-    turn block until it finishes, and vice versa. The lock is released between
-    tasks, so a user turn only ever waits out the single task in flight — not the
-    whole due batch.
+    kinds never overlap.
+
+    The two directions are deliberately *not* symmetric. The ticker never queues
+    behind you: it takes the lock without blocking and skips the tick outright if
+    a typed turn holds it, leaving the tasks due for a later poll — a background
+    job should wait for a quiet moment, not sit in line ahead of your next turn.
+    The lock is also released between tasks, so a user turn waits out at most the
+    single task in flight rather than the whole due batch.
+
+    That in-flight wait is the remaining wart: your turn can still block on a
+    task that has already started, because a model call in this process can't be
+    preempted. Fixing it properly means moving scheduled runs out of the REPL
+    process entirely, which the embedded driver forbids today (it takes an
+    exclusive file lock at connect time, so a second process can't open the
+    database at all).
 
     The ticker is off until ``start`` and stops cleanly on ``stop`` (or, as a
     daemon thread, when the process exits regardless). ``run_due_now`` is the
@@ -307,18 +326,29 @@ class Scheduler:
     def run_due_now(self) -> None:
         """Run every currently-due task once, each under the shared lock.
 
-        Polls due tasks under the lock (the Turso connection is shared with the
-        foreground), then runs each under the lock too, releasing between tasks so
-        a waiting user turn can interleave. Bails out early once a stop has been
-        signaled, so shutdown never starts a fresh task turn.
+        Every acquisition is non-blocking: if a typed turn holds the lock, this
+        gives up rather than queueing, and the tasks — still due, since only
+        ``record_run`` advances a schedule — are picked up on a later tick. That
+        applies to the poll itself (the Turso connection is shared with the
+        foreground) and to each run, with the lock released between tasks so a
+        waiting user turn gets in at the seam. Bails out early once a stop has
+        been signaled, so shutdown never starts a fresh task turn.
         """
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return  # a typed turn is mid-flight; look again next poll
+        try:
             due = due_tasks()
+        finally:
+            self._lock.release()
         for task in due:
             if self._stop.is_set():
                 return
-            with self._lock:
+            if not self._lock.acquire(blocking=False):
+                return  # a turn started at the seam; the rest stay due
+            try:
                 # Read the live brain under the lock, the same instant a
                 # foreground turn would — so a /model swap is honored, not
                 # a launch-time snapshot.
                 run_task(task, self._brain_provider(), self._tools)
+            finally:
+                self._lock.release()

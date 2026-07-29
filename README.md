@@ -50,6 +50,12 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   with `/skill <name>`). See [Skills](#skills).
 - **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
   from your first message, so you can pick it back up later.
+- **Scheduled tasks** — save a prompt and an interval (at least 60s) and Vegapunk runs it itself
+  while the session is open, instead of only acting when you type: poll a page, save a fact on a
+  cadence. Set one up with `/schedule add <seconds> <prompt>`, or just ask — the model can schedule
+  one for you with the `schedule_task` tool. Runs are unattended, so they're fail-closed: read-only
+  tools work, while gated tools (`write_file`, `run_shell`) are blocked with no human to approve
+  them. Your typed turns take priority — a due task waits for a quiet moment.
 - **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
@@ -77,6 +83,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
 | `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
 | `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
+| `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
 | `/backup` | Snapshot the database to `.vegapunk/backups/` |
 | `/skills` | List available skills |
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
@@ -107,6 +114,7 @@ toolset:
 | `search_web` | Search the web (DuckDuckGo) for external information | — |
 | `remember` | Save a durable fact/preference about you for future sessions | — |
 | `use_skill` | Load a skill's full instructions when a task matches one | — |
+| `schedule_task` | Schedule a prompt to run itself every N seconds (minimum 60) | — |
 | `yell` | Echo the reply in UPPERCASE (a persona tool) | — |
 
 Filesystem and shell tools are **confined to the workspace root** (default: the directory you

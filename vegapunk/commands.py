@@ -273,7 +273,7 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=_format_tasks())
     if sub == "add":
         # "<seconds> <prompt>": the first token is the interval, the rest is the
-        # prompt. Validation of the interval's sign and the prompt's emptiness
+        # prompt. Validation of the interval's floor and the prompt's emptiness
         # lives in scheduler.add_task; here we just parse and hand off.
         interval_str, _, prompt = rest.strip().partition(" ")
         if not interval_str or not prompt.strip():
