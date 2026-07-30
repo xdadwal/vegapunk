@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
+# Imported by name, not via the module, so a test can swap the spawn without
+# reaching into the stdlib module every other subprocess user shares.
+from subprocess import DEVNULL, Popen, TimeoutExpired
 
 from . import db, embedding, memory, session_store, skills, style
 from .approval import CLIApprover
@@ -213,7 +215,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         _stop_worker(worker)
 
 
-def _start_worker() -> tuple[subprocess.Popen | None, Path]:
+def _start_worker() -> tuple[Popen | None, Path]:
     """Spawn the scheduler worker, returning it and the log it writes to.
 
     Its output goes to ``scheduler.log`` beside the database rather than to this
@@ -227,12 +229,13 @@ def _start_worker() -> tuple[subprocess.Popen | None, Path]:
     instead of refusing to start.
     """
     log_path = db.db_path().parent / "scheduler.log"
+    log = None
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(log_path, "a", buffering=1)  # line-buffered: tail -f shows ticks live
-        proc = subprocess.Popen(
+        proc = Popen(
             [sys.executable, "-m", "vegapunk.scheduler_worker"],
-            stdin=subprocess.DEVNULL,
+            stdin=DEVNULL,
             stdout=log,
             stderr=log,
             env={**os.environ, "VEGAPUNK_DB_FILE": str(db.db_path())},
@@ -247,10 +250,15 @@ def _start_worker() -> tuple[subprocess.Popen | None, Path]:
             file=sys.stderr,
         )
         return None, log_path
+    finally:
+        # The child holds its own duplicate of this handle, so the parent's copy
+        # is dead weight for the life of the session once the spawn is done.
+        if log is not None:
+            log.close()
     return proc, log_path
 
 
-def _stop_worker(worker: subprocess.Popen | None, timeout: float = 5.0) -> None:
+def _stop_worker(worker: Popen | None, timeout: float = 5.0) -> None:
     """Stop the scheduler worker, escalating to a kill if it doesn't go.
 
     SIGTERM first: the ticker checks for a stop between tasks, so a worker that is
@@ -269,7 +277,7 @@ def _stop_worker(worker: subprocess.Popen | None, timeout: float = 5.0) -> None:
     worker.terminate()
     try:
         worker.wait(timeout)
-    except subprocess.TimeoutExpired:
+    except TimeoutExpired:
         worker.kill()
         print(
             style.paint(

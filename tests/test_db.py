@@ -112,12 +112,44 @@ def test_multiprocess_wal_is_enabled(tmp_path, monkeypatch):
     ]
 
 
-def test_connection_is_safe_to_share_across_threads():
-    # db.py owns the serialization: pyturso 0.7.1 panics the Rust core when two
-    # threads use one connection ("end_write_tx called while write lock not held"),
-    # and a panic is not a catchable exception. Two threads do share it here — the
-    # scheduler's ticker mid-task, and the main thread writing input history at the
-    # prompt, the latter outside the lock the CLI wraps its turns in.
+def test_each_thread_gets_its_own_connection():
+    # The guarantee that keeps pyturso 0.7.1 from aborting the process: threads
+    # never share a connection object. Asserted on identity, not behavior, because
+    # a shared connection appears to work right up until it panics.
+    # The connection objects are kept, not their ids: a finished thread's
+    # connection is freed and the next one can be allocated at the same address,
+    # which would make an id-only check pass for the wrong reason.
+    conns: list = []
+    guard = threading.Lock()
+    started = threading.Barrier(6)
+
+    def grab() -> None:
+        started.wait(timeout=30)  # all six alive at once, so none can be recycled
+        conn = db.get_connection()
+        with guard:
+            conns.append(conn)
+
+    threads = [threading.Thread(target=grab) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert len(conns) == 6
+    assert len({id(c) for c in conns}) == 6  # six threads, six distinct connections
+    assert all(db.get_connection() is not c for c in conns)  # this thread's is its own
+
+
+def test_repeated_calls_reuse_one_connection_per_thread():
+    # Per-thread must not become per-call, or every query would pay a fresh open.
+    assert db.get_connection() is db.get_connection()
+
+
+def test_threads_can_read_and_write_concurrently():
+    # Holding their own connections, threads now contend at the WAL level rather
+    # than on a Python lock — which is exactly why _BUSY_TIMEOUT_MS is mandatory.
+    # Without it, eight concurrent writers lose the large majority of their
+    # statements to "database is locked".
     errors: list[Exception] = []
 
     def writer(n: int) -> None:
