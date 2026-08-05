@@ -6,11 +6,14 @@ which points ``db.db_path`` at a per-test tmp file.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from vegapunk import db
 from vegapunk.session_store import (
     SessionNotFound,
+    choose_name,
     delete_session,
     exists,
     list_sessions,
@@ -69,6 +72,29 @@ def test_unique_name_disambiguates():
 
 def test_unique_name_free_when_unused():
     assert unique_name("fresh") == "fresh"
+
+
+# --- choose_name: the naming fallback chain -------------------------------
+
+
+def test_choose_name_prefers_the_suggested_title():
+    assert choose_name("Fixing the Loop", "some other text") == "fixing-the-loop"
+
+
+def test_choose_name_falls_back_to_the_first_message():
+    """An empty title — the model declined, or the titling call failed — must
+    degrade to the message rather than jumping straight to a timestamp."""
+    assert choose_name("", "How do I read a file?") == "how-do-i-read-a-file"
+
+
+def test_choose_name_falls_back_to_a_timestamp_when_nothing_slugifies():
+    name = choose_name("!!!", "   ")
+    assert re.fullmatch(r"session-\d{8}-\d{6}", name), name
+
+
+def test_choose_name_never_clobbers_an_existing_session():
+    save_session("fixing-the-loop", [])
+    assert choose_name("Fixing the Loop", "") == "fixing-the-loop-2"
 
 
 def test_exists_reflects_saved_sessions():

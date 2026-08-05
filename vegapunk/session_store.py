@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime
 
 from . import db
 from .transcript import count_user_turns
@@ -64,6 +65,24 @@ def unique_name(stem: str) -> str:
     while exists(f"{stem}-{n}"):
         n += 1
     return f"{stem}-{n}"
+
+
+def choose_name(suggested: str, fallback_text: str = "") -> str:
+    """Pick a free slug for a conversation that doesn't have one yet.
+
+    Three sources in descending order of how much they say about the
+    conversation: a model-written title, the text of the first message, then the
+    clock. Each is only used if the one before it slugifies to nothing, so an
+    empty title (the model declined, or the call failed) degrades to the message
+    rather than jumping straight to a timestamp. The result is passed through
+    ``unique_name``, so it never clobbers an existing session.
+    """
+    base = (
+        slugify(suggested)
+        or slugify(fallback_text)
+        or f"session-{datetime.now():%Y%m%d-%H%M%S}"
+    )
+    return unique_name(base)
 
 
 def save_session(name: str, messages: list[dict]) -> None:

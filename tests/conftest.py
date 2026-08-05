@@ -59,7 +59,7 @@ class _NeverStartedPopen:
 
 @pytest.fixture(autouse=True)
 def _no_real_scheduler_worker(monkeypatch):
-    monkeypatch.setattr("vegapunk.cli.Popen", _NeverStartedPopen)
+    monkeypatch.setattr("vegapunk.worker.Popen", _NeverStartedPopen)
 
 
 @pytest.fixture(autouse=True)
