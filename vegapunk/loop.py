@@ -10,9 +10,15 @@ what the model is chewing over, which tool ran and what came back — is traced 
 stderr, so you can watch the loop work without that noise ever contaminating the
 answer or the conversation history.
 
-``drive_turns`` is therefore a generator: it yields ``TextDelta`` fragments as
-they arrive, and *returns* — via ``StopIteration.value`` — the final reply
-together with the conversation's context footprint in tokens.
+``trace`` is therefore a generator: it yields ``TextDelta`` fragments as they
+arrive, and *returns* — via ``StopIteration.value`` — the final reply together
+with the conversation's context footprint in tokens.
+
+Nothing here knows about ``Agent``. ``trace`` takes the event stream and nothing
+else, so the module that owns a conversation is the one that starts a run on it,
+and this one is a pure function of what came back. It also means these display
+contracts are tested by handing ``trace`` a few event objects, with no model,
+provider, or agent anywhere in the test.
 """
 
 from __future__ import annotations
@@ -20,11 +26,12 @@ from __future__ import annotations
 import itertools
 import sys
 import threading
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 
 from logpose import (
     Agent,
     Conversation,
+    Event,
     MaxIterationsError,
     RunEnd,
     TextDelta,
@@ -49,7 +56,7 @@ def run(agent: Agent, user_input: str) -> str:
     Drains the turn stream internally (no live rendering), so script callers
     keep the simple call-and-get-a-string contract.
     """
-    turns = drive_turns(agent, user_input, Conversation())
+    turns = trace(stream_sync(agent, user_input, conversation=Conversation()))
     while True:
         try:
             next(turns)
@@ -58,18 +65,20 @@ def run(agent: Agent, user_input: str) -> str:
             return reply
 
 
-def drive_turns(
-    agent: Agent, user_input: str, conversation: Conversation
-) -> Generator[TextDelta, None, tuple[str, int | None]]:
-    """Run one request through ``agent``, tracing it, and stream the reply.
+def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tuple[str, int | None]]:
+    """Render one run's event stream, and stream the reply back up.
 
     Yields ``TextDelta`` fragments of the assistant's speech as the model
     produces them, and *returns* — via ``StopIteration.value`` — the final text
     answer (or a notice if the step limit is hit) together with the
     conversation's context footprint in tokens: the server-reported total from
-    the turn's last model call, None if the server never said. Appends to
-    ``conversation`` as it goes, so an interrupted turn leaves the partial
-    history in place for the caller to roll back.
+    the turn's last model call, None if the server never said.
+
+    Takes ownership of ``events``: it is closed on every exit path, which is
+    what cancels in-flight tools and tears down the provider connection when a
+    caller walks away mid-turn. Whoever started the run appends to their own
+    ``Conversation`` as it goes, so an interrupted turn leaves the partial
+    history in place for them to roll back.
 
     Display invariant: any reply text is always yielded as deltas *before* being
     returned — a provider that didn't stream its answer and the step-limit notice
@@ -94,11 +103,10 @@ def drive_turns(
     # result, which arrives later — hold them by id in between.
     pending_args: dict[str, dict] = {}
 
-    events = stream_sync(agent, user_input, conversation=conversation)
     reasoning = _ReasoningLine()
     spinner = _Spinner()
     try:
-        stream: Iterator = iter(events)
+        stream = iter(events)
         while True:
             # Spin only while waiting on the model — the one stretch of true
             # silence a step has.

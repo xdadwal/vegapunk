@@ -10,8 +10,11 @@ invariant), so a renderer never has to decide whether the return value still
 needs printing. Everything else — steps, reasoning, tool results, the spinner —
 goes to stderr and is asserted through capsys.
 
-Driven by a scripted provider (``tests/fake_provider``), so what the "model"
-says on each round trip is exact.
+Mostly driven by a scripted provider (``tests/fake_provider``), so what the
+"model" says on each round trip is exact — the trace is largely *about* what the
+loop did, so a real agent over a fake provider is the honest fixture. Where a
+contract is pure rendering, ``trace`` is handed hand-written events instead; it
+takes an event stream and nothing else, so no agent is required to test it.
 """
 
 from __future__ import annotations
@@ -19,14 +22,23 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from logpose import Conversation, TextDelta, Usage
+from logpose import (
+    Conversation,
+    RunEnd,
+    RunResult,
+    TextDelta,
+    ThinkingDelta,
+    TurnEnd,
+    Usage,
+    stream_sync,
+)
 
 from logpose import tool
 
 from vegapunk import style
 from vegapunk.approval import Decision, ScriptedApprover
 from vegapunk.gate import DENIED, NO_GATE
-from vegapunk.loop import STEP_LIMIT_NOTICE, drive_turns, run
+from vegapunk.loop import STEP_LIMIT_NOTICE, run, trace
 from tests.fake_provider import Turn, agent_for, call, says, wants
 
 
@@ -89,7 +101,7 @@ def _drive(turns, **kwargs) -> tuple[list[TextDelta], str, int | None]:
     """Run one request and split what it yielded from what it returned."""
     kwargs.setdefault("tools", TOOLS)
     agent, _provider = agent_for(turns, **kwargs)
-    generator = drive_turns(agent, "go", Conversation())
+    generator = trace(stream_sync(agent, "go", conversation=Conversation()))
     deltas: list[TextDelta] = []
     while True:
         try:
@@ -449,13 +461,48 @@ def test_abandoning_the_stream_closes_the_provider():
     agent, provider = agent_for(
         [wants(call("echo", {"text": "a"})), says("done")], tools=TOOLS, repeat_last=True
     )
-    generator = drive_turns(agent, "go", Conversation())
+    generator = trace(stream_sync(agent, "go", conversation=Conversation()))
     next(generator)  # start the run, land on the first delta
 
     generator.close()
 
     # Walking away has to tear the request down, not leak it.
     assert provider.closed >= 1
+
+
+def test_trace_renders_a_stream_it_did_not_create():
+    """``trace`` is a function of the event stream and nothing else.
+
+    Driven here with hand-written events and no agent, provider, or model in
+    sight — which is the point of the signature. A regression that reaches back
+    for the ``Agent`` (to peek at tools, or to start the run itself) fails here
+    rather than quietly re-coupling the renderer to the loop.
+    """
+    closed = False
+
+    def scripted():
+        nonlocal closed
+        try:
+            yield ThinkingDelta("weighing it up")
+            yield TextDelta("the answer")
+            yield TurnEnd(stop_reason="end_turn", usage=Usage(input_tokens=7, output_tokens=3))
+            yield RunEnd(result=RunResult(text="the answer"))
+        finally:
+            closed = True
+
+    generator = trace(scripted())
+    deltas = []
+    while True:
+        try:
+            deltas.append(next(generator))
+        except StopIteration as stop:
+            reply, context_tokens = stop.value
+            break
+
+    assert [d.text for d in deltas] == ["the answer"]
+    assert reply == "the answer"
+    assert context_tokens == 10  # input + output, per _footprint
+    assert closed, "trace owns the stream it is handed and must close it"
 
 
 def test_a_provider_failure_propagates_rather_than_being_swallowed():
