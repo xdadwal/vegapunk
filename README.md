@@ -292,6 +292,7 @@ vegapunk/
   memory.py      # long-term memory store (auto-loaded into the system prompt)
   scheduler.py   # scheduled-task store + the ticker that runs what's due
   scheduler_worker.py # the worker process the REPL spawns to run those tasks
+  worker.py      # the parent side of that process: spawning it and stopping it
   embedding.py   # optional embeddings for semantic memory recall
   skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
   tools/         # one module per tool, plus the @tool registry

@@ -16,9 +16,8 @@ with the conversation's context footprint in tokens.
 
 Nothing here knows about ``Agent``. ``trace`` takes the event stream and nothing
 else, so the module that owns a conversation is the one that starts a run on it,
-and this one is a pure function of what came back. It also means these display
-contracts are tested by handing ``trace`` a few event objects, with no model,
-provider, or agent anywhere in the test.
+and this one is a pure function of what came back — a rendering contract can be
+tested by handing it a few event objects, with no agent anywhere in sight.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """The scheduler worker — the process that actually runs due tasks.
 
 Run as ``python -m vegapunk.scheduler_worker``, though normally you don't: the
-REPL spawns one at startup and stops it on exit (see ``cli._start_worker``),
+REPL spawns one at startup and stops it on exit (see ``vegapunk/worker.py``),
 pointing it at the same database through ``VEGAPUNK_DB_FILE``.
 
 Why a separate process rather than the thread this used to be. A scheduled run is
