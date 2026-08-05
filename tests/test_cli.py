@@ -362,7 +362,7 @@ class _SpyPopen:
 @pytest.fixture
 def spy_worker(monkeypatch):
     _SpyPopen.instances = []
-    monkeypatch.setattr("vegapunk.cli.Popen", _SpyPopen)
+    monkeypatch.setattr("vegapunk.worker.Popen", _SpyPopen)
     return _SpyPopen
 
 
@@ -428,7 +428,7 @@ def test_main_survives_a_worker_that_cannot_start(monkeypatch, capsys):
     def _boom(*a, **k):
         raise OSError("no fork for you")
 
-    monkeypatch.setattr("vegapunk.cli.Popen", _boom)
+    monkeypatch.setattr("vegapunk.worker.Popen", _boom)
     main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
     assert "could not start the worker" in capsys.readouterr().err
 

@@ -9,19 +9,13 @@ replies stream to stdout token by token as the model generates them.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from collections.abc import Generator
-from datetime import datetime
-from pathlib import Path
-# Imported by name, not via the module, so a test can swap the spawn without
-# reaching into the stdlib module every other subprocess user shares.
-from subprocess import DEVNULL, Popen, TimeoutExpired
 
 from logpose import TextDelta
 
-from . import db, embedding, memory, session_store, skills, style, transcript
+from . import db, embedding, memory, session_store, skills, style, transcript, worker
 from .approval import CLIApprover
 from .backend import create_backend
 from .commands import CommandContext, dispatch
@@ -137,18 +131,18 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     # serialize against your turns, and its trace goes to its own log instead of
     # landing on top of your prompt. Coordination is entirely through the
     # database — /schedule writes rows, the worker polls them.
-    worker, worker_log = _start_worker()
+    scheduler, scheduler_log = worker.start()
     warned_worker_died = False
     try:
         while True:
             # A worker that died (lock contention, bad model config) would
             # otherwise mean scheduled tasks silently stop happening. Said once,
             # before the prompt, pointing at the log that explains why.
-            if worker is not None and worker.poll() is not None and not warned_worker_died:
+            if scheduler is not None and scheduler.poll() is not None and not warned_worker_died:
                 print(
                     style.paint(
-                        f"[scheduler] worker exited ({worker.returncode}) — scheduled tasks "
-                        f"are not running; see {worker_log}",
+                        f"[scheduler] worker exited ({scheduler.returncode}) — scheduled tasks "
+                        f"are not running; see {scheduler_log}",
                         style.YELLOW,
                         sys.stdout,
                     )
@@ -222,82 +216,8 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         # The session holds a private event-loop thread of its own; closing it
         # is what lets the interpreter exit promptly rather than at daemon-thread
         # teardown.
-        _stop_worker(worker)
+        worker.stop(scheduler)
         session.close()
-
-
-def _start_worker() -> tuple[Popen | None, Path]:
-    """Spawn the scheduler worker, returning it and the log it writes to.
-
-    Its output goes to ``scheduler.log`` beside the database rather than to this
-    terminal — that separation is the entire reason the worker is a process, so
-    letting it inherit our stderr would give it all back. The database path is
-    passed explicitly rather than relying on a shared cwd, so parent and child can
-    never disagree about which file they mean.
-
-    Returns ``None`` for the process if it couldn't be spawned: a session without
-    scheduled tasks is degraded, not broken, so the REPL reports it and carries on
-    instead of refusing to start.
-    """
-    log_path = db.db_path().parent / "scheduler.log"
-    log = None
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log = open(log_path, "a", buffering=1)  # line-buffered: tail -f shows ticks live
-        proc = Popen(
-            [sys.executable, "-m", "vegapunk.scheduler_worker"],
-            stdin=DEVNULL,
-            stdout=log,
-            stderr=log,
-            env={**os.environ, "VEGAPUNK_DB_FILE": str(db.db_path())},
-        )
-    except OSError as exc:
-        print(
-            style.paint(
-                f"  [scheduler] could not start the worker ({exc}) — scheduled tasks are off",
-                style.YELLOW,
-                sys.stderr,
-            ),
-            file=sys.stderr,
-        )
-        return None, log_path
-    finally:
-        # The child holds its own duplicate of this handle, so the parent's copy
-        # is dead weight for the life of the session once the spawn is done.
-        if log is not None:
-            log.close()
-    return proc, log_path
-
-
-def _stop_worker(worker: Popen | None, timeout: float = 5.0) -> None:
-    """Stop the scheduler worker, escalating to a kill if it doesn't go.
-
-    SIGTERM first: the ticker checks for a stop between tasks, so a worker that is
-    merely idling exits at once. A worker *inside* a task can't honor it — the stop
-    flag isn't read again until the model call returns, and a turn routinely
-    outlasts ``timeout`` — so that one gets killed, and the run is lost.
-
-    Losing it is the cheap outcome, deliberately chosen over the alternatives:
-    ``record_run`` never ran, so the task keeps its old ``next_run_at`` and simply
-    runs again later. Waiting out a full turn would hang ``/exit`` for as long as
-    the model felt like taking, and leaving the worker to finish would block the
-    *next* session's worker on the scheduler lock.
-    """
-    if worker is None or worker.poll() is not None:
-        return
-    worker.terminate()
-    try:
-        worker.wait(timeout)
-    except TimeoutExpired:
-        worker.kill()
-        print(
-            style.paint(
-                "  [scheduler] a task was still running — it was stopped and stays due",
-                style.DIM,
-                sys.stderr,
-            ),
-            file=sys.stderr,
-        )
 
 
 def _autosave_turn(ctx: CommandContext) -> None:
@@ -318,12 +238,7 @@ def _autosave_turn(ctx: CommandContext) -> None:
                 ),
                 "",
             )
-            base = (
-                session_store.slugify(ctx.session.suggest_name())
-                or session_store.slugify(first)
-                or f"session-{datetime.now():%Y%m%d-%H%M%S}"
-            )
-            name = session_store.unique_name(base)
+            name = session_store.choose_name(ctx.session.suggest_name(), first)
             session_store.save_session(name, ctx.session.messages)
             ctx.current_name = name
             print(style.paint(f"(saved as '{name}')", style.DIM, sys.stdout))

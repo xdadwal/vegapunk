@@ -15,14 +15,22 @@ from __future__ import annotations
 import sys
 from collections.abc import Generator
 
-from logpose import Agent, Conversation, Message, TextDelta, close_sync, run_sync
+from logpose import (
+    Agent,
+    Conversation,
+    Message,
+    TextDelta,
+    close_sync,
+    run_sync,
+    stream_sync,
+)
 
 from . import style
 from .approval import Approver
 from .backend import Backend, with_effort
 from .config import config
 from .gate import make_gate
-from .loop import drive_turns
+from .loop import trace
 
 _TITLE_PROMPT = (
     "Reply with a short 3-5 word title for a conversation that begins "
@@ -75,8 +83,11 @@ class Session:
         """
         checkpoint = len(self._conversation.messages)
         try:
-            reply, context_tokens = yield from drive_turns(
-                self._agent, user_input, self._conversation
+            # The run is started here, beside the conversation it appends to and
+            # the rollback below that undoes those appends. ``trace`` renders the
+            # stream and closes it; it never sees the agent or the history.
+            reply, context_tokens = yield from trace(
+                stream_sync(self._agent, user_input, conversation=self._conversation)
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
