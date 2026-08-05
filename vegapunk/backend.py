@@ -14,6 +14,7 @@ Anthropic path.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -52,6 +53,10 @@ class Backend:
             an Anthropic-only parameter to a local server.
         extra: Provider-specific request parameters merged into every turn.
             Carries the effort setting for the Claude backend; empty for local.
+        spawn_provider: Builds a *second*, independent provider for the same
+            model. Needed because a provider's HTTP client binds itself to the
+            event loop that first uses it, so two agents (the conversation and
+            the throwaway one that titles it) cannot share one.
     """
 
     provider: Provider
@@ -59,18 +64,12 @@ class Backend:
     context_window: int
     supports_effort: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    spawn_provider: Callable[[], Provider] = field(default=lambda: _no_spawn())
 
-    async def aclose(self) -> None:
-        """Release the provider's HTTP client.
 
-        Providers own an async client holding real sockets, and an ``Agent``
-        built from an *instance* deliberately won't close it (logpose only
-        closes providers it built itself), so a /model swap has to do it here or
-        leak the pool.
-        """
-        closer = getattr(self.provider, "aclose", None)
-        if closer is not None:
-            await closer()
+def _no_spawn() -> Provider:
+    """Default for a Backend built by hand (tests) rather than by name."""
+    raise RuntimeError("this backend cannot spawn a second provider")
 
 
 def validate_effort(level: str) -> str:
@@ -108,15 +107,19 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
         # Docker Model Runner speaks OpenAI-compatible HTTP and needs no
         # credential, so there's nothing to pass but where it lives and how much
         # it may generate.
-        return Backend(
-            provider=resolve(
+        def spawn_local() -> Provider:
+            return resolve(
                 "docker",
                 base_url=cfg.base_url,
                 model=cfg.model,
                 max_tokens=cfg.max_output_tokens,
-            ),
+            )
+
+        return Backend(
+            provider=spawn_local(),
             model_label=cfg.model,
             context_window=cfg.context_window,
+            spawn_provider=spawn_local,
         )
     if name == "claude":
         # An empty claude_model means "whatever the provider defaults to": don't
@@ -125,13 +128,18 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
         kwargs: dict[str, Any] = {"max_tokens": cfg.max_output_tokens}
         if cfg.claude_model:
             kwargs["model_default"] = _MODEL_ALIASES.get(cfg.claude_model, cfg.claude_model)
-        provider = resolve("anthropic", **kwargs)
+
+        def spawn_claude() -> Provider:
+            return resolve("anthropic", **kwargs)
+
+        provider = spawn_claude()
         return Backend(
             provider=provider,
             model_label=provider.model_default,
             context_window=cfg.claude_context_window,
             supports_effort=True,
             extra=_effort_extra(cfg.claude_effort),
+            spawn_provider=spawn_claude,
         )
     raise ValueError(f"Unknown provider {name!r} — expected 'local' or 'claude'.")
 

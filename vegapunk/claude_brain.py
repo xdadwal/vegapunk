@@ -1,4 +1,15 @@
-"""ClaudeBrain — a Brain backed by subscription-billed Claude.
+"""ClaudeBrain — a Brain backed by subscription-billed Claude. PARKED.
+
+Nothing imports this module. ``/model claude`` now goes through logpose's
+Anthropic provider (``vegapunk/backend.py``), which reaches the API directly and
+gets native tool calls — so the prompt-fence protocol below, and the transcript
+flattening it needs, have no live caller.
+
+It stays in the tree, with its tests, because the path it takes is meaningfully
+different: it spends a subscription through the sanctioned Claude Code client,
+where the new path uses an OAuth token against the raw API. If that turns out to
+matter, this is what we come back to. If it doesn't, this module, ``brain.py``,
+and the ``claude-agent-sdk`` dependency all go together.
 
 Talks to Claude through ``claude-agent-sdk``, which drives the Claude Code CLI
 bundled inside the package as a subprocess. That indirection is the point: a

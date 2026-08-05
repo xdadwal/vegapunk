@@ -13,8 +13,17 @@ from collections.abc import Iterator
 
 import pytest
 
+from logpose import (
+    Agent,
+    CompletionDone,
+    Message,
+    ProviderTextDelta,
+    TextBlock,
+    Usage,
+)
+
 from vegapunk import db
-from vegapunk.brain import Brain, BrainResponse, TextDelta, ThinkEvent, ToolCall
+from vegapunk.gate import make_gate
 from vegapunk.scheduler import (
     Scheduler,
     add_task,
@@ -24,7 +33,8 @@ from vegapunk.scheduler import (
     remove_task,
     run_task,
 )
-from vegapunk.tools.base import Tool
+from vegapunk.tools.registry import tool
+from tests.fake_provider import agent_for, call, says, wants
 
 
 def _insert_task(
@@ -205,42 +215,39 @@ def test_due_tasks_degrades_when_db_unavailable(monkeypatch, capsys):
 # --- the runner (run_task / record_run) ---
 
 
-class _ScriptedBrain(Brain):
-    """Plays back one scripted event stream per think() call (mirrors test_loop)."""
-
-    def __init__(self, scripts: list[list[ThinkEvent]]) -> None:
-        self._scripts = list(scripts)
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        yield from self._scripts.pop(0)
+@tool
+def fetch_page() -> str:
+    """Pretend to fetch a page."""
+    _ran.append("fetch_page")
+    return "page body"
 
 
-def _response(text=None, tool_calls=None) -> BrainResponse:
-    message: dict = {"role": "assistant", "content": text}
-    if tool_calls:
-        message["tool_calls"] = [
-            {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": "{}"}}
-            for c in tool_calls
-        ]
-    return BrainResponse(message=message, text=text, tool_calls=tool_calls or [])
+@tool(guarded=True)
+def write_it() -> str:
+    """Pretend to write a file."""
+    _ran.append("write_it")
+    return "wrote"
 
 
-def _runner_tool(name, func, *, guarded=False) -> Tool:
-    return Tool(
-        name=name,
-        description=name,
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=func,
-        guarded=guarded,
-    )
+_ran: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _clear_ran():
+    _ran.clear()
+
+
+def _agent(turns, tools=()):
+    """An agent wired the way the worker wires one: every tool, no approver."""
+    agent, _provider = agent_for(turns, tools=tools, approver=None)
+    return agent
 
 
 def test_run_task_runs_prompt_and_records_ok():
     add_task("say hi", 60)
     task = list_tasks()[0]
-    brain = _ScriptedBrain([[TextDelta("done"), _response("done")]])
 
-    result = run_task(task, brain, [])
+    result = run_task(task, _agent(says("done")))
 
     assert result == "done"
     updated = list_tasks()[0]
@@ -250,56 +257,49 @@ def test_run_task_runs_prompt_and_records_ok():
 
 
 def test_run_task_runs_readonly_tools_unattended():
-    # A read-only tool runs with no approver present (the polling case).
+    # A read-only tool runs with no approver present — the polling case, and the
+    # whole reason an unattended run is useful at all.
     add_task("poll and remember", 60)
     task = list_tasks()[0]
-    ran: list[dict] = []
-    fetch = _runner_tool("fetch_url", lambda a: ran.append(a) or "page body")
-    call = ToolCall(id="c1", name="fetch_url", arguments={})
-    brain = _ScriptedBrain(
-        [[_response(tool_calls=[call])], [TextDelta("fetched"), _response("fetched")]]
+
+    result = run_task(
+        task, _agent([wants(call("fetch_page")), says("fetched")], tools=[fetch_page])
     )
 
-    result = run_task(task, brain, [fetch])
-
-    assert ran == [{}]  # the read-only tool actually ran
+    assert _ran == ["fetch_page"]
     assert result == "fetched"
     assert list_tasks()[0].last_status == "ok"
 
 
 def test_run_task_blocks_guarded_tools_fail_closed():
-    # No human is present, so a guarded tool must NOT run (approver=None).
+    # No human is present, so a guarded tool must NOT run.
     add_task("write a file", 60)
     task = list_tasks()[0]
-    ran: list[dict] = []
-    guarded = _runner_tool("write_file", lambda a: ran.append(a) or "wrote", guarded=True)
-    call = ToolCall(id="c1", name="write_file", arguments={})
-    brain = _ScriptedBrain(
-        [[_response(tool_calls=[call])], [TextDelta("could not write"), _response("could not write")]]
+
+    result = run_task(
+        task, _agent([wants(call("write_it")), says("could not write")], tools=[write_it])
     )
 
-    result = run_task(task, brain, [guarded])
-
-    assert ran == []  # guarded tool never ran unattended
+    assert _ran == []  # guarded tool never ran unattended
     assert result == "could not write"
     assert list_tasks()[0].last_status == "ok"  # the turn itself completed fine
 
 
-def test_run_task_records_error_when_loop_raises(monkeypatch):
+def test_run_task_records_error_when_the_run_raises(monkeypatch):
     add_task("boom", 60)
     task = list_tasks()[0]
 
     def _boom(*args, **kwargs):
-        raise RuntimeError("brain exploded")
+        raise RuntimeError("provider exploded")
 
     monkeypatch.setattr("vegapunk.loop.run", _boom)
 
-    result = run_task(task, None, [])
+    result = run_task(task, None)
 
-    assert "brain exploded" in result  # error surfaced in the result, not raised
+    assert "provider exploded" in result  # surfaced in the result, not raised
     updated = list_tasks()[0]
     assert updated.last_status == "error"
-    assert "brain exploded" in updated.last_result
+    assert "provider exploded" in updated.last_result
 
 
 def test_run_task_does_not_swallow_keyboard_interrupt(monkeypatch):
@@ -313,7 +313,7 @@ def test_run_task_does_not_swallow_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr("vegapunk.loop.run", _interrupt)
 
     with pytest.raises(KeyboardInterrupt):
-        run_task(task, None, [])
+        run_task(task, None)
 
 
 def test_record_run_advances_schedule_from_recorded_stamp():
@@ -358,38 +358,49 @@ def test_record_run_degrades_when_db_unavailable(monkeypatch, capsys):
 # --- the ticker (Scheduler) ---
 
 
-class _RecordingBrain(Brain):
-    """A reusable brain that answers every think() with a plain reply and counts
-    the calls — lets a test see how many task turns actually ran."""
+class _Counting:
+    """A provider that answers every request and counts how many it got."""
+
+    name = "counting"
+    model_default = "counting-model"
 
     def __init__(self) -> None:
         self.calls = 0
 
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
+    async def stream(self, req):
         self.calls += 1
-        yield TextDelta("done")
-        yield _response("done")
+        yield ProviderTextDelta(text="done")
+        yield CompletionDone(
+            message=Message(role="assistant", content=[TextBlock(text="done")]),
+            stop_reason="end_turn",
+            usage=Usage(),
+        )
+
+
+def _counting_agent() -> tuple[Agent, _Counting]:
+    provider = _Counting()
+    return Agent(provider, system="SYS", on_tool_call=make_gate(None)), provider
 
 
 def test_run_due_now_runs_due_tasks_and_records():
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
-    brain = _RecordingBrain()
-    scheduler = Scheduler(lambda: brain, [])
+    agent, provider = _counting_agent()
+    scheduler = Scheduler(lambda: agent)
 
     scheduler.run_due_now()
 
-    assert brain.calls == 1  # the due task ran once
+    assert provider.calls == 1  # the due task ran once
     assert list_tasks()[0].last_status == "ok"
 
 
 def test_run_due_now_skips_tasks_not_yet_due():
     _insert_task("a" * 32, "future", "2999-01-01T00:00:00.000000Z")
-    brain = _RecordingBrain()
-    scheduler = Scheduler(lambda: brain, [])
+    agent, provider = _counting_agent()
+    scheduler = Scheduler(lambda: agent)
 
     scheduler.run_due_now()
 
-    assert brain.calls == 0  # nothing due, nothing ran
+    assert provider.calls == 0  # nothing due, nothing ran
     assert list_tasks()[0].last_status is None
 
 
@@ -400,11 +411,11 @@ def test_run_due_now_runs_the_whole_due_batch():
     _insert_task("a" * 32, "first", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     _insert_task("b" * 32, "second", "2000-01-01T00:00:01.000000Z", interval_seconds=60)
     _insert_task("c" * 32, "third", "2999-01-01T00:00:00.000000Z", interval_seconds=60)
-    brain = _RecordingBrain()
+    agent, provider = _counting_agent()
 
-    Scheduler(lambda: brain, []).run_due_now()
+    Scheduler(lambda: agent).run_due_now()
 
-    assert brain.calls == 2  # both due tasks, not just the first
+    assert provider.calls == 2  # both due tasks, not just the first
     by_id = {t.id: t for t in list_tasks()}
     assert by_id["a" * 32].last_status == "ok"
     assert by_id["b" * 32].last_status == "ok"
@@ -414,14 +425,14 @@ def test_run_due_now_runs_the_whole_due_batch():
 def test_run_due_now_bails_out_when_stop_is_signaled():
     # A stop requested mid-shutdown must not start a fresh task turn.
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z")
-    brain = _RecordingBrain()
+    agent, provider = _counting_agent()
     stop = threading.Event()
-    scheduler = Scheduler(lambda: brain, [], stop=stop)
+    scheduler = Scheduler(lambda: agent, stop=stop)
     stop.set()  # simulate a SIGTERM already received
 
     scheduler.run_due_now()
 
-    assert brain.calls == 0  # short-circuited before running the due task
+    assert provider.calls == 0  # short-circuited before running the due task
     assert list_tasks()[0].last_status is None  # left due for the next worker
 
 
@@ -431,14 +442,16 @@ def test_serve_runs_due_tasks_until_stopped():
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     ran = threading.Event()
 
-    class _EventBrain(Brain):
-        def think(self, messages, tools=None):
+    class _Announcing(_Counting):
+        async def stream(self, req):
             ran.set()
-            yield TextDelta("done")
-            yield _response("done")
+            async for event in super().stream(req):
+                yield event
 
     stop = threading.Event()
-    scheduler = Scheduler(lambda: _EventBrain(), [], poll_seconds=0.02, stop=stop)
+    announcing = _Announcing()
+    agent = Agent(announcing, system="SYS", on_tool_call=make_gate(None))
+    scheduler = Scheduler(lambda: agent, poll_seconds=0.02, stop=stop)
     server = threading.Thread(target=scheduler.serve)
     server.start()
     try:
@@ -454,13 +467,13 @@ def test_serve_returns_without_ticking_when_already_stopped():
     # The worker's stop event may already be set by the time serve() is reached
     # (a SIGTERM during startup); it must return rather than run a tick.
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z")
-    brain = _RecordingBrain()
+    agent, provider = _counting_agent()
     stop = threading.Event()
     stop.set()
 
-    Scheduler(lambda: brain, [], poll_seconds=0.01, stop=stop).serve()
+    Scheduler(lambda: agent, poll_seconds=0.01, stop=stop).serve()
 
-    assert brain.calls == 0
+    assert provider.calls == 0
     assert list_tasks()[0].last_status is None
 
 
@@ -478,7 +491,7 @@ def test_serve_survives_a_failing_tick(monkeypatch, capsys):
 
     monkeypatch.setattr(Scheduler, "run_due_now", _sometimes_boom)
     stop = threading.Event()
-    scheduler = Scheduler(lambda: _RecordingBrain(), [], poll_seconds=0.02, stop=stop)
+    scheduler = Scheduler(lambda: _counting_agent()[0], poll_seconds=0.02, stop=stop)
     server = threading.Thread(target=scheduler.serve)
     server.start()
     try:
@@ -493,13 +506,13 @@ def test_serve_survives_a_failing_tick(monkeypatch, capsys):
 
 
 def test_schedule_task_tool_registered_and_unguarded():
-    from vegapunk.tools import ALL_TOOLS
+    from vegapunk.tools import ALL_TOOLS, GUARDED
 
-    tool = next(t for t in ALL_TOOLS if t.name == "schedule_task")
-    assert tool.guarded is False  # writes its own table, not the workspace
-    schema = tool.to_schema()["function"]["parameters"]
-    assert schema["properties"]["prompt"] == {"type": "string"}
-    assert schema["properties"]["interval_seconds"] == {"type": "integer"}
+    registered = next(t for t in ALL_TOOLS if t.name == "schedule_task")
+    assert "schedule_task" not in GUARDED  # writes its own table, not the workspace
+    schema = registered.input_schema
+    assert schema["properties"]["prompt"]["type"] == "string"
+    assert schema["properties"]["interval_seconds"]["type"] == "integer"
     assert set(schema["required"]) == {"prompt", "interval_seconds"}
 
 

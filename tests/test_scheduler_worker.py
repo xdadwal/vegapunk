@@ -1,4 +1,4 @@
-"""Tests for the scheduler worker process — the brain it builds from config,
+"""Tests for the scheduler worker process — the backend it builds from config,
 its parent-death watchdog, and the startup path in ``main``.
 
 The worker's *loop* is ``Scheduler.serve`` and is covered in test_scheduler.py;
@@ -15,130 +15,119 @@ from dataclasses import replace
 import pytest
 
 from vegapunk import scheduler_worker
+from vegapunk.backend import current_effort
 from vegapunk.config import config
+from tests.fake_provider import backend_for
 
 
-class _FakeClaudeBrain:
-    """A brain that carries an effort setting, like ClaudeBrain — used to check
-    effort is applied without importing the SDK."""
-
-    model_label = "fake-claude"
-
-    def __init__(self) -> None:
-        self.effort: str | None = None
-
-    def set_effort(self, level: str) -> None:
-        self.effort = level
+def _claude_backend():
+    """What create_backend returns for claude: a backend that takes effort."""
+    return backend_for(model_label="fake-claude", supports_effort=True)
 
 
-class _FakeLocalBrain:
-    """A brain with no effort setting, like DMRBrain."""
+def _local_backend():
+    """What create_backend returns for local: no effort setting."""
+    return backend_for(model_label="fake-local")
 
-    model_label = "fake-local"
 
-
-def _capture_create_brain(monkeypatch, brain=None):
-    """Record what create_brain was asked for; return the recording dict."""
+def _capture_create_backend(monkeypatch, backend=None):
+    """Record what create_backend was asked for; return the recording dict."""
     seen: dict = {}
 
     def _fake(provider, cfg=config):
         seen["provider"] = provider
         seen["claude_model"] = cfg.claude_model
-        return brain if brain is not None else _FakeLocalBrain()
+        return backend if backend is not None else _local_backend()
 
-    monkeypatch.setattr("vegapunk.scheduler_worker.create_brain", _fake)
+    monkeypatch.setattr("vegapunk.scheduler_worker.create_backend", _fake)
     return seen
 
 
-def test_build_brain_inherits_the_launch_config_by_default(monkeypatch):
+def test_build_backend_inherits_the_launch_config_by_default(monkeypatch):
     # Unset VEGAPUNK_SCHEDULER_MODEL means "whatever the REPL launched with" —
     # the worker inherits the environment, so this is the zero-config path.
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="", provider="claude", claude_model="sonnet"),
     )
-    seen = _capture_create_brain(monkeypatch)
+    seen = _capture_create_backend(monkeypatch)
 
-    scheduler_worker.build_brain()
+    scheduler_worker.build_backend()
 
     assert seen["provider"] == "claude"
     assert seen["claude_model"] == "sonnet"
 
 
-def test_build_brain_prefers_the_scheduler_spec(monkeypatch):
+def test_build_backend_prefers_the_scheduler_spec(monkeypatch):
     # The whole point of the variable: keep unattended runs on the free local
     # model while your own turns use a billed provider.
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="local", provider="claude", claude_model="opus"),
     )
-    seen = _capture_create_brain(monkeypatch)
+    seen = _capture_create_backend(monkeypatch)
 
-    scheduler_worker.build_brain()
+    scheduler_worker.build_backend()
 
     assert seen["provider"] == "local"
     assert seen["claude_model"] == "opus"  # untouched; local ignores it
 
 
-def test_build_brain_splits_provider_and_model(monkeypatch):
+def test_build_backend_splits_provider_and_model(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="claude:opus", provider="local", claude_model=""),
     )
-    seen = _capture_create_brain(monkeypatch)
+    seen = _capture_create_backend(monkeypatch)
 
-    scheduler_worker.build_brain()
+    scheduler_worker.build_backend()
 
     assert seen["provider"] == "claude"
     assert seen["claude_model"] == "opus"
 
 
-def test_build_brain_applies_effort_with_fallback(monkeypatch):
+def test_build_backend_applies_effort_with_fallback(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="claude", scheduler_effort="", claude_effort="xhigh"),
     )
-    brain = _FakeClaudeBrain()
-    _capture_create_brain(monkeypatch, brain)
+    _capture_create_backend(monkeypatch, _claude_backend())
 
-    scheduler_worker.build_brain()
+    backend = scheduler_worker.build_backend()
 
-    assert brain.effort == "xhigh"  # fell back to the general claude effort
+    assert current_effort(backend) == "xhigh"  # fell back to the general claude effort
 
 
-def test_build_brain_scheduler_effort_wins(monkeypatch):
+def test_build_backend_scheduler_effort_wins(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="claude", scheduler_effort="low", claude_effort="max"),
     )
-    brain = _FakeClaudeBrain()
-    _capture_create_brain(monkeypatch, brain)
+    _capture_create_backend(monkeypatch, _claude_backend())
 
-    scheduler_worker.build_brain()
-
-    assert brain.effort == "low"
+    assert current_effort(scheduler_worker.build_backend()) == "low"
 
 
-def test_build_brain_says_so_when_effort_cannot_apply(monkeypatch, capsys):
+def test_build_backend_says_so_when_effort_cannot_apply(monkeypatch, capsys):
     # Asking for effort on local is a config mismatch — dropping it silently
     # would leave you believing scheduled runs use a setting they can't.
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="local", scheduler_effort="high"),
     )
-    _capture_create_brain(monkeypatch, _FakeLocalBrain())
+    _capture_create_backend(monkeypatch, _local_backend())
 
-    scheduler_worker.build_brain()
+    scheduler_worker.build_backend()
 
     assert "ignoring effort 'high'" in capsys.readouterr().err
 
 
-def test_build_brain_rejects_a_malformed_spec(monkeypatch):
+def test_build_backend_rejects_a_malformed_spec(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.config", replace(config, scheduler_model="gpt5:turbo")
     )
     with pytest.raises(ValueError, match="Unknown provider"):
-        scheduler_worker.build_brain()
+        scheduler_worker.build_backend()
 
 
 def test_watch_parent_stops_when_reparented(monkeypatch):
@@ -176,7 +165,7 @@ def test_main_takes_the_scheduler_lock_not_the_repl_one(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.scheduler_worker.db.acquire_process_lock", lambda: taken.append("repl")
     )
-    monkeypatch.setattr("vegapunk.scheduler_worker.build_brain", _FakeLocalBrain)
+    monkeypatch.setattr("vegapunk.scheduler_worker.build_backend", _local_backend)
     # serve() returns at once so main() doesn't block the test.
     monkeypatch.setattr("vegapunk.scheduler_worker.Scheduler.serve", lambda self: None)
 
@@ -193,7 +182,7 @@ def test_main_exits_cleanly_on_a_bad_model_spec(monkeypatch, capsys):
     def _boom():
         raise ValueError("Unknown provider 'gpt5'")
 
-    monkeypatch.setattr("vegapunk.scheduler_worker.build_brain", _boom)
+    monkeypatch.setattr("vegapunk.scheduler_worker.build_backend", _boom)
 
     with pytest.raises(SystemExit) as exit_info:
         scheduler_worker.main()

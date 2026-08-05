@@ -335,9 +335,14 @@ def test_cli_main_seeds_session_with_skill_ads(skills_home, monkeypatch):
     captured: dict[str, str] = {}
 
     class _CapturingSession:
-        def __init__(self, brain, tools, system_prompt="", **kwargs):
+        model_label = "stub-model"  # main() reads these for the banner
+        context_window = 0
+
+        def close(self) -> None:
+            pass
+
+        def __init__(self, backend, tools, system_prompt="", **kwargs):
             captured["system_prompt"] = system_prompt
-            self.brain = brain  # main() reads session.brain for the banner
 
     monkeypatch.setattr("vegapunk.cli.Session", _CapturingSession)
     cli.main(prompter=ScriptedPrompter([EOFError]))

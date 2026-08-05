@@ -19,10 +19,13 @@ from pathlib import Path
 # reaching into the stdlib module every other subprocess user shares.
 from subprocess import DEVNULL, Popen, TimeoutExpired
 
-from . import db, embedding, memory, session_store, skills, style
+from logpose import TextDelta
+
+from . import db, embedding, memory, session_store, skills, style, transcript
 from .approval import CLIApprover
-from .brain import TextDelta, create_brain
+from .backend import create_backend
 from .commands import CommandContext, dispatch
+from .gate import ApprovalCancelled
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
 from .session import Session
@@ -54,8 +57,8 @@ def _status_line(ctx: CommandContext) -> str:
     left, context-window fullness on the right. Re-evaluated every render, so
     /save, /new, /model, and each finished turn show up on the next prompt.
     Identity comes from the live brain, not config — /model swaps it."""
-    left = f" {ctx.session.brain.model_label} · {ctx.current_name or 'unsaved'}"
-    right = _context_gauge(ctx.session.context_tokens, ctx.session.brain.context_window)
+    left = f" {ctx.session.model_label} · {ctx.current_name or 'unsaved'}"
+    right = _context_gauge(ctx.session.context_tokens, ctx.session.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
     # points, not display cells — good enough because model ids and session
@@ -111,7 +114,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         # mid-session is reachable via use_skill but not advertised until the
         # next launch (same staleness memory has).
         session = Session(
-            create_brain(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
+            create_backend(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
             ALL_TOOLS,
             system_prompt=config.system_prompt + memory.as_system_block() + skills.as_system_block(),
             approver=CLIApprover(),
@@ -124,7 +127,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
     print(
         style.paint(
-            f"model {session.brain.model_label} · workspace {config.workspace_root}",
+            f"model {session.model_label} · workspace {config.workspace_root}",
             style.DIM,
             sys.stdout,
         )
@@ -192,7 +195,11 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # rendering is just: print what you're handed, as you're handed it.
                 events = session.send(user_input)
                 _render_reply(events)
-            except KeyboardInterrupt:  # Ctrl-C mid-generation — cancel just this turn
+            except (KeyboardInterrupt, ApprovalCancelled):
+                # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
+                # approval prompt arrives as ApprovalCancelled instead, because
+                # that prompt runs on logpose's loop thread where a real
+                # KeyboardInterrupt would tear the loop down noisily.
                 if events is not None:
                     # Closing throws GeneratorExit into the paused send(), which
                     # rolls the partial turn out of history deterministically
@@ -212,7 +219,11 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
         # Every exit path (/exit, Ctrl-D, or an error escaping the loop). The
         # worker also watches for us dying, but that is the kill -9 backstop —
         # stopping it here is what makes an ordinary quit leave nothing behind.
+        # The session holds a private event-loop thread of its own; closing it
+        # is what lets the interpreter exit promptly rather than at daemon-thread
+        # teardown.
         _stop_worker(worker)
+        session.close()
 
 
 def _start_worker() -> tuple[Popen | None, Path]:
@@ -300,7 +311,11 @@ def _autosave_turn(ctx: CommandContext) -> None:
     try:
         if ctx.current_name is None:
             first = next(
-                (m["content"] for m in ctx.session.messages if m.get("role") == "user" and m.get("content")),
+                (
+                    transcript.text_of(m)
+                    for m in ctx.session.messages
+                    if transcript.is_user_turn(m)
+                ),
                 "",
             )
             base = (

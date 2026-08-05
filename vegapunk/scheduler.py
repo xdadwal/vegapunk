@@ -28,8 +28,7 @@ from typing import TYPE_CHECKING, Callable
 from . import db
 
 if TYPE_CHECKING:
-    from .brain import Brain
-    from .tools.base import Tool
+    from logpose import Agent
 
 _HEX = frozenset("0123456789abcdef")
 
@@ -172,28 +171,28 @@ def due_tasks(now: str | None = None) -> list[ScheduledTask]:
     return [_row(r) for r in rows]
 
 
-def run_task(task: ScheduledTask, brain: Brain, tools: list[Tool]) -> str:
+def run_task(task: ScheduledTask, agent: Agent) -> str:
     """Run one due task's prompt to completion and record the outcome.
 
-    The prompt runs through the ordinary agent loop with **no approver**, which
-    is fail-closed by construction (see ``loop._run_tool_batch``): read-only
-    tools like ``fetch_url``/``search_web``/``recall``/``remember`` run
-    unattended, while guarded tools (``write_file``/``run_shell``) are
-    auto-blocked because no human is present to approve them. So a polling task
-    that fetches a page and remembers a fact runs fully; one that tries to write
-    the workspace is told it can't in this context and reports that back.
+    The agent is built with **no approver**, which is fail-closed by
+    construction (see ``gate.make_gate``): read-only tools like
+    ``fetch_url``/``search_web``/``recall``/``remember`` run unattended, while
+    guarded tools (``write_file``/``run_shell``) are auto-blocked because no
+    human is present to approve them. So a polling task that fetches a page and
+    remembers a fact runs fully; one that tries to write the workspace is told
+    it can't in this context and reports that back.
 
     Returns the run's result string (also stored on the row via ``record_run``).
     A failure inside the loop is caught here and recorded as an ``"error"`` run
-    rather than raised, mirroring ``loop._run_tool``'s boundary posture: the
-    worker runs unattended, so one bad task must not take it — or the sibling
-    tasks in the same tick — down. ``KeyboardInterrupt`` is *not* caught (it's not
-    an ``Exception``), so a Ctrl-C still propagates out to stop the worker.
+    rather than raised, mirroring the tool boundary's posture: the worker runs
+    unattended, so one bad task must not take it — or the sibling tasks in the
+    same tick — down. ``KeyboardInterrupt`` is *not* caught (it's not an
+    ``Exception``), so a Ctrl-C still propagates out to stop the worker.
     """
     from . import loop  # lazy: avoids a scheduler <-> loop <-> tools import cycle
 
     try:
-        result = loop.run(brain, tools, task.prompt, approver=None)  # approver=None => fail-closed
+        result = loop.run(agent, task.prompt)
         status = "ok"
     except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"
@@ -247,7 +246,7 @@ class Scheduler:
     landing on top of your prompt.
 
     The cost of that separation, deliberately accepted: the worker holds the
-    brain it was built with, so a live ``/model`` swap in the REPL does not reach
+    agent it was built with, so a live ``/model`` swap in the REPL does not reach
     scheduled runs (they follow ``VEGAPUNK_SCHEDULER_MODEL``, else the launch
     config). That keeps an unattended ticker from silently following you onto a
     billed provider.
@@ -259,16 +258,14 @@ class Scheduler:
 
     def __init__(
         self,
-        brain_provider: Callable[[], Brain],
-        tools: list[Tool],
+        agent_provider: Callable[[], Agent],
         poll_seconds: float = _DEFAULT_POLL_SECONDS,
         stop: threading.Event | None = None,
     ) -> None:
-        # A provider, not a Brain: resolved at each task's run time, which is the
-        # seam per-task model selection slots into later. The worker passes a
-        # closure over the one brain it built at startup.
-        self._brain_provider = brain_provider
-        self._tools = tools
+        # A provider, not an Agent: resolved at each task's run time, which is
+        # the seam per-task model selection slots into later. The worker passes
+        # a closure over the one agent it built at startup.
+        self._agent_provider = agent_provider
         self._poll_seconds = poll_seconds
         # Owned by the caller when supplied: the worker sets this from its signal
         # handler and its parent-death watchdog, so shutdown has one channel.
@@ -298,4 +295,4 @@ class Scheduler:
         for task in due_tasks():
             if self._stop.is_set():
                 return
-            run_task(task, self._brain_provider(), self._tools)
+            run_task(task, self._agent_provider())

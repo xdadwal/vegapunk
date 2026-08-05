@@ -28,9 +28,12 @@ import sys
 import threading
 from dataclasses import replace
 
+from logpose import Agent
+
 from . import db
-from .brain import Brain, create_brain, parse_model_spec
+from .backend import Backend, create_backend, with_effort
 from .config import config
+from .gate import make_gate
 from .scheduler import Scheduler
 from .tools import ALL_TOOLS
 
@@ -40,8 +43,21 @@ from .tools import ALL_TOOLS
 _PARENT_CHECK_SECONDS = 5.0
 
 
-def build_brain() -> Brain:
-    """The brain every scheduled run uses, from config.
+def parse_model_spec(spec: str) -> tuple[str, str]:
+    """Split a "provider[:model]" spec into its parts.
+
+    One spelling for both the ``VEGAPUNK_SCHEDULER_MODEL`` env var and the
+    ``/schedule --model`` flag, so "claude:opus" means the same thing in either.
+    """
+    provider, _, model = spec.partition(":")
+    provider = provider.strip().lower()
+    if provider not in ("local", "claude"):
+        raise ValueError(f"Unknown provider {provider!r} — expected 'local' or 'claude'.")
+    return provider, model.strip()
+
+
+def build_backend() -> Backend:
+    """The backend every scheduled run uses, from config.
 
     ``VEGAPUNK_SCHEDULER_MODEL`` (``provider[:model]``) wins; unset, the worker
     inherits the provider/model the REPL was launched with, since it inherits the
@@ -59,20 +75,35 @@ def build_brain() -> Brain:
         provider, model = parse_model_spec(config.scheduler_model)
     else:
         provider, model = config.provider, config.claude_model
-    brain = create_brain(provider, replace(config, claude_model=model) if model else config)
+    backend = create_backend(provider, replace(config, claude_model=model) if model else config)
     effort = config.scheduler_effort or config.claude_effort
     if effort:
-        # Duck-typed like /effort: only Claude brains carry the setting, and
-        # asking for one on local is a config mismatch worth saying out loud
-        # rather than dropping silently.
-        if hasattr(brain, "set_effort"):
-            brain.set_effort(effort)
+        # Asking for an effort level on a backend that has none is a config
+        # mismatch worth saying out loud rather than dropping silently.
+        if backend.supports_effort:
+            backend = with_effort(backend, effort)
         else:
             print(
                 f"  [scheduler] ignoring effort {effort!r} — {provider} has no effort setting",
                 file=sys.stderr,
             )
-    return brain
+    return backend
+
+
+def build_agent(backend: Backend) -> Agent:
+    """The agent scheduled runs go through: every tool, and no approver.
+
+    ``make_gate(None)`` is the fail-closed half of that — a guarded tool is
+    blocked rather than run with nobody watching.
+    """
+    return Agent(
+        backend.provider,
+        system=config.system_prompt,
+        tools=ALL_TOOLS,
+        max_iterations=config.max_steps,
+        extra=backend.extra,
+        on_tool_call=make_gate(None),
+    )
 
 
 def watch_parent(stop: threading.Event, parent_pid: int, interval: float = _PARENT_CHECK_SECONDS) -> None:
@@ -91,10 +122,11 @@ def watch_parent(stop: threading.Event, parent_pid: int, interval: float = _PARE
 
 
 def main() -> None:
-    """Take the worker lock, build the brain, and poll until told to stop."""
+    """Take the worker lock, build the agent, and poll until told to stop."""
     db.acquire_scheduler_lock()  # exits(1) if another worker already holds it
     try:
-        brain = build_brain()
+        backend = build_backend()
+        agent = build_agent(backend)
     except ValueError as exc:
         print(f"  [scheduler] bad model configuration: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
@@ -111,10 +143,10 @@ def main() -> None:
     # Logged, not silent: these are the two facts you need when a scheduled run
     # used a model you didn't expect, and the log is the only place to see them.
     print(
-        f"  [scheduler] worker {os.getpid()} up — model {brain.model_label}, db {db.db_path()}",
+        f"  [scheduler] worker {os.getpid()} up — model {backend.model_label}, db {db.db_path()}",
         file=sys.stderr,
     )
-    Scheduler(lambda: brain, ALL_TOOLS, stop=stop).serve()
+    Scheduler(lambda: agent, stop=stop).serve()
     print(f"  [scheduler] worker {os.getpid()} stopped", file=sys.stderr)
 
 

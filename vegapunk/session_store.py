@@ -14,10 +14,27 @@ import re
 import sys
 
 from . import db
+from .transcript import count_user_turns
 
 
 class SessionNotFound(Exception):
     """No saved session by that name."""
+
+
+def _is_legacy(messages: list) -> bool:
+    """Whether this blob predates the move to logpose's message model.
+
+    The old shape was OpenAI-flavored: a string ``content``, and ``system`` and
+    ``tool`` roles as top-level messages. None of that parses now, and there is
+    no faithful conversion — the system prompt has moved out of the history
+    entirely — so those rows are read as what they are rather than half-restored.
+    """
+    return any(
+        not isinstance(m, dict)
+        or isinstance(m.get("content"), str)
+        or m.get("role") in ("system", "tool")
+        for m in messages
+    )
 
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -52,7 +69,7 @@ def unique_name(stem: str) -> str:
 def save_session(name: str, messages: list[dict]) -> None:
     """Persist ``messages`` under ``name`` (insert or overwrite). Raises
     ``db.StoreError`` on failure; ``created_at`` is preserved across overwrites."""
-    turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
+    turns = count_user_turns(messages)
     now = db.utcnow()
     db.execute(
         "INSERT INTO sessions (slug, messages, turns, created_at, updated_at) "
@@ -73,9 +90,14 @@ def load_session(name: str) -> list[dict]:
     if not rows:
         raise SessionNotFound(name)
     try:
-        return json.loads(rows[0][0])
+        messages = json.loads(rows[0][0])
     except (json.JSONDecodeError, TypeError) as exc:
         raise db.StoreError(f"session '{name}' is corrupt: {exc}") from exc
+    if isinstance(messages, list) and _is_legacy(messages):
+        raise db.StoreError(
+            f"session '{name}' was saved by an older Vegapunk and can't be resumed"
+        )
+    return messages
 
 
 def delete_session(name: str) -> None:

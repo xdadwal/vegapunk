@@ -1,54 +1,66 @@
-"""Tests for multi-turn Session behavior — deterministic, no model/network/time.
+"""Tests for Session — the multi-turn conversation, against a scripted model.
 
-We test the *plumbing* that lets a conversation persist, using a scripted
-FakeBrain in place of a real model.
+What a Session owns is history: that it accumulates across turns, that the
+system prompt is sent without ever becoming part of it, and — the contract that
+matters most — that a turn which ends early leaves nothing behind. Ctrl-C, a
+walked-away renderer, and a provider that blows up all take the same path, and
+in all three the half-turn must be gone before the autosave can see it.
+
+Driven by ``tests/fake_provider``: no model, no network, no credentials.
 """
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Iterator
-
 import pytest
+from logpose import Message, Usage, tool
 
-from vegapunk.brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
+from vegapunk.backend import Backend
+from vegapunk.config import config
 from vegapunk.loop import run
 from vegapunk.session import Session
-from vegapunk.tools import Tool
+from tests.fake_provider import FakeProvider, Turn, agent_for, call, says, wants
 
 
-class FakeBrain(Brain):
-    """A scripted Brain: streams queued responses in order, recording a copy of
-    each messages list it was asked to think over.
+@tool
+def ping() -> str:
+    """Reply with pong."""
+    return "pong"
 
-    Mirrors the real streaming shape — deltas first (when the turn has them),
-    then the assembled response, last — so tests exercise the same event path
-    the CLI sees.
+
+@tool
+def echo(text: str) -> str:
+    """Echo some text.
+
+    Args:
+        text: What to echo.
     """
-
-    def __init__(self, responses: list[BrainResponse]) -> None:
-        self._responses = list(responses)
-        self.seen_messages: list[list[dict]] = []
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        # Copy: drive_turns mutates the list in place, so snapshot what we saw.
-        self.seen_messages.append(list(messages))
-        response = self._responses.pop(0)
-        if response.reasoning:
-            yield ReasoningDelta(response.reasoning)
-        if response.text:
-            yield TextDelta(response.text)
-        yield response
+    return text
 
 
-def _text(content: str) -> BrainResponse:
-    return BrainResponse(
-        message={"role": "assistant", "content": content}, text=content, tool_calls=[]
+def _backend(turns, *, repeat_last: bool = False, title="a scripted title", **kwargs):
+    provider = FakeProvider(turns, repeat_last=repeat_last)
+    backend = Backend(
+        provider=provider,
+        model_label=kwargs.pop("model_label", "fake-model"),
+        context_window=1000,
+        # Its own provider: the titling agent runs on its own event loop.
+        spawn_provider=lambda: FakeProvider(title, repeat_last=True),
+        **kwargs,
     )
+    return backend, provider
+
+
+def _session(turns, *, tools=(), repeat_last: bool = False, title=None, **kwargs) -> Session:
+    backend_kwargs = {key: kwargs.pop(key) for key in ("supports_effort",) if key in kwargs}
+    if title is not None:
+        backend_kwargs["title"] = title
+    backend, _provider = _backend(turns, repeat_last=repeat_last, **backend_kwargs)
+    kwargs.setdefault("system_prompt", "SYS")
+    return Session(backend, list(tools), **kwargs)
 
 
 def _reply(send_events) -> str:
-    """Drain a send() stream and return the reply it carries in StopIteration."""
+    """Drain a ``send`` generator and return the reply it finished with."""
     while True:
         try:
             next(send_events)
@@ -56,374 +68,334 @@ def _reply(send_events) -> str:
             return stop.value
 
 
+# ---------------------------------------------------------------------------
+# history
+# ---------------------------------------------------------------------------
+
+
 def test_history_persists_across_turns():
-    fake = FakeBrain([_text("hi Akshay"), _text("your name is Akshay")])
-    session = Session(fake, tools=[], system_prompt="SYS")
+    session = _session([says("hi Akshay"), says("your name is Akshay")])
 
-    assert _reply(session.send("my name is Akshay")) == "hi Akshay"
-    assert _reply(session.send("what's my name?")) == "your name is Akshay"
+    _reply(session.send("my name is Akshay"))
+    _reply(session.send("what is my name?"))
 
-    # On the 2nd think() call the brain saw the full prior history.
-    second = [(m["role"], m.get("content")) for m in fake.seen_messages[1]]
-    assert second == [
-        ("system", "SYS"),
-        ("user", "my name is Akshay"),
-        ("assistant", "hi Akshay"),
-        ("user", "what's my name?"),
-    ]
+    roles = [m["role"] for m in session.messages]
+    assert roles == ["user", "assistant", "user", "assistant"]
+    assert session.messages[0]["content"][0]["text"] == "my name is Akshay"
 
 
-def test_clarifying_question_then_continue():
-    # The model can ask a clarifying question (a plain-text turn, no tools); the
-    # user answers on the next turn and the model finishes with that context.
-    # No new mechanism — this pins that the existing loop carries the back-and-forth.
-    fake = FakeBrain(
-        [
-            _text("Which file do you mean — a.md or b.md?"),
-            _text("Renamed a.md to archive.md."),
-        ]
-    )
-    session = Session(fake, tools=[], system_prompt="SYS")
+def test_the_system_prompt_is_sent_every_turn_but_is_not_history():
+    session = _session([says("ok"), says("still ok")])
+    backend = session.backend
 
-    assert _reply(session.send("rename the file")) == "Which file do you mean — a.md or b.md?"
-    assert _reply(session.send("a.md")) == "Renamed a.md to archive.md."
+    _reply(session.send("first"))
+    _reply(session.send("second"))
 
-    # On the 2nd think() the model saw its own question and the user's answer.
-    second = [(m["role"], m.get("content")) for m in fake.seen_messages[1]]
-    assert second == [
-        ("system", "SYS"),
-        ("user", "rename the file"),
-        ("assistant", "Which file do you mean — a.md or b.md?"),
-        ("user", "a.md"),
-    ]
+    assert all(request.system == "SYS" for request in backend.provider.requests)
+    # It's the agent's, not a message — so it can't be edited by a restore or
+    # counted as a turn.
+    assert all(m["role"] != "system" for m in session.messages)
 
 
-def test_tool_call_turn_appends_assistant_then_tool_then_answers():
-    call_turn = BrainResponse(
-        message={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "ping", "arguments": "{}"}}
-            ],
-        },
-        text=None,
-        tool_calls=[ToolCall(id="c1", name="ping", arguments={})],
-    )
-    fake = FakeBrain([call_turn, _text("pong received")])
-    ping = Tool(
-        name="ping",
-        description="ping",
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=lambda _args: "PONG",
-    )
-    session = Session(fake, tools=[ping], system_prompt="SYS")
+def test_a_tool_turn_records_the_call_and_its_result():
+    session = _session([wants(call("ping")), says("pong received")], tools=[ping])
 
-    assert _reply(session.send("ping it")) == "pong received"
+    assert _reply(session.send("ping please")) == "pong received"
 
-    msgs = session.messages
-    assert msgs[-3]["role"] == "assistant" and msgs[-3].get("tool_calls")  # the tool-call turn
-    assert msgs[-2] == {"role": "tool", "tool_call_id": "c1", "content": "PONG"}  # observed result
-    assert msgs[-1] == {"role": "assistant", "content": "pong received"}  # final answer
+    blocks = [b["type"] for m in session.messages for b in m["content"]]
+    assert "tool_use" in blocks
+    assert "tool_result" in blocks
 
 
-def test_reasoning_is_traced_to_stderr_but_kept_out_of_history(capsys):
-    reasoning = "User asked who I am; the answer is in the system prompt."
-    turn = BrainResponse(
-        message={"role": "assistant", "content": "I'm Vegapunk."},
-        text="I'm Vegapunk.",
-        tool_calls=[],
-        reasoning=reasoning,
-    )
-    session = Session(FakeBrain([turn]), tools=[], system_prompt="SYS")
+def test_reasoning_is_traced_to_stderr_and_kept_out_of_the_reply(capsys):
+    session = _session(says("the answer", thinking="deliberating"))
 
-    assert _reply(session.send("who are you?")) == "I'm Vegapunk."
+    reply = _reply(session.send("think about it"))
 
-    # Surfaced on the suppressible stderr watch-channel, beside [think]/[tool].
-    assert f"  [reason] {reasoning}" in capsys.readouterr().err
-    # ...but never replayed into the conversation history sent to the model.
-    assert all(reasoning not in str(m) for m in session.messages)
-    assert session.messages[-1] == {"role": "assistant", "content": "I'm Vegapunk."}
+    assert "deliberating" in capsys.readouterr().err
+    assert reply == "the answer"  # reasoning is a watch channel, not the answer
 
 
-def test_system_prompt_seeded_once_and_survives_reset():
-    fake = FakeBrain([_text("ok")])
-    session = Session(fake, tools=[], system_prompt="SYS")
-    assert session.messages[0] == {"role": "system", "content": "SYS"}
+def test_reasoning_stays_in_history_because_the_provider_requires_it():
+    # Unlike the old hand-rolled brains, which dropped reasoning entirely: the
+    # Anthropic API rejects a later turn whose thinking blocks were altered, so
+    # the assistant turn is stored verbatim and replayed unchanged.
+    session = _session([says("the answer", thinking="deliberating"), says("still here")])
+    _reply(session.send("think about it"))
 
-    _reply(session.send("hello"))
-    assert len(session.messages) > 1
+    _reply(session.send("again"))
+
+    replayed = session.backend.provider.last_request.messages[1]
+    assert [b.type for b in replayed.content] == ["thinking", "text"]
+    assert replayed.content[0].thinking == "deliberating"
+
+
+def test_reset_clears_the_conversation():
+    session = _session([says("ok"), says("fresh")])
+    _reply(session.send("first"))
+
     session.reset()
-    assert session.messages == [{"role": "system", "content": "SYS"}]
 
-
-def test_run_one_shot_still_works():
-    # Guards the drive_turns extraction: the one-shot path is unchanged.
-    fake = FakeBrain([_text("one-shot ok")])
-    assert run(fake, [], "hello") == "one-shot ok"
+    assert session.messages == []
+    assert session.context_tokens is None
 
 
 def test_restore_replaces_the_conversation():
-    session = Session(FakeBrain([]), tools=[], system_prompt="SYS")
+    session = _session(says("unused"))
     saved = [
-        {"role": "system", "content": "OLD"},
-        {"role": "user", "content": "q"},
-        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": [{"type": "text", "text": "earlier question"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "earlier answer"}]},
     ]
+
     session.restore(saved)
-    assert session.messages == saved  # faithful restore, including the saved system turn
+
+    assert session.messages == saved
+    assert session.context_tokens is None  # a saved session carries no count
 
 
-def test_suggest_name_titles_first_user_message_without_touching_history():
-    brain = FakeBrain([_text("Fixing the agent loop")])
-    session = Session(brain, tools=[], system_prompt="SYS")
-    session.restore(
-        [{"role": "system", "content": "SYS"}, {"role": "user", "content": "the loop is broken"}]
-    )
+def test_restore_rejects_a_message_it_cannot_parse():
+    # The store checks the format first; this is the backstop behind it.
+    session = _session(says("unused"))
 
-    assert session.suggest_name() == "Fixing the agent loop"
-    # The titling call ran on a throwaway message list — history is untouched.
-    assert session.messages == [
-        {"role": "system", "content": "SYS"},
-        {"role": "user", "content": "the loop is broken"},
-    ]
+    with pytest.raises(ValueError):
+        session.restore([{"role": "system", "content": "not a block list"}])
 
 
-def test_suggest_name_empty_when_no_user_turn_yet():
-    # No user message -> returns "" without calling the model (queue stays full).
-    session = Session(FakeBrain([]), tools=[], system_prompt="SYS")
-    assert session.suggest_name() == ""
+def test_run_one_shot_still_works():
+    agent, _provider = agent_for(says("one-shot ok"))
+
+    assert run(agent, "hello") == "one-shot ok"
 
 
-def _simple_tool(name: str, func) -> Tool:
-    return Tool(
-        name=name,
-        description=name,
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=func,
-    )
-
-
-def _two_call_turn() -> BrainResponse:
-    """An assistant turn where the model batches two tool calls at once."""
-    return BrainResponse(
-        message={
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "alpha", "arguments": "{}"}},
-                {"id": "c2", "type": "function", "function": {"name": "beta", "arguments": "{}"}},
-            ],
-        },
-        text=None,
-        tool_calls=[
-            ToolCall(id="c1", name="alpha", arguments={}),
-            ToolCall(id="c2", name="beta", arguments={}),
-        ],
-    )
-
-
-def test_batched_tool_results_keep_call_order():
-    fake = FakeBrain([_two_call_turn(), _text("done")])
-    session = Session(
-        fake,
-        tools=[_simple_tool("alpha", lambda _a: "A"), _simple_tool("beta", lambda _a: "B")],
-        system_prompt="SYS",
-    )
-
-    assert _reply(session.send("both please")) == "done"
-
-    # Tool results line up with the assistant's tool_calls, in call order.
-    assert session.messages[-3] == {"role": "tool", "tool_call_id": "c1", "content": "A"}
-    assert session.messages[-2] == {"role": "tool", "tool_call_id": "c2", "content": "B"}
-    assert session.messages[-1] == {"role": "assistant", "content": "done"}
-
-
-class _AlwaysToolBrain(Brain):
-    """A Brain that never finishes — every turn requests a tool — so the loop
-    runs until it hits the step budget. Records how many times it was asked."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        self.calls += 1
-        yield BrainResponse(
-            message={
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "ping", "arguments": "{}"}}
-                ],
-            },
-            text=None,
-            tool_calls=[ToolCall(id="c1", name="ping", arguments={})],
-        )
-
-
-def test_session_honors_configured_max_steps():
-    # The brain never returns a final answer, so the loop runs until the budget
-    # is exhausted — it must stop after exactly max_steps think() calls.
-    brain = _AlwaysToolBrain()
-    session = Session(
-        brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS", max_steps=3
-    )
-    result = _reply(session.send("loop forever"))
-    assert brain.calls == 3
-    assert "step limit" in result.lower()
-
-
-def test_session_default_max_steps_comes_from_config():
-    # With no explicit max_steps, the budget is the configured default.
-    from vegapunk.config import config
-
-    brain = _AlwaysToolBrain()
-    session = Session(brain, tools=[_simple_tool("ping", lambda _a: "PONG")], system_prompt="SYS")
-    _reply(session.send("loop forever"))
-    assert brain.calls == config.max_steps
+# ---------------------------------------------------------------------------
+# streaming and laziness
+# ---------------------------------------------------------------------------
 
 
 def test_send_streams_the_reply_as_text_deltas():
-    # The reply arrives as deltas *and* as the generator's return value — the
-    # deltas are for live rendering, the return for programmatic callers.
-    session = Session(FakeBrain([_text("hi Akshay")]), tools=[], system_prompt="SYS")
+    session = _session(says("hi Akshay", chunks=("hi ", "Akshay")))
 
     events = session.send("hello")
-    seen: list[TextDelta] = []
+    deltas = []
     while True:
         try:
-            seen.append(next(events))
+            deltas.append(next(events).text)
         except StopIteration as stop:
-            reply = stop.value
+            assert stop.value == "hi Akshay"
             break
 
-    assert seen == [TextDelta("hi Akshay")]
-    assert reply == "hi Akshay"
+    assert deltas == ["hi ", "Akshay"]
 
 
-def test_send_is_lazy_until_first_pull():
-    # A created-but-never-consumed send must not touch history: generators run
-    # nothing before the first next(), so the user turn isn't even appended.
-    session = Session(FakeBrain([_text("unused")]), tools=[], system_prompt="SYS")
-    session.send("hello")  # never pulled
-    assert session.messages == [{"role": "system", "content": "SYS"}]
+def test_send_is_lazy_until_the_first_pull():
+    session = _session(says("unused"))
+
+    session.send("never consumed")  # created, never iterated
+
+    # Nothing happened: no model call, and no user turn in history.
+    assert session.messages == []
+    assert session.backend.provider.call_count == 0
 
 
-class _InterruptedBrain(Brain):
-    """Streams a little text, then dies the way Ctrl-C lands mid-generation."""
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        yield TextDelta("I was say")
-        raise KeyboardInterrupt
+# ---------------------------------------------------------------------------
+# rollback — the contract that keeps a half-turn out of the autosave
+# ---------------------------------------------------------------------------
 
 
-def test_interrupt_mid_stream_rolls_the_partial_turn_back():
-    session = Session(_InterruptedBrain(), tools=[], system_prompt="SYS")
+def test_an_interrupt_mid_turn_rolls_the_partial_turn_back():
+    # Ctrl-C lands where the CLI is pulling, so it's thrown in at the yield —
+    # the same place a real signal would surface.
+    session = _session(says("a long answer", chunks=("a ", "long ", "answer")))
 
-    events = session.send("hi")
+    events = session.send("interrupt me")
+    next(events)
     with pytest.raises(KeyboardInterrupt):
-        while True:
-            next(events)
+        events.throw(KeyboardInterrupt())
 
-    # The half-generated turn (user message included) is rolled back out, so
-    # the next send starts from a consistent history.
-    assert session.messages == [{"role": "system", "content": "SYS"}]
+    assert session.messages == []
+
+
+def test_a_late_append_cannot_undo_the_rollback():
+    """The rollback has to survive logpose finishing the turn behind our back.
+
+    A real SIGINT unblocks the caller without cancelling the coroutine on
+    logpose's loop thread, and that coroutine appends the assistant turn before
+    the interrupt is ever seen. Truncating the live list in place would let that
+    append land back on the cleaned history, leaving an assistant-first
+    conversation the next request rejects.
+    """
+    session = _session(says("a long answer", chunks=("a ", "long ", "answer")))
+    events = session.send("interrupt me")
+    next(events)
+    abandoned = session._conversation.messages  # what logpose is still holding
+
+    with pytest.raises(KeyboardInterrupt):
+        events.throw(KeyboardInterrupt())
+    abandoned.append(Message.assistant_text("landed too late"))
+
+    assert session.messages == []
 
 
 def test_abandoning_the_stream_mid_turn_rolls_back():
-    # The consumer stops pulling and closes the generator (what the CLI does
-    # on Ctrl-C): the suspended send must roll back, not strand a half-turn.
-    session = Session(FakeBrain([_text("a long answer")]), tools=[], system_prompt="SYS")
+    session = _session(says("a long answer", chunks=("a ", "long ", "answer")))
 
-    events = session.send("hi")
-    next(events)  # the turn is underway — a first delta arrived
+    events = session.send("start talking")
+    next(events)  # consume one delta, then walk away
     events.close()
 
-    assert session.messages == [{"role": "system", "content": "SYS"}]
-
-
-def test_batched_tool_calls_run_concurrently():
-    # Each tool blocks until the *other* one arrives at the barrier. Serial
-    # execution would strand the first tool (barrier timeout -> error result);
-    # concurrent execution lets both pass immediately.
-    barrier = threading.Barrier(2)
-
-    def wait_for_partner(_arguments: dict) -> str:
-        barrier.wait(timeout=2)
-        return "met"
-
-    fake = FakeBrain([_two_call_turn(), _text("done")])
-    session = Session(
-        fake,
-        tools=[
-            _simple_tool("alpha", wait_for_partner),
-            _simple_tool("beta", wait_for_partner),
-        ],
-        system_prompt="SYS",
-    )
-    _reply(session.send("go"))
-
-    tool_results = [m["content"] for m in session.messages if m["role"] == "tool"]
-    assert tool_results == ["met", "met"]
-
-
-def _text_with_usage(content: str, context_tokens: int) -> BrainResponse:
-    return BrainResponse(
-        message={"role": "assistant", "content": content},
-        text=content,
-        tool_calls=[],
-        context_tokens=context_tokens,
-    )
-
-
-def test_send_records_the_context_footprint():
-    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
-    assert session.context_tokens is None  # nothing known before the first turn
-    _reply(session.send("hello"))
-    assert session.context_tokens == 240
-
-
-def test_reset_and_restore_clear_the_stale_footprint():
-    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
-    _reply(session.send("hello"))
-
-    session.reset()
-    assert session.context_tokens is None  # fresh conversation, no footprint yet
-
-    session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}])
-    assert session.context_tokens is None  # unknown until the next turn reports it
-
-
-class _ExplodingBrain(Brain):
-    """Streams one delta, then dies — a network/auth failure mid-turn."""
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        yield TextDelta("par")
-        raise RuntimeError("backend down")
+    assert session.messages == []
 
 
 def test_a_failed_turn_is_rolled_out_of_history():
-    session = Session(_ExplodingBrain(), tools=[], system_prompt="SYS")
-    events = session.send("hello")
-    with pytest.raises(RuntimeError, match="backend down"):
-        while True:
-            next(events)
-    # The half-turn never reaches history (or the autosave that reads it).
-    assert session.messages == [{"role": "system", "content": "SYS"}]
+    session = _session(Turn(error=RuntimeError("provider is down")))
+
+    with pytest.raises(RuntimeError):
+        _reply(session.send("this will fail"))
+
+    assert session.messages == []
 
 
-def test_swap_brain_switches_the_live_brain_and_keeps_the_conversation():
-    session = Session(FakeBrain([_text_with_usage("hi", 240)]), tools=[], system_prompt="SYS")
+def test_a_rolled_back_turn_leaves_earlier_turns_intact():
+    session = _session([says("first answer"), Turn(error=RuntimeError("down"))])
+    _reply(session.send("first"))
+
+    with pytest.raises(RuntimeError):
+        _reply(session.send("second"))
+
+    assert [m["role"] for m in session.messages] == ["user", "assistant"]
+    assert session.messages[0]["content"][0]["text"] == "first"
+
+
+# ---------------------------------------------------------------------------
+# limits, footprint, and the model itself
+# ---------------------------------------------------------------------------
+
+
+def test_session_honors_the_configured_step_limit():
+    session = _session(wants(call("ping")), tools=[ping], repeat_last=True, max_steps=3)
+
+    _reply(session.send("loop forever"))
+
+    assert session.backend.provider.call_count == 3
+
+
+def test_the_step_limit_defaults_to_config():
+    session = _session(says("ok"))
+
+    assert session._max_steps == config.max_steps
+
+
+def test_send_records_the_context_footprint():
+    session = _session(says("hi", usage=Usage(input_tokens=200, output_tokens=40)))
+
     _reply(session.send("hello"))
 
-    replacement = FakeBrain([_text("still here")])
-    session.swap_brain(replacement)
+    assert session.context_tokens == 240
 
-    assert session.brain is replacement
-    # The old model's footprint would misdescribe the new one's context.
+
+def test_reset_clears_a_stale_footprint():
+    session = _session([says("hi", usage=Usage(input_tokens=240))])
+    _reply(session.send("hello"))
+    assert session.context_tokens == 240
+
+    session.reset()
+
     assert session.context_tokens is None
-    # History survives the swap — the conversation continues on the new brain.
-    assert [m["role"] for m in session.messages] == ["system", "user", "assistant"]
-    assert _reply(session.send("again")) == "still here"
-    seen = [(m["role"], m.get("content")) for m in replacement.seen_messages[0]]
-    assert ("user", "hello") in seen  # the new brain sees the prior turns
+
+
+def test_the_toolbar_reads_the_model_from_the_backend():
+    session = _session(says("ok"))
+
+    assert session.model_label == "fake-model"
+    assert session.context_window == 1000
+
+
+def test_swapping_the_backend_keeps_the_conversation():
+    session = _session([says("hi", usage=Usage(input_tokens=240))])
+    _reply(session.send("hello"))
+    replacement, provider = _backend(says("still here"))
+
+    session.swap_backend(replacement)
+
+    assert session.model_label == replacement.model_label
+    # The old number described the old model's context.
+    assert session.context_tokens is None
+    assert _reply(session.send("are you there?")) == "still here"
+    # The conversation continued rather than restarting.
+    assert len(provider.last_request.messages) == 3
+
+
+def test_setting_effort_keeps_the_conversation_running():
+    # Regression: /effort used to rebuild the agent, which handed the shared
+    # provider's HTTP client to a new event loop and closed the old one — every
+    # later turn then died with "Event loop is closed".
+    session = _session([says("first"), says("second")], supports_effort=True)
+    _reply(session.send("hello"))
+    agent_before = session._agent
+
+    session.set_effort("low")
+
+    assert session._agent is agent_before  # same agent, same loop
+    assert session._agent.extra == {"output_config": {"effort": "low"}}
+    assert _reply(session.send("still there?")) == "second"
+
+
+def test_setting_effort_is_refused_on_a_backend_without_one():
+    session = _session(says("ok"))
+
+    with pytest.raises(ValueError, match="no effort setting"):
+        session.set_effort("high")
+
+
+def test_tools_are_advertised_to_the_model():
+    session = _session(says("ok"), tools=[ping, echo])
+
+    _reply(session.send("hello"))
+
+    assert [spec.name for spec in session.backend.provider.last_request.tools] == ["ping", "echo"]
+
+
+# ---------------------------------------------------------------------------
+# titling
+# ---------------------------------------------------------------------------
+
+
+def test_suggest_name_titles_the_first_user_message_without_touching_history():
+    session = _session(says("ok"), title=says("Fixing the agent loop"))
+    _reply(session.send("help me fix the agent loop"))
+    before = session.messages
+
+    assert session.suggest_name() == "Fixing the agent loop"
+    assert session.messages == before  # the probe ran on its own conversation
+
+
+def test_the_titler_never_shares_the_conversation_s_provider():
+    # Two agents means two event loops, and a provider's client belongs to the
+    # first loop that touched it — sharing one makes every titling call fail.
+    session = _session(says("ok"), title=says("A Title"))
+    _reply(session.send("hello"))
+
+    session.suggest_name()
+
+    assert session._titler.provider is not session.backend.provider
+
+
+def test_suggest_name_is_empty_before_the_first_turn():
+    assert _session(says("unused")).suggest_name() == ""
+
+
+def test_a_failed_titling_call_never_breaks_the_turn(capsys):
+    session = _session(says("ok"), title=Turn(error=RuntimeError("titler is down")))
+    _reply(session.send("hello"))
+
+    assert session.suggest_name() == ""  # falls back, doesn't raise
+    # ...but says so: a title that silently never works looks exactly like a
+    # model that just picks bad titles.
+    assert "could not title" in capsys.readouterr().err
+
+
+def test_closing_a_session_is_safe_to_call_twice():
+    session = _session(says("ok"))
+
+    session.close()
+    session.close()

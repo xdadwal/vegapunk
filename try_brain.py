@@ -1,5 +1,8 @@
 """Throwaway smoke test for Step 2: drive the model from our own Python code.
 
+Exercises the PARKED brain path (see vegapunk/brain.py); the live path is
+``try_agent.py``.
+
 Run from the repo root:
 
     .venv/bin/python try_brain.py

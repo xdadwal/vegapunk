@@ -1,4 +1,11 @@
-"""The Brain — Vegapunk's swappable model layer.
+"""The Brain — Vegapunk's swappable model layer. PARKED: nothing imports this.
+
+The live path is ``vegapunk/backend.py``. logpose owns the loop and the provider
+layer now, so ``DMRBrain``'s hand-rolled stream assembly and ``create_brain``'s
+selection both have replacements. This module stays in the tree only because
+``claude_brain`` subclasses ``Brain`` and reuses these event types, and that one
+is parked while logpose's Anthropic provider proves out — see the note there.
+The two are deleted together.
 
 ``Brain`` is the only place that knows how to talk to an LLM. The loop, the
 tools, and the CLI depend on this small interface rather than on any specific

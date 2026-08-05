@@ -1,11 +1,13 @@
 """Approval gates for guarded (side-effecting) tools.
 
 Read-only tools run automatically; guarded tools must clear an ``Approver``
-first. The loop runs approval as a sequential pre-pass (see ``loop._run_tool_batch``),
-so an interactive approver never has to handle concurrent stdin prompts.
+first. Approval runs as a sequential pre-pass before any tool in a turn starts
+(see ``vegapunk/gate.py``), so an interactive approver never has to handle
+concurrent stdin prompts.
 
-This mirrors ``brain.py``: a small ABC plus a real implementation for the CLI
-and a deterministic fake for tests.
+A small ABC plus a real implementation for the CLI and a deterministic fake for
+tests — the shape used throughout Vegapunk for anything with a live and a test
+implementation.
 """
 
 from __future__ import annotations
