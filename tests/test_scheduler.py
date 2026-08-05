@@ -374,7 +374,7 @@ class _RecordingBrain(Brain):
 def test_run_due_now_runs_due_tasks_and_records():
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     brain = _RecordingBrain()
-    scheduler = Scheduler(lambda: brain, [], threading.Lock())
+    scheduler = Scheduler(lambda: brain, [])
 
     scheduler.run_due_now()
 
@@ -385,7 +385,7 @@ def test_run_due_now_runs_due_tasks_and_records():
 def test_run_due_now_skips_tasks_not_yet_due():
     _insert_task("a" * 32, "future", "2999-01-01T00:00:00.000000Z")
     brain = _RecordingBrain()
-    scheduler = Scheduler(lambda: brain, [], threading.Lock())
+    scheduler = Scheduler(lambda: brain, [])
 
     scheduler.run_due_now()
 
@@ -393,104 +393,41 @@ def test_run_due_now_skips_tasks_not_yet_due():
     assert list_tasks()[0].last_status is None
 
 
-def test_run_due_now_yields_to_a_held_lock_instead_of_queueing():
-    # The shared lock is what keeps a background task turn and a foreground user
-    # turn off the single model/DB connection at once. A held lock means a typed
-    # turn is in flight, and the ticker must *give up* rather than queue behind
-    # it: the task stays due (only record_run advances a schedule) and runs on a
-    # later tick, so a background job never sits in line ahead of your next turn.
-    _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
-    brain = _RecordingBrain()
-    lock = threading.Lock()
-    scheduler = Scheduler(lambda: brain, [], lock)
-
-    lock.acquire()  # stand in for a foreground turn holding the lock
-    scheduler.run_due_now()  # returns at once — no blocking, no run
-
-    assert brain.calls == 0  # cannot have run — we hold the lock
-    assert list_tasks()[0].last_status is None  # and nothing was recorded
-    assert list_tasks()[0].next_run_at == "2000-01-01T00:00:00.000000Z"  # still due
-
-    lock.release()  # the turn ends; the next tick picks the task up
-    scheduler.run_due_now()
-
-    assert brain.calls == 1
-
-
-class _GrantingLock:
-    """Stand-in for the shared lock that grants only the first ``grants``
-    acquisitions, then refuses.
-
-    Lets a test place a foreground turn at an exact seam — between two task runs
-    — without racing real threads for a lock whose handoff order isn't
-    guaranteed. Only the surface ``run_due_now`` uses is implemented.
-    """
-
-    def __init__(self, grants: int) -> None:
-        self._grants = grants
-        self.denied = 0
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        if self._grants > 0:
-            self._grants -= 1
-            return True
-        self.denied += 1
-        return False
-
-    def release(self) -> None:
-        pass
-
-
-def test_run_due_now_stops_at_the_seam_when_a_turn_takes_the_lock():
-    # The lock is released between tasks so a waiting user turn gets in at the
-    # seam. When it does, the rest of the due batch is abandoned for a later
-    # tick rather than run — a user turn waits out at most one task, never the
-    # whole batch. Two grants: the due-tasks poll, then the first run.
+def test_run_due_now_runs_the_whole_due_batch():
+    # Nothing interrupts a tick any more: in its own process there is no typed
+    # turn to yield to, so every due task runs rather than the batch being
+    # abandoned partway to let the foreground in.
     _insert_task("a" * 32, "first", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     _insert_task("b" * 32, "second", "2000-01-01T00:00:01.000000Z", interval_seconds=60)
+    _insert_task("c" * 32, "third", "2999-01-01T00:00:00.000000Z", interval_seconds=60)
     brain = _RecordingBrain()
-    lock = _GrantingLock(grants=2)
-    scheduler = Scheduler(lambda: brain, [], lock)  # type: ignore[arg-type]
 
-    scheduler.run_due_now()
+    Scheduler(lambda: brain, []).run_due_now()
 
-    assert brain.calls == 1  # only the first task ran
-    assert lock.denied == 1  # the second run was refused at the seam
+    assert brain.calls == 2  # both due tasks, not just the first
     by_id = {t.id: t for t in list_tasks()}
     assert by_id["a" * 32].last_status == "ok"
-    assert by_id["b" * 32].last_status is None  # untouched, still due
+    assert by_id["b" * 32].last_status == "ok"
+    assert by_id["c" * 32].last_status is None  # not due, untouched
 
 
 def test_run_due_now_bails_out_when_stop_is_signaled():
     # A stop requested mid-shutdown must not start a fresh task turn.
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z")
     brain = _RecordingBrain()
-    scheduler = Scheduler(lambda: brain, [], threading.Lock())
-    scheduler._stop.set()  # simulate stop() already requested
+    stop = threading.Event()
+    scheduler = Scheduler(lambda: brain, [], stop=stop)
+    stop.set()  # simulate a SIGTERM already received
 
     scheduler.run_due_now()
 
     assert brain.calls == 0  # short-circuited before running the due task
+    assert list_tasks()[0].last_status is None  # left due for the next worker
 
 
-def test_start_is_idempotent():
-    # A long poll parks the ticker immediately, so no task runs during the check.
-    scheduler = Scheduler(lambda: _RecordingBrain(), [], threading.Lock(), poll_seconds=60)
-    scheduler.start()
-    try:
-        first = scheduler._thread
-        scheduler.start()  # second call is a no-op
-        assert scheduler._thread is first  # same thread, not a second one
-    finally:
-        scheduler.stop()
-
-
-def test_stop_is_noop_when_never_started():
-    scheduler = Scheduler(lambda: _RecordingBrain(), [], threading.Lock())
-    scheduler.stop()  # must not raise
-
-
-def test_ticker_runs_due_tasks_in_the_background():
+def test_serve_runs_due_tasks_until_stopped():
+    # serve() is the worker's whole job: poll, run what's due, repeat. It runs in
+    # the calling thread, so the test drives it from one and stops it by event.
     _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z", interval_seconds=60)
     ran = threading.Event()
 
@@ -500,18 +437,36 @@ def test_ticker_runs_due_tasks_in_the_background():
             yield TextDelta("done")
             yield _response("done")
 
-    scheduler = Scheduler(lambda: _EventBrain(), [], threading.Lock(), poll_seconds=0.02)
-    scheduler.start()
+    stop = threading.Event()
+    scheduler = Scheduler(lambda: _EventBrain(), [], poll_seconds=0.02, stop=stop)
+    server = threading.Thread(target=scheduler.serve)
+    server.start()
     try:
         assert ran.wait(timeout=2)  # the ticker picked the task up on its own
     finally:
-        scheduler.stop()
-    assert list_tasks()[0].last_status == "ok"  # and recorded the run
+        stop.set()
+        server.join(timeout=2)
+    assert not server.is_alive()  # serve() returns once stopped
+    assert list_tasks()[0].last_status == "ok"  # and the run was recorded
 
 
-def test_ticker_survives_a_failing_tick(monkeypatch, capsys):
-    # A run_due_now that raises must be logged and the ticker must keep going —
-    # a background thread that dies silently would strand every later task.
+def test_serve_returns_without_ticking_when_already_stopped():
+    # The worker's stop event may already be set by the time serve() is reached
+    # (a SIGTERM during startup); it must return rather than run a tick.
+    _insert_task("a" * 32, "due", "2000-01-01T00:00:00.000000Z")
+    brain = _RecordingBrain()
+    stop = threading.Event()
+    stop.set()
+
+    Scheduler(lambda: brain, [], poll_seconds=0.01, stop=stop).serve()
+
+    assert brain.calls == 0
+    assert list_tasks()[0].last_status is None
+
+
+def test_serve_survives_a_failing_tick(monkeypatch, capsys):
+    # A run_due_now that raises must be logged and the loop must keep going — a
+    # ticker that dies silently would strand every later task.
     calls = {"n": 0}
     second_tick = threading.Event()
 
@@ -522,12 +477,15 @@ def test_ticker_survives_a_failing_tick(monkeypatch, capsys):
         second_tick.set()
 
     monkeypatch.setattr(Scheduler, "run_due_now", _sometimes_boom)
-    scheduler = Scheduler(lambda: _RecordingBrain(), [], threading.Lock(), poll_seconds=0.02)
-    scheduler.start()
+    stop = threading.Event()
+    scheduler = Scheduler(lambda: _RecordingBrain(), [], poll_seconds=0.02, stop=stop)
+    server = threading.Thread(target=scheduler.serve)
+    server.start()
     try:
         assert second_tick.wait(timeout=2)  # a 2nd tick ran after the 1st raised
     finally:
-        scheduler.stop()
+        stop.set()
+        server.join(timeout=2)
     assert "tick failed" in capsys.readouterr().err
 
 

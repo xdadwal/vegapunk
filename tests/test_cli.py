@@ -9,11 +9,14 @@ tmp path and reply turns queue a second response for the auto-naming title call.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
 from test_session import FakeBrain, _text
 
-from vegapunk import style
+from vegapunk import db, style
 from vegapunk.brain import TextDelta
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
@@ -325,69 +328,108 @@ def test_main_builds_the_brain_from_the_configured_provider(monkeypatch, capsys)
     assert "model stub-model" in capsys.readouterr().out  # banner shows the live brain
 
 
-class _SpyScheduler:
-    """Captures how cli.main drives the scheduler without starting a real thread."""
+class _SpyPopen:
+    """Stands in for the spawned worker process, capturing how cli drives it."""
 
-    instances: list["_SpyScheduler"] = []
+    instances: list["_SpyPopen"] = []
 
-    def __init__(self, brain_provider, tools, lock, poll_seconds=30.0):
-        self.brain_provider = brain_provider
-        self.tools = tools
-        self.lock = lock
-        self.started = 0
-        self.stopped = 0
-        _SpyScheduler.instances.append(self)
+    def __init__(self, argv, stdin=None, stdout=None, stderr=None, env=None):
+        self.argv = argv
+        self.env = env or {}
+        self.stdout = stdout
+        self.terminated = 0
+        self.killed = 0
+        self.waited = 0
+        self.returncode = None  # still running until terminate()
+        _SpyPopen.instances.append(self)
 
-    def start(self) -> None:
-        self.started += 1
+    def poll(self):
+        return self.returncode
 
-    def stop(self, timeout: float = 5.0) -> None:
-        self.stopped += 1
+    def terminate(self) -> None:
+        self.terminated += 1
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        self.waited += 1
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed += 1
 
 
 @pytest.fixture
-def spy_scheduler(monkeypatch):
-    _SpyScheduler.instances = []
-    monkeypatch.setattr("vegapunk.cli.Scheduler", _SpyScheduler)
-    return _SpyScheduler
+def spy_worker(monkeypatch):
+    _SpyPopen.instances = []
+    monkeypatch.setattr("vegapunk.cli.Popen", _SpyPopen)
+    return _SpyPopen
 
 
-def test_main_starts_and_stops_the_scheduler(spy_scheduler, capsys):
+def test_main_spawns_the_worker_as_a_separate_process(spy_worker, capsys):
     main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
-    assert len(spy_scheduler.instances) == 1
-    sched = spy_scheduler.instances[0]
-    assert sched.started == 1
-    assert sched.stopped == 1  # stopped on the /exit path
+
+    assert len(spy_worker.instances) == 1
+    worker = spy_worker.instances[0]
+    # Launched the same way the REPL itself is, so it shares the interpreter and
+    # virtualenv rather than depending on a console script being installed.
+    assert worker.argv == [sys.executable, "-m", "vegapunk.scheduler_worker"]
+    # The database is named explicitly: parent and child must not have to agree
+    # on a working directory to end up on the same file.
+    assert worker.env["VEGAPUNK_DB_FILE"] == str(db.db_path())
 
 
-def test_main_stops_the_scheduler_on_eof(spy_scheduler, capsys):
+def test_main_stops_the_worker_on_exit(spy_worker, capsys):
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    worker = spy_worker.instances[0]
+    assert worker.terminated == 1  # SIGTERM, so a task mid-run records its outcome
+    assert worker.killed == 0
+
+
+def test_main_stops_the_worker_on_eof(spy_worker, capsys):
     main(prompter=ScriptedPrompter([EOFError]), session=_session([]))
-    assert spy_scheduler.instances[0].stopped == 1  # finally covers the Ctrl-D path too
+    assert spy_worker.instances[0].terminated == 1  # finally covers the Ctrl-D path too
 
 
-def test_scheduler_reads_the_live_brain_after_a_swap(spy_scheduler, capsys):
-    # The provider is lambda: session.brain, not a snapshot — so a /model swap
-    # mid-session is honored by the next scheduled run.
-    session = _session([])
-    main(prompter=ScriptedPrompter(["/exit"]), session=session)
-    provider = spy_scheduler.instances[0].brain_provider
-    assert provider() is session.brain  # reads the current brain
-    session.swap_brain(_LabeledBrain("swapped"))
-    assert provider().model_label == "swapped"  # follows the swap, not the launch model
+def test_main_kills_a_worker_that_ignores_terminate(spy_worker, capsys, monkeypatch):
+    # A worker inside a model call can't honor SIGTERM (the stop flag isn't read
+    # again until the turn returns), and a turn routinely outlasts the grace
+    # period — so it's killed rather than hanging /exit, and said out loud
+    # because the run is genuinely lost.
+    def _stubborn_wait(self, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout or 0)
+
+    monkeypatch.setattr(_SpyPopen, "wait", _stubborn_wait)
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    assert spy_worker.instances[0].killed == 1
+    assert "stays due" in capsys.readouterr().err
 
 
-def test_main_shares_one_lock_between_scheduler_and_turn(spy_scheduler, capsys):
-    # The turn is wrapped in the very lock the scheduler holds; if they differed,
-    # a background task and a typed turn could hit the one model at once. Pin that
-    # the turn actually acquires the scheduler's lock by making acquire observable.
-    import threading
+def test_main_reports_a_worker_that_died(spy_worker, capsys):
+    # Otherwise scheduled tasks just silently stop happening. Reported once,
+    # pointing at the log that says why.
+    def _already_dead(self):
+        self.returncode = 1
+        return 1
 
-    session = _session([_text("yo"), _text("title")])
-    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=session)
-    lock = spy_scheduler.instances[0].lock
-    assert isinstance(lock, type(threading.Lock()))
-    assert lock.acquire(blocking=False)  # free after the turn — released, not leaked
-    lock.release()
+    _SpyPopen.poll = _already_dead
+    try:
+        main(prompter=ScriptedPrompter(["", "/exit"]), session=_session([]))
+    finally:
+        del _SpyPopen.poll
+    out = capsys.readouterr().out
+    assert "worker exited (1)" in out
+    assert "scheduler.log" in out
+    assert out.count("worker exited") == 1  # said once, not on every prompt
+
+
+def test_main_survives_a_worker_that_cannot_start(monkeypatch, capsys):
+    # No scheduled tasks is a degraded session, not a dead one.
+    def _boom(*a, **k):
+        raise OSError("no fork for you")
+
+    monkeypatch.setattr("vegapunk.cli.Popen", _boom)
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    assert "could not start the worker" in capsys.readouterr().err
 
 
 @pytest.fixture
