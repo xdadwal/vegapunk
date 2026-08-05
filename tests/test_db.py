@@ -112,12 +112,44 @@ def test_multiprocess_wal_is_enabled(tmp_path, monkeypatch):
     ]
 
 
-def test_connection_is_safe_to_share_across_threads():
-    # db.py owns the serialization: pyturso 0.7.1 panics the Rust core when two
-    # threads use one connection ("end_write_tx called while write lock not held"),
-    # and a panic is not a catchable exception. Two threads do share it here — the
-    # scheduler's ticker mid-task, and the main thread writing input history at the
-    # prompt, the latter outside the lock the CLI wraps its turns in.
+def test_each_thread_gets_its_own_connection():
+    # The guarantee that keeps pyturso 0.7.1 from aborting the process: threads
+    # never share a connection object. Asserted on identity, not behavior, because
+    # a shared connection appears to work right up until it panics.
+    # The connection objects are kept, not their ids: a finished thread's
+    # connection is freed and the next one can be allocated at the same address,
+    # which would make an id-only check pass for the wrong reason.
+    conns: list = []
+    guard = threading.Lock()
+    started = threading.Barrier(6)
+
+    def grab() -> None:
+        started.wait(timeout=30)  # all six alive at once, so none can be recycled
+        conn = db.get_connection()
+        with guard:
+            conns.append(conn)
+
+    threads = [threading.Thread(target=grab) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert len(conns) == 6
+    assert len({id(c) for c in conns}) == 6  # six threads, six distinct connections
+    assert all(db.get_connection() is not c for c in conns)  # this thread's is its own
+
+
+def test_repeated_calls_reuse_one_connection_per_thread():
+    # Per-thread must not become per-call, or every query would pay a fresh open.
+    assert db.get_connection() is db.get_connection()
+
+
+def test_threads_can_read_and_write_concurrently():
+    # Holding their own connections, threads now contend at the WAL level rather
+    # than on a Python lock — which is exactly why _BUSY_TIMEOUT_MS is mandatory.
+    # Without it, eight concurrent writers lose the large majority of their
+    # statements to "database is locked".
     errors: list[Exception] = []
 
     def writer(n: int) -> None:
@@ -154,6 +186,37 @@ def test_process_lock_refuses_second_holder(tmp_path, monkeypatch):
     finally:
         fcntl.flock(held.fileno(), fcntl.LOCK_UN)
         held.close()
+
+
+def test_scheduler_lock_refuses_a_second_worker(tmp_path, monkeypatch):
+    dbfile = tmp_path / "locked.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
+    held = open(str(dbfile) + ".scheduler.lock", "w")
+    try:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit):
+            db.acquire_scheduler_lock()
+    finally:
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        held.close()
+
+
+def test_repl_and_scheduler_locks_are_independent(tmp_path, monkeypatch):
+    # The design rests on this: the worker runs *alongside* the REPL, so a held
+    # REPL lock must not turn the worker away, or the scheduler could never start.
+    dbfile = tmp_path / "both.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: dbfile)
+    repl_lock = open(str(dbfile) + ".lock", "w")
+    try:
+        fcntl.flock(repl_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # a REPL is running
+
+        db.acquire_scheduler_lock()  # the worker still starts — different file
+
+        with pytest.raises(SystemExit):
+            db.acquire_process_lock()  # but a second REPL is still refused
+    finally:
+        fcntl.flock(repl_lock.fileno(), fcntl.LOCK_UN)
+        repl_lock.close()
 
 
 def test_backup_now_creates_readable_snapshot():

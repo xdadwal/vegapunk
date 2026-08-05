@@ -82,6 +82,20 @@ class Config:
     # message rather than an import-time crash.
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
+    # The scheduler worker's default brain, spelled "provider[:model]" — the same
+    # syntax the /schedule --model flag takes (e.g. "local", "claude:opus"), so
+    # one spelling covers both. Empty means inherit the provider/claude_model
+    # above, i.e. whatever the REPL was launched with; the worker is a separate
+    # process, so a live /model swap deliberately does *not* reach it. Set this
+    # to "local" to keep unattended runs off a billed provider while your own
+    # turns use it.
+    scheduler_model: str = os.getenv("VEGAPUNK_SCHEDULER_MODEL", "")
+
+    # Effort for the worker's Claude turns; empty falls back to claude_effort.
+    # Ignored (with a note in the worker log) when the worker runs on local,
+    # which has no effort setting.
+    scheduler_effort: str = os.getenv("VEGAPUNK_SCHEDULER_EFFORT", "")
+
     # The embedded database holding sessions, long-term memory, and REPL input
     # history. Defaults to vegapunk.db at the project root (the launch
     # directory). One Vegapunk process at a time (enforced with a lock file);

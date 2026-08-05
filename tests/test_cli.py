@@ -1,7 +1,7 @@
 """Tests for the REPL control flow — deterministic, no model/network/TTY.
 
 We drive ``cli.main`` with a ``ScriptedPrompter`` (canned inputs) and a
-``FakeBrain``-backed ``Session``, capturing stdout via capsys. Commands are
+``Session`` over a scripted provider, capturing stdout via capsys. Commands are
 slash-prefixed (``/exit``, ``/new``, …) — there are no bare keyword commands.
 A reply now auto-saves the conversation, so the sessions dir is redirected to a
 tmp path and reply turns queue a second response for the auto-naming title call.
@@ -9,19 +9,22 @@ tmp path and reply turns queue a second response for the auto-naming title call.
 
 from __future__ import annotations
 
-import pytest
-from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
-from test_session import FakeBrain, _text
+import subprocess
+import sys
 
-from vegapunk import style
-from vegapunk.brain import TextDelta
+import pytest
+from logpose import TextDelta
+from test_loop import _force_color  # sibling test modules (tests/ is on sys.path)
+
+from vegapunk import db, style
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
-from vegapunk.session import Session
+from tests.fake_provider import backend_for, says, session_for
 
 
-def _session(responses):
-    return Session(FakeBrain(responses), tools=[], system_prompt="SYS")
+def _session(replies, **kwargs):
+    """A Session whose model answers with each of ``replies`` in turn."""
+    return session_for([says(text) for text in replies], **kwargs)
 
 
 def test_exit_quits(capsys):
@@ -61,7 +64,7 @@ def test_empty_input_never_reaches_send(capsys):
 
 def test_reply_is_printed_and_session_autosaved(capsys):
     # Queue: the turn reply, then the title for auto-naming.
-    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session([_text("yo"), _text("a chat")]))
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session(["yo"], title="a chat"))
     out = capsys.readouterr().out
     assert "vega> yo" in out
     assert "(saved as 'a-chat')" in out  # auto-named from the title call
@@ -72,7 +75,7 @@ def test_streamed_reply_is_not_printed_twice(capsys):
     # the stream is rendered — the return must not be printed again.
     main(
         prompter=ScriptedPrompter(["hi", "/exit"]),
-        session=_session([_text("unmistakable-reply"), _text("title")]),
+        session=_session(["unmistakable-reply"]),
     )
     out = capsys.readouterr().out
     assert out.count("unmistakable-reply") == 1
@@ -84,17 +87,17 @@ def test_empty_reply_still_gets_its_prompt_line(capsys):
     # so the user sees the turn ended rather than a silently missing reply.
     main(
         prompter=ScriptedPrompter(["hi", "/exit"]),
-        session=_session([_text(""), _text("title")]),
+        session=_session([""]),
     )
     assert "vega> \n" in capsys.readouterr().out
 
 
 def test_new_clears_history(capsys):
-    session = _session([_text("hi there"), _text("greeting")])  # reply + title
+    session = _session(["hi there"], title="greeting")
     main(prompter=ScriptedPrompter(["hello", "/new", "/exit"]), session=session)
     out = capsys.readouterr().out
     assert "(new conversation)" in out
-    assert session.messages == [{"role": "system", "content": "SYS"}]  # back to just the prompt
+    assert session.messages == []  # the system prompt was never a message
 
 
 class _BoomSession:
@@ -102,7 +105,11 @@ class _BoomSession:
     do that, but the CLI guards the events-not-yet-created window anyway — this
     pins that defensive branch."""
 
-    brain = FakeBrain([])  # main() reads session.brain for the banner
+    model_label = "stub-model"  # main() reads these for the banner and toolbar
+    context_window = 0
+
+    def close(self) -> None:
+        pass
 
     def send(self, _user_input: str) -> str:
         raise KeyboardInterrupt
@@ -119,7 +126,11 @@ class _MidStreamInterruptSession:
     """send() dies mid-stream the way the real Session does when Ctrl-C lands
     inside a pull: the generator raises after rolling its history back."""
 
-    brain = FakeBrain([])  # main() reads session.brain for the banner
+    model_label = "stub-model"  # main() reads these for the banner and toolbar
+    context_window = 0
+
+    def close(self) -> None:
+        pass
 
     def send(self, _user_input: str):
         def stream():
@@ -142,7 +153,11 @@ class _FailingTurnSession:
     is unauthenticated or the subprocess dies — after rolling back, the real
     Session re-raises exactly like this."""
 
-    brain = FakeBrain([])  # main() reads session.brain for the banner
+    model_label = "stub-model"  # main() reads these for the banner and toolbar
+    context_window = 0
+
+    def close(self) -> None:
+        pass
 
     def send(self, _user_input: str):
         def stream():
@@ -180,7 +195,11 @@ class _SuspendedReply:
 
 
 class _SuspendedSession:
-    brain = FakeBrain([])  # main() reads session.brain for the banner
+    model_label = "stub-model"  # main() reads these for the banner and toolbar
+    context_window = 0
+
+    def close(self) -> None:
+        pass
 
     def __init__(self) -> None:
         self.reply = _SuspendedReply()
@@ -204,7 +223,7 @@ def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):
         raise OSError("disk full")
 
     monkeypatch.setattr("vegapunk.session_store.save_session", boom)
-    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session([_text("yo"), _text("title")]))
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session(["yo"]))
 
     captured = capsys.readouterr()
     assert "vega> yo" in captured.out  # reply still shown
@@ -220,7 +239,7 @@ def test_banner_shows_model_and_workspace(capsys):
 
 def test_vega_prefix_is_bold_magenta_when_forced(monkeypatch, capsys):
     _force_color(monkeypatch)
-    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session([_text("yo"), _text("t")]))
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session(["yo"]))
     out = capsys.readouterr().out
     # Prefix wrapped, reset before the space, reply text plain.
     assert f"{style.BOLD}{style.MAGENTA}vega>{style.RESET} yo" in out
@@ -233,27 +252,16 @@ def test_interrupted_note_is_yellow_when_forced(monkeypatch, capsys):
     assert f"{style.YELLOW}(interrupted){style.RESET}" in out
 
 
-class _LabeledBrain(FakeBrain):
-    """A FakeBrain with a declared identity, like a real provider has."""
-
-    def __init__(self, label: str, window: int = 0) -> None:
-        super().__init__([])
-        self._label, self._window = label, window
-
-    @property
-    def model_label(self) -> str:
-        return self._label
-
-    @property
-    def context_window(self) -> int:
-        return self._window
+def _labeled(label: str, window: int = 0):
+    """A Session whose backend has a declared identity, like a real one has."""
+    return session_for(model_label=label, context_window=window)
 
 
-def test_status_line_shows_the_live_brains_model_and_session_name():
+def test_status_line_shows_the_live_model_and_session_name():
     from vegapunk.cli import _status_line
     from vegapunk.commands import CommandContext
 
-    ctx = CommandContext(session=Session(_LabeledBrain("ai/test"), tools=[], system_prompt="SYS"))
+    ctx = CommandContext(session=_labeled("ai/test"))
     # rstrip: the line is padded to the terminal width for the right gauge.
     assert _status_line(ctx).rstrip() == " ai/test · unsaved"  # before the first autosave
     ctx.current_name = "my-chat"
@@ -264,8 +272,8 @@ def test_status_line_follows_a_model_switch():
     from vegapunk.cli import _status_line
     from vegapunk.commands import CommandContext
 
-    ctx = CommandContext(session=Session(_LabeledBrain("ai/test"), tools=[], system_prompt="SYS"))
-    ctx.session.swap_brain(_LabeledBrain("claude"))
+    ctx = CommandContext(session=_labeled("ai/test"))
+    ctx.session.swap_backend(backend_for(model_label="claude"))
     assert _status_line(ctx).rstrip() == " claude · unsaved"
 
 
@@ -279,13 +287,11 @@ def test_context_gauge_formats_absolute_and_percent():
     assert _context_gauge(13107, 0) == "13,107 tok "
 
 
-def test_gauge_uses_the_live_brains_window():
+def test_gauge_uses_the_live_models_window():
     from vegapunk.cli import _status_line
     from vegapunk.commands import CommandContext
 
-    ctx = CommandContext(
-        session=Session(_LabeledBrain("claude", window=200000), tools=[], system_prompt="SYS")
-    )
+    ctx = CommandContext(session=_labeled("claude", window=200000))
     ctx.session.context_tokens = 20000
     assert _status_line(ctx).endswith("20,000/200,000 tok (10%) ")
 
@@ -299,9 +305,7 @@ def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.cli.shutil.get_terminal_size", lambda: os.terminal_size((80, 24))
     )
-    ctx = CommandContext(
-        session=Session(_LabeledBrain("ai/test", window=131072), tools=[], system_prompt="SYS")
-    )
+    ctx = CommandContext(session=_labeled("ai/test", window=131072))
     ctx.session.context_tokens = 500
     line = _status_line(ctx)
     assert len(line) == 80  # padded so the gauge lands on the right edge
@@ -309,85 +313,124 @@ def test_status_line_right_aligns_the_gauge_to_the_terminal(monkeypatch):
     assert "unsaved" in line
 
 
-def test_main_builds_the_brain_from_the_configured_provider(monkeypatch, capsys):
+def test_main_builds_the_backend_from_the_configured_provider(monkeypatch, capsys):
     from vegapunk.config import config
 
     seen: dict = {}
 
     def fake_create(provider):
         seen["provider"] = provider
-        return _LabeledBrain("stub-model")
+        return backend_for(model_label="stub-model")
 
-    monkeypatch.setattr("vegapunk.cli.create_brain", fake_create)
+    monkeypatch.setattr("vegapunk.cli.create_backend", fake_create)
     main(prompter=ScriptedPrompter(["/exit"]))  # session=None: built from config
 
     assert seen["provider"] == config.provider  # "local" unless VEGAPUNK_PROVIDER says otherwise
-    assert "model stub-model" in capsys.readouterr().out  # banner shows the live brain
+    assert "model stub-model" in capsys.readouterr().out  # banner shows the live model
 
 
-class _SpyScheduler:
-    """Captures how cli.main drives the scheduler without starting a real thread."""
+class _SpyPopen:
+    """Stands in for the spawned worker process, capturing how cli drives it."""
 
-    instances: list["_SpyScheduler"] = []
+    instances: list["_SpyPopen"] = []
 
-    def __init__(self, brain_provider, tools, lock, poll_seconds=30.0):
-        self.brain_provider = brain_provider
-        self.tools = tools
-        self.lock = lock
-        self.started = 0
-        self.stopped = 0
-        _SpyScheduler.instances.append(self)
+    def __init__(self, argv, stdin=None, stdout=None, stderr=None, env=None):
+        self.argv = argv
+        self.env = env or {}
+        self.stdout = stdout
+        self.terminated = 0
+        self.killed = 0
+        self.waited = 0
+        self.returncode = None  # still running until terminate()
+        _SpyPopen.instances.append(self)
 
-    def start(self) -> None:
-        self.started += 1
+    def poll(self):
+        return self.returncode
 
-    def stop(self, timeout: float = 5.0) -> None:
-        self.stopped += 1
+    def terminate(self) -> None:
+        self.terminated += 1
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        self.waited += 1
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed += 1
 
 
 @pytest.fixture
-def spy_scheduler(monkeypatch):
-    _SpyScheduler.instances = []
-    monkeypatch.setattr("vegapunk.cli.Scheduler", _SpyScheduler)
-    return _SpyScheduler
+def spy_worker(monkeypatch):
+    _SpyPopen.instances = []
+    monkeypatch.setattr("vegapunk.cli.Popen", _SpyPopen)
+    return _SpyPopen
 
 
-def test_main_starts_and_stops_the_scheduler(spy_scheduler, capsys):
+def test_main_spawns_the_worker_as_a_separate_process(spy_worker, capsys):
     main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
-    assert len(spy_scheduler.instances) == 1
-    sched = spy_scheduler.instances[0]
-    assert sched.started == 1
-    assert sched.stopped == 1  # stopped on the /exit path
+
+    assert len(spy_worker.instances) == 1
+    worker = spy_worker.instances[0]
+    # Launched the same way the REPL itself is, so it shares the interpreter and
+    # virtualenv rather than depending on a console script being installed.
+    assert worker.argv == [sys.executable, "-m", "vegapunk.scheduler_worker"]
+    # The database is named explicitly: parent and child must not have to agree
+    # on a working directory to end up on the same file.
+    assert worker.env["VEGAPUNK_DB_FILE"] == str(db.db_path())
 
 
-def test_main_stops_the_scheduler_on_eof(spy_scheduler, capsys):
+def test_main_stops_the_worker_on_exit(spy_worker, capsys):
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    worker = spy_worker.instances[0]
+    assert worker.terminated == 1  # SIGTERM, so a task mid-run records its outcome
+    assert worker.killed == 0
+
+
+def test_main_stops_the_worker_on_eof(spy_worker, capsys):
     main(prompter=ScriptedPrompter([EOFError]), session=_session([]))
-    assert spy_scheduler.instances[0].stopped == 1  # finally covers the Ctrl-D path too
+    assert spy_worker.instances[0].terminated == 1  # finally covers the Ctrl-D path too
 
 
-def test_scheduler_reads_the_live_brain_after_a_swap(spy_scheduler, capsys):
-    # The provider is lambda: session.brain, not a snapshot — so a /model swap
-    # mid-session is honored by the next scheduled run.
-    session = _session([])
-    main(prompter=ScriptedPrompter(["/exit"]), session=session)
-    provider = spy_scheduler.instances[0].brain_provider
-    assert provider() is session.brain  # reads the current brain
-    session.swap_brain(_LabeledBrain("swapped"))
-    assert provider().model_label == "swapped"  # follows the swap, not the launch model
+def test_main_kills_a_worker_that_ignores_terminate(spy_worker, capsys, monkeypatch):
+    # A worker inside a model call can't honor SIGTERM (the stop flag isn't read
+    # again until the turn returns), and a turn routinely outlasts the grace
+    # period — so it's killed rather than hanging /exit, and said out loud
+    # because the run is genuinely lost.
+    def _stubborn_wait(self, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout or 0)
+
+    monkeypatch.setattr(_SpyPopen, "wait", _stubborn_wait)
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    assert spy_worker.instances[0].killed == 1
+    assert "stays due" in capsys.readouterr().err
 
 
-def test_main_shares_one_lock_between_scheduler_and_turn(spy_scheduler, capsys):
-    # The turn is wrapped in the very lock the scheduler holds; if they differed,
-    # a background task and a typed turn could hit the one model at once. Pin that
-    # the turn actually acquires the scheduler's lock by making acquire observable.
-    import threading
+def test_main_reports_a_worker_that_died(spy_worker, capsys):
+    # Otherwise scheduled tasks just silently stop happening. Reported once,
+    # pointing at the log that says why.
+    def _already_dead(self):
+        self.returncode = 1
+        return 1
 
-    session = _session([_text("yo"), _text("title")])
-    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=session)
-    lock = spy_scheduler.instances[0].lock
-    assert isinstance(lock, type(threading.Lock()))
-    assert lock.acquire(blocking=False)  # free after the turn — released, not leaked
-    lock.release()
+    _SpyPopen.poll = _already_dead
+    try:
+        main(prompter=ScriptedPrompter(["", "/exit"]), session=_session([]))
+    finally:
+        del _SpyPopen.poll
+    out = capsys.readouterr().out
+    assert "worker exited (1)" in out
+    assert "scheduler.log" in out
+    assert out.count("worker exited") == 1  # said once, not on every prompt
+
+
+def test_main_survives_a_worker_that_cannot_start(monkeypatch, capsys):
+    # No scheduled tasks is a degraded session, not a dead one.
+    def _boom(*a, **k):
+        raise OSError("no fork for you")
+
+    monkeypatch.setattr("vegapunk.cli.Popen", _boom)
+    main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
+    assert "could not start the worker" in capsys.readouterr().err
 
 
 @pytest.fixture
@@ -401,8 +444,8 @@ def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
     (skills_home / "commit-message" / "SKILL.md").write_text(
         "---\ndescription: d\n---\nUse type(scope): summary.", encoding="utf-8"
     )
-    brain = FakeBrain([_text("done"), _text("title"), _text("also done"), _text("title2")])
-    session = Session(brain, tools=[], system_prompt="SYS")
+    session = _session(["done", "also done"])
+    provider = session.backend.provider
     main(
         prompter=ScriptedPrompter(
             ["/skill commit-message", "/history", "write a commit message", "plain follow-up", "/exit"]
@@ -412,12 +455,11 @@ def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
 
     # The staging survived the intervening /history command, then rode the
     # first real message: skill body first, a closing marker, then the request.
-    first_user = next(m["content"] for m in brain.seen_messages[0] if m["role"] == "user")
+    first_user = provider.requests[0].messages[0].text
     assert first_user.startswith("[Skill 'commit-message' — follow these instructions")
     assert "Use type(scope): summary." in first_user
     assert "[End of skill instructions. The request:]" in first_user
     assert first_user.rstrip().endswith("write a commit message")
 
     # ...and was cleared afterwards: the follow-up message is unadorned.
-    second_user = [m["content"] for m in brain.seen_messages[2] if m["role"] == "user"][-1]
-    assert second_user == "plain follow-up"
+    assert provider.requests[1].messages[-1].text == "plain follow-up"

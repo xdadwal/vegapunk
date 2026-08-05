@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 
 from vegapunk.config import config
-from vegapunk.tools import ALL_TOOLS
+from vegapunk.tools import ALL_TOOLS, GUARDED
 from vegapunk.tools.skills import use_skill
 
 
@@ -98,9 +98,9 @@ def test_manifest_only_skill_gets_no_files_note(skills_home):
 
 def test_registered_unguarded_with_required_name(skills_home):
     made = next(t for t in ALL_TOOLS if t.name == "use_skill")
-    assert made.guarded is False  # read-only, no approval gate
-    params = made.to_schema()["function"]["parameters"]
-    assert params["properties"]["name"] == {"type": "string"}
+    assert "use_skill" not in GUARDED  # read-only, no approval gate
+    params = made.input_schema
+    assert params["properties"]["name"]["type"] == "string"
     assert params["required"] == ["name"]
 
 

@@ -1,8 +1,9 @@
 # vegapunk
 
-A self-hosted, CLI-first personal agent powered by a **local** LLM. Vegapunk runs a hand-built
-agentic loop: it sends your input plus the available tool schemas to the model, runs whatever tools
-the model calls, feeds the results back, and repeats until the model produces a final answer.
+A self-hosted, CLI-first personal agent powered by a **local** LLM. Vegapunk runs an agentic loop
+([logpose](https://github.com/xdadwal/logpose)): it sends your input plus the available tool schemas
+to the model, runs whatever tools the model calls, feeds the results back, and repeats until the
+model produces a final answer.
 Irreversible actions (writing files, running shell commands) go behind an interactive approval gate.
 When a request is underspecified, Vegapunk asks a short clarifying question rather than guessing, then
 continues once you answer.
@@ -55,7 +56,9 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   cadence. Set one up with `/schedule add <seconds> <prompt>`, or just ask — the model can schedule
   one for you with the `schedule_task` tool. Runs are unattended, so they're fail-closed: read-only
   tools work, while gated tools (`write_file`, `run_shell`) are blocked with no human to approve
-  them. Your typed turns take priority — a due task waits for a quiet moment.
+  them. They execute in a **separate worker process** the REPL starts and stops with it, so a due
+  task never delays your typing and its tool trace goes to `scheduler.log` beside the database
+  rather than onto your prompt. See [Scheduled tasks](#scheduled-tasks).
 - **Slash commands** (see below) — anything else you type goes to the model.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
@@ -184,10 +187,13 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
 | `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
-| `VEGAPUNK_PROVIDER` | Brain at launch: `local` (Docker Model Runner) or `claude` (Claude subscription); switch live with `/model` | `local` |
-| `VEGAPUNK_CLAUDE_MODEL` | Claude model override (e.g. `sonnet`, `opus`); empty = the Claude Code account default | (empty) |
+| `VEGAPUNK_PROVIDER` | Model at launch: `local` (Docker Model Runner) or `claude` (Anthropic API); switch live with `/model` | `local` |
+| `VEGAPUNK_MAX_OUTPUT_TOKENS` | Ceiling on what the model may generate in one turn (thinking included) | `16000` |
+| `VEGAPUNK_CLAUDE_MODEL` | Claude model: a full id, or the short `opus`/`sonnet`/`haiku`; empty = the provider's default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
-| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = the SDK default (`high`); adjust live with `/effort` | (empty) |
+| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = send none and let the API decide; adjust live with `/effort` | (empty) |
+| `VEGAPUNK_SCHEDULER_MODEL` | Model for [scheduled tasks](#scheduled-tasks), as `provider[:model]` (e.g. `local`, `claude:opus`); empty = inherit `VEGAPUNK_PROVIDER`/`VEGAPUNK_CLAUDE_MODEL`. A live `/model` swap never reaches the worker | (empty) |
+| `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's Claude turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
 
 ### Data & backups
 
@@ -208,20 +214,51 @@ in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
   multi-process coordination format is experimental and may change between releases — which is
   what the automatic backups are insurance for.
 
+### Scheduled tasks
+
+`/schedule add <seconds> <prompt>` saves a prompt to run on a repeating interval (minimum 60s).
+The runs happen in a **separate worker process**, `vegapunk.scheduler_worker`, which the REPL
+starts at launch and stops when you quit — you never run it yourself.
+
+- **Your prompt stays yours.** The worker has its own database connection and model client, so a
+  due task never blocks a typed turn, and its `[think]`/`[tool]` trace goes to `scheduler.log`
+  beside the database instead of landing on top of your prompt. `tail -f scheduler.log` to watch.
+- **Only while a session is open.** The worker is stopped when the REPL exits, and exits by itself
+  if the REPL is killed outright. Nothing runs when Vegapunk isn't. Quitting mid-task stops that run
+  rather than making you wait out a model turn — it wasn't recorded, so the task stays due and
+  simply runs again next time.
+- **Fail-closed.** Unattended runs get no approval prompt, so gated tools (`write_file`,
+  `run_shell`) are refused; read-only tools work normally.
+- **Its own model.** Because it's a separate process, a live `/model` swap deliberately does *not*
+  reach scheduled runs — otherwise switching providers would silently start billing background work
+  to your subscription. The worker uses `VEGAPUNK_SCHEDULER_MODEL` (spelled `provider[:model]`,
+  e.g. `claude:opus`), falling back to the provider/model the REPL launched with. Set it to `local`
+  to keep unattended runs on the free model while your own turns use Claude. `scheduler.log` records
+  which model it came up with.
+
+If the worker can't start (a bad model spec, or another one already running), the REPL says so once
+and points at the log rather than leaving scheduled tasks silently not happening.
+
 ### The `claude` provider
 
-`/model claude` (or `VEGAPUNK_PROVIDER=claude`) runs turns on your Claude Pro/Max
-**subscription** — no API key. It works by driving the Claude Code CLI (bundled inside
-the `claude-agent-sdk` dependency) as a subprocess, which is the officially sanctioned
-way to spend a subscription from a program; usage draws from the same rate limits as
-your interactive Claude Code sessions. Auth comes from Claude Code itself: run
-`claude /login` once on the machine, or set `CLAUDE_CODE_OAUTH_TOKEN` (create a
-long-lived token with `claude setup-token`). Vegapunk stays in charge either way —
-Claude Code's own tools, settings, skills, and MCP servers are all disabled; Claude
-requests Vegapunk's tools through the same loop and approval gate as the local model.
-Pick a model per switch (`/model claude opus` — alias or full id, validated by Claude Code) and
-trade speed for reasoning depth with `/effort`; both persist for the session, and a model switch
-keeps your effort choice.
+`/model claude` (or `VEGAPUNK_PROVIDER=claude`) runs turns on Claude through the
+Anthropic API, with native tool calling and the same approval gate as the local model.
+
+Credentials are resolved in this order: `CLAUDE_CODE_OAUTH_TOKEN`, then
+`ANTHROPIC_API_KEY`, then Claude Code's own credential store (so `claude /login` on
+the machine is enough). **The first and third are subscription tokens against the raw
+API, which is not an officially supported integration** — it relies on undocumented
+details and is at your own risk, including to your account. Set `ANTHROPIC_API_KEY` to
+use the supported path, which bills per token.
+
+Pick a model per switch (`/model claude opus` — the short names expand to full ids) and
+trade speed for reasoning depth with `/effort` (`low`|`medium`|`high`|`xhigh`|`max`, the
+API's own levels); both persist for the session, and a model switch keeps your effort
+choice.
+
+> The previous subscription path — driving the bundled Claude Code CLI through
+> `claude-agent-sdk` — is parked in `vegapunk/claude_brain.py` rather than deleted, in
+> case the supported-client distinction turns out to matter.
 
 ## Tests
 
@@ -240,16 +277,21 @@ vegapunk/
   commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
-  loop.py        # the agent loop: think → act (run tools) → observe → repeat
+  loop.py        # the live trace: logpose's event stream → what you watch on stderr
   session.py     # conversation state across turns
-  brain.py       # the swappable model layer: Brain ABC, local DMR backend, create_brain factory
-  claude_brain.py # Claude subscription backend (via the bundled Claude Code CLI)
+  backend.py     # which model to talk to: name → logpose provider, label, context window
+  gate.py        # the approval gate logpose consults before running each tool
+  transcript.py  # reading history back: which turns were the user's, and what they said
+  brain.py       # PARKED: the old hand-written model layer (see claude_brain.py)
+  claude_brain.py # PARKED: the old Claude-subscription backend, via the Claude Code CLI
   prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
   db_history.py  # REPL input history backed by the database
   approval.py    # interactive approval gate for guarded tools
   config.py      # settings + the persona system prompt
   style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
   memory.py      # long-term memory store (auto-loaded into the system prompt)
+  scheduler.py   # scheduled-task store + the ticker that runs what's due
+  scheduler_worker.py # the worker process the REPL spawns to run those tasks
   embedding.py   # optional embeddings for semantic memory recall
   skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
   tools/         # one module per tool, plus the @tool registry

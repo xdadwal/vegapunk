@@ -24,7 +24,7 @@ from vegapunk.memory import (
     recall_memory,
     save_memory,
 )
-from vegapunk.tools import ALL_TOOLS
+from vegapunk.tools import ALL_TOOLS, GUARDED
 from vegapunk.tools.memory import remember
 
 
@@ -209,8 +209,8 @@ def test_remember_tool_saves_and_confirms():
 def test_recall_tool_registered_and_returns_hits():
     from vegapunk.tools.memory import recall
 
-    tool = next(t for t in ALL_TOOLS if t.name == "recall")
-    assert tool.guarded is False  # read-only lookup, no approval gate
+    assert any(t.name == "recall" for t in ALL_TOOLS)
+    assert "recall" not in GUARDED  # read-only lookup, no approval gate
 
     save_memory("likes espresso")
     assert "likes espresso" in recall("espresso")
@@ -218,10 +218,10 @@ def test_recall_tool_registered_and_returns_hits():
 
 
 def test_remember_tool_registered_and_unguarded():
-    tool = next(t for t in ALL_TOOLS if t.name == "remember")
-    assert tool.guarded is False  # writes its own notebook, not the workspace
-    schema = tool.to_schema()["function"]["parameters"]
-    assert schema["properties"]["fact"] == {"type": "string"}
+    registered = next(t for t in ALL_TOOLS if t.name == "remember")
+    assert "remember" not in GUARDED  # writes its own notebook, not the workspace
+    schema = registered.input_schema
+    assert schema["properties"]["fact"]["type"] == "string"
     assert schema["required"] == ["fact"]
 
 
@@ -247,9 +247,14 @@ def test_cli_main_seeds_session_with_memory(monkeypatch):
     captured: dict[str, str] = {}
 
     class _CapturingSession:
-        def __init__(self, brain, tools, system_prompt="", **kwargs):
+        model_label = "stub-model"  # main() reads these for the banner
+        context_window = 0
+
+        def __init__(self, backend, tools, system_prompt="", **kwargs):
             captured["system_prompt"] = system_prompt
-            self.brain = brain  # main() reads session.brain for the banner
+
+        def close(self) -> None:
+            pass
 
     monkeypatch.setattr("vegapunk.cli.Session", _CapturingSession)
 

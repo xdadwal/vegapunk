@@ -1,28 +1,33 @@
-"""Tests for the agent loop's tool dispatch and event streaming — deterministic,
-no model/network.
+"""Tests for the loop's live trace and streaming contract — no model, no network.
 
-These pin the reflect-and-retry guidance in ``loop`` (a missing required
-argument or an unknown tool name becomes a message worded to steer the model's
-next turn, instead of a raw exception or a silent no-op), driven directly
-through ``_run_tool_batch``. They also pin ``drive_turns``'s streaming
-contract: text deltas re-yield upward, reasoning traces live to stderr, and
-any returned reply was already yielded as deltas first (the display
-invariant), driven through scripted event-stream brains.
+logpose runs the loop; this file pins the part Vegapunk kept — turning its event
+stream into something a human can watch, without ever letting that watching
+leak into the answer.
+
+Two channels, tested separately. Reply text is re-yielded upward for the CLI to
+render, and anything returned was yielded as deltas first (the display
+invariant), so a renderer never has to decide whether the return value still
+needs printing. Everything else — steps, reasoning, tool results, the spinner —
+goes to stderr and is asserted through capsys.
+
+Driven by a scripted provider (``tests/fake_provider``), so what the "model"
+says on each round trip is exact.
 """
 
 from __future__ import annotations
 
-import io
-import sys
-from collections.abc import Iterator
 from dataclasses import replace
 
 import pytest
+from logpose import Conversation, TextDelta, Usage
+
+from logpose import tool
 
 from vegapunk import style
-from vegapunk.brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
-from vegapunk.loop import _run_tool_batch, drive_turns
-from vegapunk.tools.base import Tool
+from vegapunk.approval import Decision, ScriptedApprover
+from vegapunk.gate import DENIED, NO_GATE
+from vegapunk.loop import STEP_LIMIT_NOTICE, drive_turns, run
+from tests.fake_provider import Turn, agent_for, call, says, wants
 
 
 def _force_color(monkeypatch) -> None:
@@ -30,411 +35,491 @@ def _force_color(monkeypatch) -> None:
     monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
 
 
-def _tool(name, func, *, required=None, properties=None, guarded=False) -> Tool:
-    return Tool(
-        name=name,
-        description=name,
-        parameters={
-            "type": "object",
-            "properties": properties or {},
-            "required": required or [],
-        },
-        func=func,
-        guarded=guarded,
-    )
+# ---------------------------------------------------------------------------
+# tools used by the tests
+# ---------------------------------------------------------------------------
 
 
-def _call(call_id: str, name: str, args: dict | None = None) -> ToolCall:
-    return ToolCall(id=call_id, name=name, arguments=args or {})
+@tool
+def echo(text: str) -> str:
+    """Echo some text.
+
+    Args:
+        text: What to echo.
+    """
+    return text
 
 
-def test_missing_required_arg_returns_guidance_without_running():
-    ran: list[dict] = []
-    tool = _tool(
-        "write_file",
-        lambda a: ran.append(a) or "wrote",
-        required=["path", "content"],
-        properties={"path": {"type": "string"}, "content": {"type": "string"}},
-    )
-    results = _run_tool_batch({"write_file": tool}, [_call("c1", "write_file", {"path": "x"})])
-
-    msg = results[0][1]
-    assert "write_file" in msg
-    assert "content" in msg  # names the argument that was left out
-    assert ran == []  # short-circuited before the tool's function ran
+@tool
+def boom() -> str:
+    """Always fails."""
+    raise RuntimeError("kaboom")
 
 
-def test_all_required_args_present_runs():
-    tool = _tool(
-        "write_file",
-        lambda a: f"wrote {a['path']}",
-        required=["path", "content"],
-        properties={"path": {"type": "string"}, "content": {"type": "string"}},
-    )
-    results = _run_tool_batch(
-        {"write_file": tool}, [_call("c1", "write_file", {"path": "x", "content": "hi"})]
-    )
-    assert results[0][1] == "wrote x"
+@tool
+def long_output() -> str:
+    """Return more text than the trace shows."""
+    return "x" * 500
 
 
-def test_extra_args_are_tolerated():
-    # The required-args check flags only MISSING required args, never extra ones —
-    # a slightly-off call with a spurious key still runs.
-    tool = _tool(
-        "echo",
-        lambda a: a.get("text", ""),
-        required=["text"],
-        properties={"text": {"type": "string"}},
-    )
-    results = _run_tool_batch({"echo": tool}, [_call("c1", "echo", {"text": "hi", "bogus": 1})])
-    assert results[0][1] == "hi"
+@tool
+def touch(path: str) -> str:
+    """Pretend to write a file.
+
+    Args:
+        path: Where to write.
+    """
+    return f"wrote {path}"
 
 
-def test_no_required_args_tool_runs_with_empty_arguments():
-    tool = _tool("get_time", lambda _a: "now")  # required is empty
-    results = _run_tool_batch({"get_time": tool}, [_call("c1", "get_time", {})])
-    assert results[0][1] == "now"
+TOOLS = [echo, boom, long_output, touch]
 
 
-def test_unknown_tool_lists_available_tools():
-    ran: list[dict] = []
-    tool = _tool("get_time", lambda a: ran.append(a) or "now")
-    results = _run_tool_batch({"get_time": tool}, [_call("c1", "fetch_url", {})])
+@pytest.fixture(autouse=True)
+def _guarded_names(monkeypatch):
+    """Guard exactly the tools these tests treat as side-effecting.
 
-    msg = results[0][1]
-    assert "fetch_url" in msg  # echoes the invented name
-    assert "get_time" in msg  # lists the real tool(s) so the model can recover
-    assert ran == []  # the real tool was not run as a side effect
-
-
-def test_required_arg_present_as_null_is_treated_as_supplied():
-    # Lenient convention: presence is checked, not value. A required arg given
-    # as null counts as supplied, so the tool runs (with None) rather than
-    # short-circuiting — pinned so the choice is explicit.
-    seen: list[dict] = []
-    tool = _tool(
-        "save",
-        lambda a: seen.append(a) or "saved",
-        required=["path"],
-        properties={"path": {"type": "string"}},
-    )
-    results = _run_tool_batch({"save": tool}, [_call("c1", "save", {"path": None})])
-    assert results[0][1] == "saved"
-    assert seen == [{"path": None}]
+    Patched rather than registered: the real GUARDED is populated at import
+    time from the real tool set, and a test tool has no business in it.
+    """
+    monkeypatch.setattr("vegapunk.gate.GUARDED", {"touch", "slow_touch"})
 
 
-def test_mixed_batch_preserves_order_with_concurrent_valid_calls():
-    # Short-circuits (unknown tool, missing arg) interleaved with two valid calls
-    # that run via the thread pool: results stay keyed to the original call order
-    # and the short-circuited calls don't perturb the concurrent run.
-    alpha = _tool("alpha", lambda _a: "A")
-    beta = _tool("beta", lambda _a: "B")
-    needs_arg = _tool(
-        "write_file",
-        lambda _a: "wrote",
-        required=["content"],
-        properties={"content": {"type": "string"}},
-    )
-    by_name = {"alpha": alpha, "beta": beta, "write_file": needs_arg}
-    calls = [
-        _call("c1", "fetch_url", {}),  # unknown -> short-circuit
-        _call("c2", "write_file", {}),  # missing required 'content' -> short-circuit
-        _call("c3", "alpha", {}),  # valid (runs concurrently)
-        _call("c4", "beta", {}),  # valid (runs concurrently)
-    ]
-    results = _run_tool_batch(by_name, calls)
-
-    assert [call.id for call, _ in results] == ["c1", "c2", "c3", "c4"]  # order preserved
-    assert "fetch_url" in results[0][1] and "alpha" in results[0][1]  # unknown -> lists tools
-    assert "content" in results[1][1]  # missing-arg guidance
-    assert results[2][1] == "A"
-    assert results[3][1] == "B"
-
-
-class _ScriptedStreamBrain(Brain):
-    """Plays back one scripted event stream per think() call."""
-
-    def __init__(self, scripts: list[list[ThinkEvent]]) -> None:
-        self._scripts = list(scripts)
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        yield from self._scripts.pop(0)
-
-
-def _response(
-    text=None, tool_calls=None, reasoning=None, truncated=False, context_tokens=None
-) -> BrainResponse:
-    message: dict = {"role": "assistant", "content": text}
-    if tool_calls:
-        message["tool_calls"] = [
-            {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": "{}"}}
-            for c in tool_calls
-        ]
-    return BrainResponse(
-        message=message,
-        text=text,
-        tool_calls=tool_calls or [],
-        reasoning=reasoning,
-        truncated=truncated,
-        context_tokens=context_tokens,
-    )
-
-
-def _drive(scripts, tools=None, max_steps=8):
-    """Run drive_turns over scripted think() streams; return (yielded, reply)."""
-    events, (reply, _context) = _drive_full(scripts, tools, max_steps)
-    return events, reply
-
-
-def _drive_full(scripts, tools=None, max_steps=8):
-    """Like _drive, but returns the full (reply, context_tokens) return value."""
-    by_name = {t.name: t for t in tools or []}
-    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
-    turns = drive_turns(_ScriptedStreamBrain(scripts), by_name, [], messages, max_steps)
-    events = []
+def _drive(turns, **kwargs) -> tuple[list[TextDelta], str, int | None]:
+    """Run one request and split what it yielded from what it returned."""
+    kwargs.setdefault("tools", TOOLS)
+    agent, _provider = agent_for(turns, **kwargs)
+    generator = drive_turns(agent, "go", Conversation())
+    deltas: list[TextDelta] = []
     while True:
         try:
-            events.append(next(turns))
+            deltas.append(next(generator))
         except StopIteration as stop:
-            return events, stop.value
+            reply, context_tokens = stop.value
+            return deltas, reply, context_tokens
 
 
-def test_text_deltas_are_reyielded_and_the_reply_returned():
-    events, reply = _drive([[TextDelta("It's "), TextDelta("2 PM."), _response("It's 2 PM.")]])
-    assert events == [TextDelta("It's "), TextDelta("2 PM.")]
-    assert reply == "It's 2 PM."
+# ---------------------------------------------------------------------------
+# 1. the streaming contract
+# ---------------------------------------------------------------------------
 
 
-def test_reasoning_deltas_are_traced_live_to_stderr_not_reyielded(capsys):
-    events, _reply = _drive(
-        [[ReasoningDelta("pon"), ReasoningDelta("dering"), TextDelta("hi"), _response("hi")]]
+def test_text_deltas_are_re_yielded_and_the_reply_returned():
+    deltas, reply, _ = _drive(says("all done", chunks=("all ", "done")))
+
+    assert [d.text for d in deltas] == ["all ", "done"]
+    assert reply == "all done"
+
+
+def test_a_provider_that_did_not_stream_still_gets_its_answer_displayed():
+    # The display invariant: a renderer prints exactly what it receives, so an
+    # answer that arrived only in the final message has to be synthesized into
+    # a delta rather than appearing solely in the return value.
+    deltas, reply, _ = _drive(says("assembled, not streamed", stream_text=False))
+
+    assert [d.text for d in deltas] == ["assembled, not streamed"]
+    assert reply == "assembled, not streamed"
+
+
+def test_speaking_before_a_tool_call_closes_the_spoken_line():
+    deltas, _reply, _ = _drive(
+        [wants(call("echo", {"text": "hi"}), text="Let me check."), says("done")]
     )
-    assert events == [TextDelta("hi")]  # reasoning never reaches the reply stream
+
+    # The newline separates the spoken line from the tool trace that follows.
+    assert [d.text for d in deltas] == ["Let me check.", "\n", "done"]
+
+
+def test_a_tool_only_turn_yields_no_stray_newline():
+    deltas, _reply, _ = _drive([wants(call("echo", {"text": "hi"})), says("done")])
+
+    assert [d.text for d in deltas] == ["done"]
+
+
+def test_reasoning_is_traced_to_stderr_and_never_yielded(capsys):
+    deltas, reply, _ = _drive(says("the answer", thinking="pondering"))
+
+    assert [d.text for d in deltas] == ["the answer"]  # reasoning is not re-yielded
     err = capsys.readouterr().err
-    assert "  [reason] pondering\n" in err  # fragments joined; line closed before the reply
-    assert err.count("[reason]") == 1  # the prefix opens the line once
+    assert "[reason] pondering" in err
+    assert "pondering" not in reply
 
 
-def test_reasoning_line_is_closed_when_the_stream_ends_without_text(capsys):
-    # A pure tool-call turn ends its stream with reasoning still open; the
-    # line must be closed so the [tool] trace doesn't glue onto it.
-    ping = _tool("ping", lambda _a: "PONG")
-    call = ToolCall(id="c1", name="ping", arguments={})
-    _drive(
-        [[ReasoningDelta("hmm"), _response(tool_calls=[call])], [_response("done")]],
-        tools=[ping],
+def test_the_reasoning_line_closes_when_the_reply_starts(capsys):
+    _drive(says("answer", thinking="thought"))
+
+    err = capsys.readouterr().err
+    # One [reason] line, opened after the step marker and closed before the
+    # reply — so the trace reads a line per turn even though it's written live.
+    assert err.count("[reason]") == 1
+    assert err.index("[think] step 1") < err.index("[reason] thought")
+    assert "thought\n" in err
+
+
+def test_the_reasoning_line_closes_on_a_tool_only_turn(capsys):
+    _drive([wants(call("echo", {"text": "hi"}), thinking="deciding"), says("done")])
+
+    err = capsys.readouterr().err
+    # The tool trace must start on its own line, not glued to the reasoning.
+    assert "deciding\n" in err
+    assert "\n  [tool] echo" in err
+
+
+# ---------------------------------------------------------------------------
+# 2. the step trace
+# ---------------------------------------------------------------------------
+
+
+def test_one_step_marker_per_model_round_trip(capsys):
+    _drive([wants(call("echo", {"text": "a"})), wants(call("echo", {"text": "b"})), says("done")])
+
+    err = capsys.readouterr().err
+    # Three provider calls, three markers — tool events belong to the step that
+    # asked for them, not to a step of their own.
+    assert err.count("[think] step") == 3
+    assert "[think] step 3" in err
+    assert "[think] step 4" not in err
+
+
+def test_batched_tool_calls_share_one_step(capsys):
+    _drive([wants(call("echo", {"text": "a"}), call("echo", {"text": "b"})), says("done")])
+
+    err = capsys.readouterr().err
+    # The distinction the trace exists to show: batched (one step, two tools)
+    # versus chained (a step each).
+    assert err.count("[think] step") == 2
+    assert err.count("[tool] echo") == 2
+
+
+def test_the_tool_trace_shows_the_arguments_and_the_result(capsys):
+    _drive([wants(call("echo", {"text": "hello"})), says("done")])
+
+    assert "[tool] echo({'text': 'hello'}) -> hello" in capsys.readouterr().err
+
+
+def test_a_long_tool_result_is_truncated_in_the_trace_but_not_in_history(capsys):
+    _drive([wants(call("long_output")), says("done")])
+    err = capsys.readouterr().err
+
+    assert "… (+300 more chars)" in err
+    assert "x" * 500 not in err  # the trace is shortened...
+
+    agent, provider = agent_for([wants(call("long_output")), says("done")], tools=TOOLS)
+    run(agent, "go")
+    sent = provider.requests[1].messages[-1].content[0].content
+    assert sent == "x" * 500  # ...while the model still gets all of it
+
+
+def test_a_failing_tool_is_reported_in_red_and_the_run_continues(capsys, monkeypatch):
+    _force_color(monkeypatch)
+
+    _, reply, _ = _drive([wants(call("boom")), says("recovered")])
+
+    assert style.RED in capsys.readouterr().err
+    assert reply == "recovered"  # a tool failure is a step, not the end
+
+
+def test_a_successful_tool_is_reported_in_cyan(capsys, monkeypatch):
+    _force_color(monkeypatch)
+
+    _drive([wants(call("echo", {"text": "hi"})), says("done")])
+
+    assert style.CYAN in capsys.readouterr().err
+
+
+def test_an_unknown_tool_name_is_reported_as_a_failure(capsys, monkeypatch):
+    _force_color(monkeypatch)
+
+    _, reply, _ = _drive([wants(call("invented")), says("recovered")])
+
+    err = capsys.readouterr().err
+    assert style.RED in err
+    assert "invented" in err
+    # The model is told which tools do exist, so it can correct itself.
+    assert "echo" in err
+
+
+def test_a_truncated_turn_is_noted_on_the_watch_channel(capsys):
+    _drive(says("cut off mid-", stop_reason="max_tokens"))
+
+    assert "ran out of tokens" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# 3. approval, through the gate
+# ---------------------------------------------------------------------------
+
+
+def test_a_guarded_tool_needs_approval_and_runs_when_allowed(capsys):
+    _, reply, _ = _drive(
+        [wants(call("touch", {"path": "f.txt"})), says("done")],
+        approver=ScriptedApprover(default=True),
     )
-    assert "  [reason] hmm\n" in capsys.readouterr().err
 
-
-def test_truncated_turn_is_noted_on_the_trace(capsys):
-    # finish_reason "length": the cut-off answer still flows through, but the
-    # watch channel says so — a truncated reply is never passed off as chosen.
-    events, reply = _drive([[TextDelta("half an ans"), _response("half an ans", truncated=True)]])
-    assert reply == "half an ans"
-    assert "cut off" in capsys.readouterr().err
-
-
-def test_nonstreaming_response_text_is_still_yielded_as_a_delta():
-    # A Brain that yields only its final response (no deltas) must still have
-    # its answer displayed: the loop synthesizes one delta for it.
-    events, reply = _drive([[_response("whole answer")]])
-    assert events == [TextDelta("whole answer")]
-    assert reply == "whole answer"
-
-
-def test_spoken_text_before_tool_calls_gets_its_line_closed():
-    ping = _tool("ping", lambda _a: "PONG")
-    call = ToolCall(id="c1", name="ping", arguments={})
-    events, reply = _drive(
-        [
-            [TextDelta("Checking..."), _response("Checking...", tool_calls=[call])],
-            [TextDelta("done"), _response("done")],
-        ],
-        tools=[ping],
-    )
-    # The commentary line is closed with a newline before the tool trace runs.
-    assert events == [TextDelta("Checking..."), TextDelta("\n"), TextDelta("done")]
+    assert "[tool] touch({'path': 'f.txt'}) -> wrote f.txt" in capsys.readouterr().err
     assert reply == "done"
 
 
-def test_step_limit_notice_is_yielded_before_being_returned():
-    ping = _tool("ping", lambda _a: "PONG")
-    call = ToolCall(id="c1", name="ping", arguments={})
-    tool_turn = [_response(tool_calls=[call])]
-    events, reply = _drive([list(tool_turn[0:1]), [_response(tool_calls=[call])]],
-                           tools=[ping], max_steps=2)
-    assert "step limit" in reply.lower()
-    assert events[-1] == TextDelta(reply)  # the notice reached the display stream too
+def test_a_declined_tool_is_blocked_and_the_model_told_not_to_retry():
+    agent, provider = agent_for(
+        [wants(call("touch", {"path": "f.txt"})), says("ok, I won't")],
+        tools=TOOLS,
+        approver=ScriptedApprover(default=False),
+    )
+
+    run(agent, "go")
+
+    result = provider.requests[1].messages[-1].content[0]
+    assert result.content == DENIED
+    assert result.is_error is True
 
 
-def test_think_stream_without_a_final_response_fails_loudly():
-    with pytest.raises(RuntimeError):
-        _drive([[TextDelta("orphan")]])
-
-
-def test_reasoning_line_is_dim_magenta_with_a_single_reset(monkeypatch, capsys):
-    # Color opens once before the prefix, the raw deltas stream unwrapped,
-    # and one RESET closes the line right before its newline.
+def test_declining_with_feedback_redirects_rather_than_failing(capsys, monkeypatch):
     _force_color(monkeypatch)
-    _drive([[ReasoningDelta("pon"), ReasoningDelta("dering"), TextDelta("hi"), _response("hi")]])
-    err = capsys.readouterr().err
-    assert f"{style.DIM}{style.MAGENTA}  [reason] pondering{style.RESET}\n" in err
-
-
-class _InterruptMidReasoningBrain(Brain):
-    """Dies the way Ctrl-C lands: mid-reasoning, blocked in the model read."""
-
-    def think(self, messages: list[dict], tools: list[dict] | None = None) -> Iterator[ThinkEvent]:
-        yield ReasoningDelta("half a thou")
-        raise KeyboardInterrupt
-
-
-def test_interrupt_mid_reasoning_still_resets_the_terminal(monkeypatch, capsys):
-    # The dim-magenta open must not outlive the turn: the finally emits the
-    # RESET even when the stream dies, so the terminal is never left stained.
-    _force_color(monkeypatch)
-    turns = drive_turns(
-        _InterruptMidReasoningBrain(), {}, [], [{"role": "user", "content": "q"}], 8
+    agent, provider = agent_for(
+        [wants(call("touch", {"path": "f.txt"})), says("doing that instead")],
+        tools=TOOLS,
+        approver=ScriptedApprover(
+            decisions={"touch": Decision(allow=False, feedback="write to g.txt instead")}
+        ),
     )
-    with pytest.raises(KeyboardInterrupt):
-        next(turns)
-    assert capsys.readouterr().err.endswith(style.RESET + "\n")
+
+    run(agent, "go")
+
+    result = provider.requests[1].messages[-1].content[0]
+    assert "write to g.txt instead" in result.content
+    # A steer is not a failure: it must not be reported as one to the model...
+    assert result.is_error is False
+    # ...nor painted like one in the trace.
+    assert style.RED not in capsys.readouterr().err
 
 
-def test_tool_trace_marker_is_cyan_and_error_marker_red(monkeypatch, capsys):
-    _force_color(monkeypatch)
-
-    def _boom(_a: dict) -> str:
-        raise ValueError("nope")
-
-    calls = [
-        ToolCall(id="c1", name="ping", arguments={}),
-        ToolCall(id="c2", name="boom", arguments={}),
-    ]
-    _drive(
-        [[_response(tool_calls=calls)], [_response("done")]],
-        tools=[_tool("ping", lambda _a: "PONG"), _tool("boom", _boom)],
+def test_without_an_approver_a_guarded_tool_is_blocked_rather_than_run():
+    # Fail-closed: this is what the scheduler worker relies on.
+    agent, provider = agent_for(
+        [wants(call("touch", {"path": "f.txt"})), says("understood")],
+        tools=TOOLS,
+        approver=None,
     )
-    err = capsys.readouterr().err
-    # Marker+name painted; the reset lands before the args/result, which stay plain.
-    assert f"{style.CYAN}  [tool] ping{style.RESET}({{}}) -> PONG" in err
-    assert f"{style.RED}  [tool] boom{style.RESET}" in err  # failures pop red
+
+    run(agent, "go")
+
+    assert provider.requests[1].messages[-1].content[0].content == NO_GATE
 
 
-def test_long_tool_results_are_truncated_in_trace_but_full_in_history(capsys):
-    # Display-only: the watch channel shows a preview; the model (history)
-    # always receives the complete result.
-    long_result = "x" * 500
-    call = ToolCall(id="c1", name="dump", arguments={})
-    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
-    turns = drive_turns(
-        _ScriptedStreamBrain([[_response(tool_calls=[call])], [_response("done")]]),
-        {"dump": _tool("dump", lambda _a: long_result)},
-        [],
-        messages,
-        8,
+def test_an_unguarded_tool_never_reaches_the_approver():
+    approver = ScriptedApprover()
+
+    _, reply, _ = _drive([wants(call("echo", {"text": "hi"})), says("done")], approver=approver)
+
+    assert reply == "done"
+    assert approver.calls == []  # read-only tools are never worth interrupting for
+
+
+def test_every_guarded_call_is_approved_before_any_of_them_runs():
+    # The order the model asked in is the order the human is asked, and no tool
+    # starts while a decision on a sibling is still pending — an approver that
+    # prompts on stdin can only be asked one thing at a time.
+    events: list[str] = []
+
+    class Recording(ScriptedApprover):
+        def approve(self, tool_name, arguments):
+            events.append(f"ask:{arguments['path']}")
+            return super().approve(tool_name, arguments)
+
+    @tool
+    def slow_touch(path: str) -> str:
+        """Pretend to write a file.
+
+        Args:
+            path: Where to write.
+        """
+        events.append(f"run:{path}")
+        return f"wrote {path}"
+
+    agent, _provider = agent_for(
+        [wants(call("slow_touch", {"path": "a"}), call("slow_touch", {"path": "b"})), says("done")],
+        tools=[slow_touch],
+        approver=Recording(default=True),
     )
-    while True:
-        try:
-            next(turns)
-        except StopIteration:
-            break
-    err = capsys.readouterr().err
-    assert "x" * 200 + "… (+300 more chars)" in err
-    assert "x" * 201 not in err  # the trace really is cut
-    tool_turn = next(m for m in messages if m["role"] == "tool")
-    assert tool_turn["content"] == long_result  # history untouched
+
+    run(agent, "go")
+
+    assert events[:2] == ["ask:a", "ask:b"]
+    assert sorted(events[2:]) == ["run:a", "run:b"]
 
 
-def test_short_tool_results_are_shown_whole(capsys):
-    call = ToolCall(id="c1", name="ping", arguments={})
-    _drive(
-        [[_response(tool_calls=[call])], [_response("done")]],
-        tools=[_tool("ping", lambda _a: "PONG")],
+def test_a_mixed_batch_keeps_every_result_paired_with_its_call():
+    # Denied, free-running, and approved calls in one turn: if the results came
+    # back out of order the model would read each tool's output as another's.
+    agent, provider = agent_for(
+        [
+            wants(
+                call("touch", {"path": "a"}, id="t1"),
+                call("echo", {"text": "middle"}, id="t2"),
+                call("touch", {"path": "b"}, id="t3"),
+            ),
+            says("done"),
+        ],
+        tools=TOOLS,
+        approver=ScriptedApprover(default=False),
     )
-    assert "-> PONG" in capsys.readouterr().err  # no ellipsis for short results
+
+    run(agent, "go")
+
+    results = provider.requests[1].messages[-1].content
+    assert [b.tool_use_id for b in results] == ["t1", "t2", "t3"]
+    assert [b.content for b in results] == [DENIED, "middle", DENIED]
 
 
-class _FakeTTY(io.StringIO):
-    def isatty(self) -> bool:
-        return True
+def test_no_spinner_is_running_while_the_human_is_being_asked(monkeypatch):
+    # The wait between a ToolCall and its result is a tool running — or a human
+    # being asked to approve it. A spinner there would animate on top of the
+    # approval prompt.
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    spinning = {"now": False}
+    monkeypatch.setattr("vegapunk.loop._Spinner.start", lambda self: spinning.update(now=True))
+    monkeypatch.setattr("vegapunk.loop._Spinner.stop", lambda self: spinning.update(now=False))
+    observed: list[bool] = []
+
+    class _Watching(ScriptedApprover):
+        def approve(self, tool_name, arguments):
+            observed.append(spinning["now"])
+            return super().approve(tool_name, arguments)
+
+    agent, _provider = agent_for(
+        [wants(call("touch", {"path": "a"})), says("done")],
+        tools=TOOLS,
+        approver=_Watching(default=True),
+    )
+
+    run(agent, "go")
+
+    assert observed == [False]
 
 
-def test_spinner_draws_and_erases_on_a_tty(monkeypatch):
+# ---------------------------------------------------------------------------
+# 4. limits, footprint, and interruption
+# ---------------------------------------------------------------------------
+
+
+def test_hitting_the_step_limit_is_yielded_before_it_is_returned():
+    deltas, reply, _ = _drive(
+        wants(call("echo", {"text": "again"})), max_iterations=2, repeat_last=True
+    )
+
+    assert reply == STEP_LIMIT_NOTICE
+    assert [d.text for d in deltas] == [STEP_LIMIT_NOTICE]  # the display invariant
+
+
+def test_the_context_footprint_is_the_latest_turns_report():
+    _, _, context_tokens = _drive(
+        [
+            wants(call("echo", {"text": "a"}), usage=Usage(input_tokens=10, output_tokens=5)),
+            says("done", usage=Usage(input_tokens=40, output_tokens=7)),
+        ]
+    )
+
+    # Everything the model read plus everything it wrote, from the last call —
+    # what the next request would carry.
+    assert context_tokens == 47
+
+
+def test_a_turn_without_usage_does_not_wipe_the_previous_footprint():
+    _, _, context_tokens = _drive(
+        [
+            wants(call("echo", {"text": "a"}), usage=Usage(input_tokens=30, output_tokens=2)),
+            says("done"),  # no usage reported
+        ]
+    )
+
+    assert context_tokens == 32
+
+
+def test_cached_tokens_count_toward_the_footprint():
+    # They still occupy the window even though they were cheap to send.
+    _, _, context_tokens = _drive(
+        says("done", usage=Usage(input_tokens=1, cache_read_input_tokens=100, output_tokens=2))
+    )
+
+    assert context_tokens == 103
+
+
+def test_abandoning_the_stream_closes_the_provider():
+    agent, provider = agent_for(
+        [wants(call("echo", {"text": "a"})), says("done")], tools=TOOLS, repeat_last=True
+    )
+    generator = drive_turns(agent, "go", Conversation())
+    next(generator)  # start the run, land on the first delta
+
+    generator.close()
+
+    # Walking away has to tear the request down, not leak it.
+    assert provider.closed >= 1
+
+
+def test_a_provider_failure_propagates_rather_than_being_swallowed():
+    # A broken model is not a tool error to feed back — the turn is over.
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        _drive(Turn(error=RuntimeError("provider exploded")))
+
+
+# ---------------------------------------------------------------------------
+# 5. the spinner
+# ---------------------------------------------------------------------------
+
+
+def test_the_spinner_draws_and_erases_on_a_tty(capsys, monkeypatch):
     from vegapunk.loop import _Spinner
 
-    fake = _FakeTTY()
-    monkeypatch.setattr(sys, "stderr", fake)
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
     spinner = _Spinner()
+
     spinner.start()
     spinner.stop()
-    out = fake.getvalue()
-    assert "thinking…" in out  # at least one frame drew (draw-before-wait)
-    assert out.endswith("\r\x1b[K")  # and the line was erased on stop
-    spinner.stop()  # idempotent: a second stop is a no-op, not an error
+
+    err = capsys.readouterr().err
+    assert "thinking…" in err
+    # Erased on the way out, so whatever prints next starts on a clean line.
+    assert err.endswith("\r\x1b[K")
 
 
-def test_spinner_is_silent_off_a_tty(capsys):
+def test_the_spinner_is_silent_off_a_tty(capsys, monkeypatch):
     from vegapunk.loop import _Spinner
 
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False)
     spinner = _Spinner()
-    spinner.start()  # capsys stderr is not a TTY -> never starts a thread
+
+    spinner.start()
     spinner.stop()
-    assert "thinking" not in capsys.readouterr().err
+
+    assert capsys.readouterr().err == ""
 
 
-def test_looks_failed_matches_every_failure_producer():
-    # Pin the display heuristic to the strings this module actually emits, so
-    # rewording a constant can't silently un-red the trace.
-    from vegapunk.loop import DENIED, NO_GATE, _looks_failed, _missing_args, _unknown_tool
+def test_stopping_a_spinner_twice_is_harmless(monkeypatch):
+    from vegapunk.loop import _Spinner
 
-    needs_arg = _tool("save", lambda _a: "saved", required=["path"], properties={"path": {"type": "string"}})
-    assert _looks_failed("Error running save: boom")  # _run_tool exception path
-    assert _looks_failed(DENIED)
-    assert _looks_failed(NO_GATE)
-    assert _looks_failed(_unknown_tool("bogus", {"save": needs_arg}))
-    assert _looks_failed(_missing_args("save", needs_arg, ["path"]))
-    # A decline WITH feedback is a steer, not a failure — deliberately un-red.
-    from vegapunk.loop import _denied_with_feedback
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    spinner = _Spinner()
+    spinner.start()
 
-    assert not _looks_failed(_denied_with_feedback("try the other file"))
-    assert not _looks_failed("PONG")
+    spinner.stop()
+    spinner.stop()  # the classic double-Ctrl-C
 
 
-def test_shorten_boundaries_and_grammar():
+# ---------------------------------------------------------------------------
+# 6. formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def test_shorten_leaves_short_results_alone():
     from vegapunk.loop import _shorten
 
-    assert _shorten("x" * 200) == "x" * 200  # exactly at the limit: untouched
-    assert _shorten("x" * 201) == "x" * 200 + "… (+1 more char)"  # singular
-    assert _shorten("x" * 1401).endswith("… (+1,201 more chars)")  # plural, thousands-grouped
+    assert _shorten("short") == "short"
 
 
-def test_context_tokens_from_the_last_think_are_returned():
-    # Two steps; each think reports its own footprint — the turn returns the
-    # latest one (the fullest view of the conversation).
-    ping = _tool("ping", lambda _a: "PONG")
-    call = ToolCall(id="c1", name="ping", arguments={})
-    _events, (reply, context) = _drive_full(
-        [
-            [_response(tool_calls=[call], context_tokens=120)],
-            [_response("done", context_tokens=185)],
-        ],
-        tools=[ping],
-    )
-    assert (reply, context) == ("done", 185)
+def test_shorten_reports_how_much_it_hid():
+    from vegapunk.loop import _shorten
 
-
-def test_context_tokens_survive_a_final_step_without_usage():
-    # A server that omits usage on one call must not wipe the last-known
-    # footprint — better slightly stale than gone.
-    ping = _tool("ping", lambda _a: "PONG")
-    call = ToolCall(id="c1", name="ping", arguments={})
-    _events, (_reply, context) = _drive_full(
-        [
-            [_response(tool_calls=[call], context_tokens=120)],
-            [_response("done")],  # no usage reported
-        ],
-        tools=[ping],
-    )
-    assert context == 120
+    assert _shorten("y" * 201) == "y" * 200 + "… (+1 more char)"
+    assert _shorten("y" * 250).endswith("… (+50 more chars)")

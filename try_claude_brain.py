@@ -1,5 +1,8 @@
 """Throwaway smoke test for the Claude brain: real subscription, real network.
 
+Exercises the PARKED brain path (see vegapunk/brain.py); the live path is
+``try_agent.py``.
+
 Not part of the pytest suite — run it by hand from the repo root when you want
 to check the end-to-end path (auth, streaming, and the vega_tool fence):
 

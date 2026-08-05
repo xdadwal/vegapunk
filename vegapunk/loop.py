@@ -1,14 +1,18 @@
-"""The agent loop — Vegapunk's think -> act -> observe cycle.
+"""Watching the agent work — the loop's live trace.
 
-This is the heart of the agent and is deliberately hand-written: ask the brain
-what to do, run any tool it requests, feed the result back, and repeat until it
-returns a final answer (or we hit the safety limit that stops runaway loops).
+logpose owns the think -> act -> observe cycle now. What lives here is the part
+that was never really about looping: turning its event stream into something a
+human can watch while it happens.
 
-The loop consumes the brain's event stream as it arrives: reasoning deltas are
-traced live to stderr (the loop's watch-channel), while reply-text deltas are
-re-yielded upward so the interface on top (the CLI) can render them token by
-token. ``drive_turns`` is therefore a generator; its final reply travels back
-as the generator's *return value* (``StopIteration.value``).
+Two channels, deliberately separate. Reply text is re-yielded upward so the CLI
+can render it token by token on stdout. Everything else — which step we're on,
+what the model is chewing over, which tool ran and what came back — is traced to
+stderr, so you can watch the loop work without that noise ever contaminating the
+answer or the conversation history.
+
+``drive_turns`` is therefore a generator: it yields ``TextDelta`` fragments as
+they arrive, and *returns* — via ``StopIteration.value`` — the final reply
+together with the conversation's context footprint in tokens.
 """
 
 from __future__ import annotations
@@ -17,42 +21,35 @@ import itertools
 import sys
 import threading
 from collections.abc import Generator, Iterator
-from concurrent.futures import ThreadPoolExecutor
 
-from . import style
-from .approval import Approver, Decision
-from .brain import Brain, BrainResponse, ReasoningDelta, TextDelta, ThinkEvent, ToolCall
-from .config import config
-from .tools import Tool
-
-# Results fed back when a guarded tool is not allowed to run. Both are worded to
-# steer a small model away from immediately re-requesting the same tool.
-DENIED = "Denied by the user. Do not retry this tool; consider another approach or ask the user."
-NO_GATE = (
-    "Blocked: this tool needs approval, but no approval gate is available here. "
-    "Do not retry it; tell the user it can't run in this context."
+from logpose import (
+    Agent,
+    Conversation,
+    MaxIterationsError,
+    RunEnd,
+    TextDelta,
+    ThinkingDelta,
+    ToolCall,
+    ToolResult,
+    TurnEnd,
+    stream_sync,
 )
 
+from . import style
 
-def run(
-    brain: Brain,
-    tools: list[Tool],
-    user_input: str,
-    max_steps: int = config.max_steps,
-    approver: Approver | None = None,
-) -> str:
+# What the model is told when it runs out of steps. Yielded before it's returned
+# (see the display invariant below), so a renderer never has to decide whether
+# the return value still needs printing.
+STEP_LIMIT_NOTICE = "(Stopped after hitting the step limit without a final answer.)"
+
+
+def run(agent: Agent, user_input: str) -> str:
     """One-shot: run a single request to completion and return the reply.
 
     Drains the turn stream internally (no live rendering), so script callers
     keep the simple call-and-get-a-string contract.
     """
-    messages: list[dict] = [
-        {"role": "system", "content": config.system_prompt},
-        {"role": "user", "content": user_input},
-    ]
-    schemas = [tool.to_schema() for tool in tools]
-    by_name = {tool.name: tool for tool in tools}
-    turns = drive_turns(brain, by_name, schemas, messages, max_steps, approver)
+    turns = drive_turns(agent, user_input, Conversation())
     while True:
         try:
             next(turns)
@@ -62,87 +59,180 @@ def run(
 
 
 def drive_turns(
-    brain: Brain,
-    by_name: dict[str, Tool],
-    schemas: list[dict],
-    messages: list[dict],
-    max_steps: int,
-    approver: Approver | None = None,
+    agent: Agent, user_input: str, conversation: Conversation
 ) -> Generator[TextDelta, None, tuple[str, int | None]]:
-    """Run the think -> act -> observe loop over an existing messages list.
+    """Run one request through ``agent``, tracing it, and stream the reply.
 
-    A generator: yields ``TextDelta`` fragments of the assistant's speech as
-    the model produces them, and *returns* — via ``StopIteration.value`` — the
-    final text answer (or a notice if the step limit is hit) together with the
+    Yields ``TextDelta`` fragments of the assistant's speech as the model
+    produces them, and *returns* — via ``StopIteration.value`` — the final text
+    answer (or a notice if the step limit is hit) together with the
     conversation's context footprint in tokens: the server-reported total from
-    the turn's last model call, None if the server never said. Mutates
-    ``messages`` in place (appending assistant and tool turns). Shared by the
-    one-shot ``run()`` and the multi-turn ``Session`` so the loop logic lives
-    in exactly one place.
+    the turn's last model call, None if the server never said. Appends to
+    ``conversation`` as it goes, so an interrupted turn leaves the partial
+    history in place for the caller to roll back.
 
-    Display invariant: any reply text is always yielded as deltas *before*
-    being returned — a non-streaming Brain's answer and the step-limit notice
-    are synthesized into one delta each — so a renderer can print exactly what
-    it receives and never needs to decide whether the return value still needs
-    printing. Reasoning deltas are not re-yielded; they are traced live to
-    stderr here, beside [think]/[tool], and never reach stdout or history.
-
-    Tool calls the model batches into one turn are independent by definition,
-    so they execute concurrently — tools must therefore be thread-safe. Guarded
-    tools are approved first, in a sequential pre-pass, so an interactive
-    approver never faces concurrent prompts (see ``_run_tool_batch``).
+    Display invariant: any reply text is always yielded as deltas *before* being
+    returned — a provider that didn't stream its answer and the step-limit notice
+    are each synthesized into one delta — so a renderer can print exactly what it
+    receives. Reasoning is not re-yielded; it's traced live to stderr here,
+    beside [think]/[tool], and never reaches stdout. It *does* stay in history,
+    unlike under the old hand-rolled brains — the Anthropic API rejects a later
+    turn whose thinking blocks were altered, so the assistant turn is stored and
+    replayed verbatim.
     """
     context_tokens: int | None = None
-    for step in range(max_steps):
-        # Trace to stderr so you can *watch* the loop work (stdout stays clean);
-        # the [think] marker shows where each model roundtrip starts, making
-        # batched-vs-chained tool calling visible.
-        print(style.paint(f"  [think] step {step + 1}", style.DIM, sys.stderr), file=sys.stderr)
-        response, streamed_text = yield from _relay_think(brain.think(messages, tools=schemas))
-        # Each think sees the whole conversation, so the latest report is the
-        # current footprint; keep the previous one if a server omits usage.
-        if response.context_tokens is not None:
-            context_tokens = response.context_tokens
-        if response.truncated:
-            # Out of tokens mid-answer: say so on the watch channel rather
-            # than passing a silently amputated reply off as the model's
-            # chosen ending.
-            print(
-                style.paint(
-                    "  [note] the model ran out of tokens; this turn is cut off",
-                    style.YELLOW,
+    reply = ""
+    step = 0
+    turn_open = False
+    spoke_this_turn = False
+    # A turn's tool calls and results arrive *after* its TurnEnd, so they belong
+    # to the step that just ended rather than opening a new one — and the wait
+    # inside that phase is a tool running (or a human being asked to approve
+    # it), which must not be sat on top of by a spinner.
+    in_tool_phase = False
+    # Tool arguments arrive on the ToolCall event and are printed beside the
+    # result, which arrives later — hold them by id in between.
+    pending_args: dict[str, dict] = {}
+
+    events = stream_sync(agent, user_input, conversation=conversation)
+    reasoning = _ReasoningLine()
+    spinner = _Spinner()
+    try:
+        stream: Iterator = iter(events)
+        while True:
+            # Spin only while waiting on the model — the one stretch of true
+            # silence a step has.
+            if not turn_open and not in_tool_phase:
+                spinner.start()
+            try:
+                event = next(stream)
+            except StopIteration:
+                break
+            except MaxIterationsError:
+                # The runaway backstop. Say so on both channels: the model's
+                # answer is missing, and pretending otherwise would be a lie.
+                spinner.stop()
+                reasoning.close()
+                yield TextDelta(STEP_LIMIT_NOTICE)
+                return STEP_LIMIT_NOTICE, context_tokens
+            spinner.stop()
+
+            if not turn_open and isinstance(event, (ThinkingDelta, TextDelta, TurnEnd)):
+                turn_open = True
+                in_tool_phase = False
+                spoke_this_turn = False
+                step += 1
+                # The [think] marker shows where each model roundtrip starts,
+                # which makes batched-vs-chained tool calling visible.
+                print(
+                    style.paint(f"  [think] step {step}", style.DIM, sys.stderr),
+                    file=sys.stderr,
+                )
+
+            if isinstance(event, ThinkingDelta):
+                reasoning.write(event.text)
+            elif isinstance(event, TextDelta):
+                reasoning.close()
+                if event.text:
+                    spoke_this_turn = True
+                    yield event
+            elif isinstance(event, ToolCall):
+                in_tool_phase = True
+                if spoke_this_turn:
+                    # The model spoke *and* called tools: close the spoken line
+                    # so the tool trace doesn't glue onto it mid-line.
+                    spoke_this_turn = False
+                    yield TextDelta("\n")
+                pending_args[event.id] = event.input
+            elif isinstance(event, ToolResult):
+                marker = style.paint(
+                    f"  [tool] {event.name}",
+                    style.RED if event.is_error else style.CYAN,
                     sys.stderr,
-                ),
-                file=sys.stderr,
-            )
-        messages.append(response.message)  # OBSERVE: record what the model said
+                )
+                arguments = pending_args.pop(event.id, {})
+                print(f"{marker}({arguments}) -> {_shorten(event.content)}", file=sys.stderr)
+                # The next wait is the model's, so the spinner may resume.
+                in_tool_phase = False
+            elif isinstance(event, TurnEnd):
+                turn_open = False
+                reasoning.close()
+                footprint = _footprint(event.usage)
+                # Each turn sees the whole conversation, so the latest report is
+                # the current footprint; keep the previous one if a server omits
+                # usage entirely.
+                if footprint:
+                    context_tokens = footprint
+                if event.stop_reason == "max_tokens":
+                    # Out of tokens mid-answer: say so on the watch channel
+                    # rather than passing a silently amputated reply off as the
+                    # model's chosen ending.
+                    print(
+                        style.paint(
+                            "  [note] the model ran out of tokens; this turn is cut off",
+                            style.YELLOW,
+                            sys.stderr,
+                        ),
+                        file=sys.stderr,
+                    )
+            elif isinstance(event, RunEnd):
+                reply = event.result.text
+                if reply and not spoke_this_turn:
+                    # A provider that didn't stream its text still gets its
+                    # answer displayed — see the display invariant above.
+                    yield TextDelta(reply)
+    finally:
+        # Runs on normal end, on interrupt, and on generator close. Closing the
+        # stream is what cancels in-flight tools and tears down the provider
+        # connection when a caller walks away mid-turn.
+        spinner.stop()
+        reasoning.close()
+        events.close()
 
-        if not response.tool_calls:
-            if not streamed_text and response.text:
-                # A Brain that didn't stream its text (yielded only the final
-                # response) still gets its answer displayed — see the
-                # display invariant above.
-                yield TextDelta(response.text)
-            return response.text or "", context_tokens  # THINK said "done"
+    return reply, context_tokens
 
-        if streamed_text:
-            # The model spoke *and* called tools: close the spoken line so the
-            # tool trace that follows doesn't glue onto it mid-line.
-            yield TextDelta("\n")
 
-        # ACT: run the turn's tools, then feed each result back into history.
-        for call, result in _run_tool_batch(by_name, response.tool_calls, approver):
-            marker = style.paint(
-                f"  [tool] {call.name}",
-                style.RED if _looks_failed(result) else style.CYAN,
-                sys.stderr,
-            )
-            print(f"{marker}({call.arguments}) -> {_shorten(result)}", file=sys.stderr)
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+def _footprint(usage) -> int:
+    """The conversation's size in tokens, as the next request would see it.
 
-    notice = "(Stopped after hitting the step limit without a final answer.)"
-    yield TextDelta(notice)
-    return notice, context_tokens
+    Everything the model read this turn plus everything it wrote — the cached
+    parts included, since they still occupy the window.
+    """
+    return (
+        usage.input_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+        + usage.output_tokens
+    )
+
+
+class _ReasoningLine:
+    """The live ``[reason]`` line on stderr — Punk Records murmuring.
+
+    Opens on the first reasoning fragment and closes when the reply starts (or
+    the stream ends), so the trace reads as one line per turn even though it's
+    written as it's generated. Color opens once at the line start and resets
+    once at the close, not per fragment: a Ctrl-C landing mid-reasoning — the
+    likeliest interrupt point — would otherwise stain the whole terminal dim.
+    """
+
+    def __init__(self) -> None:
+        self._open = False
+        self._reset = ""
+
+    def write(self, text: str) -> None:
+        if not self._open:
+            self._reset = style.RESET if style.enabled(sys.stderr) else ""
+            open_code = style.DIM + style.MAGENTA if self._reset else ""
+            print(f"{open_code}  [reason] ", end="", file=sys.stderr, flush=True)
+            self._open = True
+        print(text, end="", file=sys.stderr, flush=True)
+
+    def close(self) -> None:
+        """Close the line if it's open. Idempotent, so callers needn't check."""
+        if self._open:
+            self._open = False
+            print(self._reset, file=sys.stderr)
 
 
 class _Spinner:
@@ -163,8 +253,9 @@ class _Spinner:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if not sys.stderr.isatty():
+        if not sys.stderr.isatty() or self._thread is not None:
             return
+        self._stop.clear()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
@@ -192,22 +283,6 @@ class _Spinner:
             print("\r\x1b[K", end="", file=sys.stderr, flush=True)
 
 
-def _looks_failed(result: str) -> bool:
-    """Display-only guess at whether a tool result reports a failed step, so it
-    can pop red in the trace. Matches every failure string this module's own
-    producers emit: ``_run_tool`` ("Error…"), ``DENIED``, ``NO_GATE``
-    ("Blocked…"), ``_unknown_tool`` ("No tool named…"), and ``_missing_args``
-    ("<name> is missing required argument(s)…"). A decline *with feedback*
-    ("The user declined…") deliberately stays un-red — that's a steer, not a
-    failure. A successful result that merely starts with "Error" (a tool
-    echoing a log) false-positives red; accepted, since this only tints the
-    trace and the result fed back to the model is untouched.
-    """
-    return result.startswith(("Error", "Denied", "Blocked", "No tool named")) or (
-        "is missing required argument(s)" in result
-    )
-
-
 def _shorten(result: str, limit: int = 200) -> str:
     """Trim a tool result for the trace — display only; the model always gets
     the full result (capped separately by config.output_char_cap).
@@ -220,180 +295,3 @@ def _shorten(result: str, limit: int = 200) -> str:
     if extra <= 0:
         return result
     return f"{result[:limit]}… (+{extra:,} more char{'s' if extra != 1 else ''})"
-
-
-def _relay_think(
-    events: Iterator[ThinkEvent],
-) -> Generator[TextDelta, None, tuple[BrainResponse, bool]]:
-    """Consume one ``think`` stream: trace reasoning deltas live to stderr,
-    re-yield text deltas to the caller, and return the final response plus
-    whether any text was re-yielded.
-
-    The [reason] line opens on the first reasoning fragment and closes when
-    the reply starts (or the stream ends), so the live trace reads exactly
-    like the old one-line-per-turn version — just written as it's generated.
-
-    Color is opened once at the line start and reset once at the line close
-    (not per fragment): the close lives in a ``finally`` because a Ctrl-C
-    landing mid-reasoning — the likeliest interrupt point, blocked in the
-    model read — would otherwise leave the whole terminal stained dim.
-    """
-    response: BrainResponse | None = None
-    streamed_text = False
-    reasoning_open = False
-    # What closes the [reason] line; captured at open time so color-disabled
-    # output stays byte-identical to the plain prints it replaced.
-    reset = ""
-    # Spin while the model chews on the prompt — the wait before its first
-    # event is the one stretch of true silence a step has.
-    spinner = _Spinner()
-    spinner.start()
-    try:
-        for event in events:
-            spinner.stop()  # first event arrived; idempotent on later ones
-            if isinstance(event, ReasoningDelta):
-                if not reasoning_open:
-                    # Punk Records murmuring: dim magenta opens here and stays
-                    # open across the raw deltas until the line-closing RESET.
-                    reset = style.RESET if style.enabled(sys.stderr) else ""
-                    open_code = style.DIM + style.MAGENTA if reset else ""
-                    print(f"{open_code}  [reason] ", end="", file=sys.stderr, flush=True)
-                    reasoning_open = True
-                print(event.text, end="", file=sys.stderr, flush=True)
-            elif isinstance(event, TextDelta):
-                if reasoning_open:
-                    print(reset, file=sys.stderr)
-                    reasoning_open = False
-                if event.text:
-                    streamed_text = True
-                    yield event
-            elif isinstance(event, BrainResponse):
-                response = event
-    finally:
-        # Runs on normal stream end, on interrupt, and on generator close —
-        # a GeneratorExit always lands at a yield, where the line is already
-        # closed, so this never emits spurious output during a close().
-        spinner.stop()  # covers dying before the first event ever arrived
-        if reasoning_open:
-            print(reset, file=sys.stderr)
-    if response is None:
-        # A Brain that ends without its final event is a broken contract, not
-        # a condition to paper over — fail loudly.
-        raise RuntimeError("Brain.think() stream ended without a final BrainResponse")
-    return response, streamed_text
-
-
-def _run_tool_batch(
-    by_name: dict[str, Tool], calls: list[ToolCall], approver: Approver | None = None
-) -> list[tuple[ToolCall, str]]:
-    """Gate guarded calls, then run the approved ones — concurrently when there
-    is more than one.
-
-    Gating is a *sequential* pre-pass (in call order) so an interactive approver
-    never faces concurrent stdin prompts; only the actual running is concurrent.
-    Read-only tools always run; an unknown tool name short-circuits to a
-    corrective message naming the real tools. A guarded tool runs only if an
-    approver says yes; if the user declines it short-circuits to ``DENIED`` — or
-    to their own steer when they decline *with feedback*, fed back as the result
-    so a decline can redirect rather than dead-end. If no approver is wired at all
-    it short-circuits to ``NO_GATE`` — fail-closed, so a guarded tool never runs
-    silently. Results stay keyed to the original call order, so the tool messages
-    always line up with the assistant's tool_calls.
-    """
-    # Pre-pass: decide each call up front, in order, splitting into what runs
-    # and what's blocked (with the reason fed back to the model).
-    results: dict[int, str] = {}
-    runnable: list[tuple[int, ToolCall]] = []
-    for i, call in enumerate(calls):
-        tool = by_name.get(call.name)
-        if tool is None:
-            results[i] = _unknown_tool(call.name, by_name)  # name the real tools so it can recover
-        elif not tool.guarded:
-            runnable.append((i, call))  # read-only — runs freely
-        elif approver is None:
-            results[i] = NO_GATE  # guarded, but nothing here can approve it
-        else:
-            decision: Decision = approver.approve(call.name, call.arguments)
-            if decision.allow:
-                runnable.append((i, call))
-            elif decision.feedback:
-                results[i] = _denied_with_feedback(decision.feedback)  # decline + steer
-            else:
-                results[i] = DENIED
-
-    if len(runnable) == 1:
-        i, call = runnable[0]
-        results[i] = _run_tool(by_name.get(call.name), call.name, call.arguments)
-    elif len(runnable) > 1:
-        # Not a `with` block: its exit joins the workers, which would stall a
-        # Ctrl-C until every in-flight tool finished.
-        pool = ThreadPoolExecutor(max_workers=min(len(runnable), 8))
-        try:
-            futures = {
-                i: pool.submit(_run_tool, by_name.get(call.name), call.name, call.arguments)
-                for i, call in runnable
-            }
-            # _run_tool turns normal exceptions into error strings, so .result()
-            # only re-raises interrupts (KeyboardInterrupt/SystemExit).
-            for i, future in futures.items():
-                results[i] = future.result()
-        except BaseException:
-            # Interrupted mid-batch: drop queued tools and stop waiting for running
-            # ones (they can't be force-killed; they finish ignored) so the
-            # interrupt reaches the caller promptly.
-            pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        pool.shutdown()
-
-    return [(call, results[i]) for i, call in enumerate(calls)]
-
-
-def _denied_with_feedback(feedback: str) -> str:
-    """Frame the user's steer as an imperative tool result — the channel this
-    model acts on — so declining a call redirects it instead of dead-ending."""
-    return (
-        f"The user declined this tool and said: {feedback}\n"
-        "Do that instead — don't retry the same call."
-    )
-
-
-def _unknown_tool(name: str, by_name: dict[str, Tool]) -> str:
-    """Feedback for a tool name the model invented: name the real tools so it can
-    recover, rather than the call silently doing nothing."""
-    available = ", ".join(sorted(by_name)) or "(none registered)"
-    return (
-        f"No tool named {name!r}. Available tools: {available}. "
-        "Call one of these, or answer the user directly without a tool."
-    )
-
-
-def _missing_args(name: str, tool: Tool, missing: list[str]) -> str:
-    """Feedback for required arguments the model left out: name them (with types,
-    from the derived schema) and ask for a corrected retry."""
-    props = tool.parameters.get("properties", {})
-    listed = ", ".join(f'"{p}" ({props.get(p, {}).get("type", "string")})' for p in missing)
-    return (
-        f"{name} is missing required argument(s): {listed}. "
-        f"Call {name} again with every required argument."
-    )
-
-
-def _run_tool(tool: Tool | None, name: str, arguments: dict) -> str:
-    """Run a tool, turning any failure into a message the model can react to.
-
-    Tools are a boundary we don't fully control (bad args, bugs, missing
-    hardware), so a failure must never crash the loop — we feed the error back
-    as the tool's result and let the model recover. Before running, a missing
-    required argument short-circuits to corrective guidance (extra keys are
-    tolerated — the @tool wrapper drops them), so a slightly-off call from a
-    small model becomes a retry signal instead of an opaque TypeError.
-    """
-    if tool is None:
-        return f"Error: no tool named {name!r}."  # unknown names are caught earlier; defensive
-    missing = [p for p in tool.parameters.get("required", []) if p not in arguments]
-    if missing:
-        return _missing_args(name, tool, missing)
-    try:
-        return tool.run(arguments)
-    except Exception as exc:  # noqa: BLE001 — boundary: surface it, don't crash
-        return f"Error running {name}: {exc}"

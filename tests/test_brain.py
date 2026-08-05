@@ -22,6 +22,7 @@ from vegapunk.brain import (
     TextDelta,
     create_brain,
     final_response,
+    parse_model_spec,
 )
 from vegapunk.config import config
 
@@ -348,6 +349,34 @@ def test_create_brain_builds_the_local_provider():
 def test_create_brain_rejects_an_unknown_provider_by_name():
     with pytest.raises(ValueError, match="martian"):
         create_brain("martian")
+
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("local", ("local", "")),
+        ("claude", ("claude", "")),
+        ("claude:opus", ("claude", "opus")),
+        ("  Claude:Opus  ", ("claude", "Opus")),  # provider case-folds; model doesn't
+    ],
+)
+def test_parse_model_spec_splits_provider_and_model(spec, expected):
+    assert parse_model_spec(spec) == expected
+
+
+@pytest.mark.parametrize(
+    "spec, message",
+    [
+        ("gpt5", "Unknown provider"),
+        ("", "Unknown provider"),
+        ("local:qwen", "Only claude takes a model name"),  # local's model is VEGAPUNK_MODEL
+    ],
+)
+def test_parse_model_spec_refuses_nonsense(spec, message):
+    # Refused where it's typed — otherwise a typo in VEGAPUNK_SCHEDULER_MODEL or
+    # --model would only surface as every scheduled run failing later.
+    with pytest.raises(ValueError, match=message):
+        parse_model_spec(spec)
 
 
 def test_dmr_brain_identity_comes_from_its_config():

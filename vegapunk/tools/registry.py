@@ -1,61 +1,57 @@
-"""The ``@tool`` decorator and the tool registry.
+"""The ``@tool`` decorator and the guarded-tool registry.
 
 Write a normal, type-hinted function with a docstring, put ``@tool`` on it, and
-it becomes a Tool the model can call:
+it becomes a tool the model can call:
 
     @tool
     def get_weather(city: str) -> str:
-        '''Look up the current weather for a city.'''
+        '''Look up the current weather for a city.
+
+        Args:
+            city: The city to look up.
+        '''
         ...
 
-The name comes from the function, the description from the docstring, and the
-input schema is *derived from the type hints* — no JSON Schema written by hand,
-no manual registration.
+The name comes from the function, the description from the docstring's summary,
+the per-parameter descriptions from its ``Args:`` block, and the input schema is
+derived from the type hints — no JSON Schema written by hand.
 
-A side-effecting tool marks itself for the approval gate with ``@tool(guarded=True)``;
-read-only tools keep the bare ``@tool``.
+The schema work is logpose's; this module adds the one thing logpose has no
+concept of, because it is Vegapunk's policy rather than the model's business:
+which tools need a human's approval before they run. ``@tool(guarded=True)``
+records the name in ``GUARDED``, which ``vegapunk.gate`` consults; read-only
+tools keep the bare ``@tool``.
 """
 
 from __future__ import annotations
 
-import inspect
-from typing import Callable, get_type_hints
+from typing import Any, Callable, overload
 
-from .base import Tool
+from logpose import ToolDef
+from logpose import tool as _logpose_tool
 
-# Every @tool-decorated function lands here. ``tools/__init__.py`` exposes this
-# list as ALL_TOOLS once the tool modules have been imported.
-REGISTRY: list[Tool] = []
+# Names of tools that must not run without approval. A set of names rather than
+# a flag on the tool because logpose's ToolDef is the model's view of a tool —
+# the gate is ours, and the model never sees it.
+GUARDED: set[str] = set()
 
-# How Python type hints map to JSON Schema types.
-_JSON_TYPES: dict[type, str] = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    list: "array",
-    dict: "object",
-}
+# Every @tool-decorated function lands here, in definition order.
+# ``tools/__init__.py`` exposes it as ALL_TOOLS once the tool modules have been
+# imported. Order is preserved rather than sorted: appending a tool then leaves
+# the preceding request bytes untouched, which keeps prompt caching intact.
+REGISTRY: list[ToolDef] = []
 
 
-def _build_parameters(func: Callable) -> dict:
-    """Derive a JSON-Schema 'parameters' object from a function's signature."""
-    signature = inspect.signature(func)
-    hints = get_type_hints(func)
-
-    properties: dict = {}
-    required: list[str] = []
-    for name, param in signature.parameters.items():
-        hint = hints.get(name, str)  # treat unannotated params as strings
-        properties[name] = {"type": _JSON_TYPES.get(hint, "string")}
-        if param.default is inspect.Parameter.empty:
-            required.append(name)  # no default -> the model must supply it
-
-    return {"type": "object", "properties": properties, "required": required}
+@overload
+def tool(func: Callable[..., Any], /) -> ToolDef: ...
 
 
-def tool(func: Callable[..., str] | None = None, *, guarded: bool = False):
-    """Register a function as a Tool and return it unchanged (still callable).
+@overload
+def tool(*, guarded: bool = ...) -> Callable[[Callable[..., Any]], ToolDef]: ...
+
+
+def tool(func: Callable[..., Any] | None = None, /, *, guarded: bool = False) -> Any:
+    """Register a function as a tool and return its ``ToolDef``.
 
     Works both bare and parameterized::
 
@@ -64,29 +60,16 @@ def tool(func: Callable[..., str] | None = None, *, guarded: bool = False):
 
         @tool(guarded=True)      # side-effecting, needs approval
         def write_file(path: str, content: str) -> str: ...
+
+    The returned ``ToolDef`` is still an ordinary callable, so the function can
+    be called directly from other code and from tests.
     """
 
-    def decorate(fn: Callable[..., str]) -> Callable[..., str]:
-        valid_params = set(inspect.signature(fn).parameters)
+    def decorate(fn: Callable[..., Any]) -> ToolDef:
+        tool_def = _logpose_tool(fn)
+        if guarded:
+            GUARDED.add(tool_def.name)
+        REGISTRY.append(tool_def)
+        return tool_def
 
-        def call(arguments: dict) -> str:
-            # The model hands us a dict; the author wrote a normal function with
-            # named params. Unpack into kwargs, ignoring any unexpected keys so a
-            # slightly-off model call doesn't blow up.
-            kwargs = {k: v for k, v in arguments.items() if k in valid_params}
-            return fn(**kwargs)
-
-        REGISTRY.append(
-            Tool(
-                name=fn.__name__,
-                description=inspect.getdoc(fn) or "",
-                parameters=_build_parameters(fn),
-                func=call,
-                guarded=guarded,
-            )
-        )
-        return fn
-
-    # Bare ``@tool``: func is the decorated function — register it now.
-    # Parameterized ``@tool(guarded=True)``: func is None — return the decorator.
     return decorate(func) if func is not None else decorate

@@ -2,7 +2,7 @@
 
 A scheduled task is just a *prompt* plus a repeat interval: "fetch this page and
 remember what changed" is a prompt that calls fetch_url then remember, run every
-N seconds by the REPL's background ticker rather than typed by a human. This
+N seconds by the scheduler worker rather than typed by a human. This
 module owns the ``scheduled_tasks`` table the same way ``memory`` owns ``memory``
 — every query to that table lives here, so the SQL and the row shape stay in one
 place.
@@ -15,7 +15,7 @@ runner).
 
 Everything here is best-effort against the database, mirroring ``memory``: a
 ``StoreError`` degrades to a stderr note and an empty/failure result rather than
-crashing the REPL or the background thread.
+crashing the REPL or the worker process.
 """
 
 from __future__ import annotations
@@ -28,8 +28,7 @@ from typing import TYPE_CHECKING, Callable
 from . import db
 
 if TYPE_CHECKING:
-    from .brain import Brain
-    from .tools.base import Tool
+    from logpose import Agent
 
 _HEX = frozenset("0123456789abcdef")
 
@@ -46,12 +45,11 @@ _COLUMNS = (
 # summary, bounded so one run can't bloat the row.
 _RESULT_CAP = 2000
 
-# Floor on a task's repeat interval. Scheduled runs share the one model and Turso
-# connection with the foreground, and each one is a full agent turn — tokens, tool
-# calls, and a model round-trip. A sub-minute cadence would have the ticker filling
-# every quiet moment with model work for little benefit, and would sit below the
-# poll cadence besides. Sixty seconds is the smallest interval that stays out of
-# the way; finer-grained polling belongs to a purpose-built watcher, not this.
+# Floor on a task's repeat interval. Each run is a full agent turn — tokens, tool
+# calls, and a model round-trip — against the same model server your own turns use,
+# so a sub-minute cadence would keep the worker busy for little benefit, and would
+# sit below the poll cadence besides. Sixty seconds is the smallest interval that
+# stays out of the way; finer-grained polling belongs to a purpose-built watcher.
 _MIN_INTERVAL_SECONDS = 60
 
 
@@ -158,7 +156,7 @@ def due_tasks(now: str | None = None) -> list[ScheduledTask]:
 
     ``now`` defaults to ``db.utcnow()``; it's a parameter so the ticker and tests
     can drive a fixed clock. Returns ``[]`` (with a stderr note) on a database
-    error — a failed read must not take the background thread down.
+    error — a failed read must not take the worker down.
     """
     stamp = now if now is not None else db.utcnow()
     try:
@@ -173,30 +171,30 @@ def due_tasks(now: str | None = None) -> list[ScheduledTask]:
     return [_row(r) for r in rows]
 
 
-def run_task(task: ScheduledTask, brain: Brain, tools: list[Tool]) -> str:
+def run_task(task: ScheduledTask, agent: Agent) -> str:
     """Run one due task's prompt to completion and record the outcome.
 
-    The prompt runs through the ordinary agent loop with **no approver**, which
-    is fail-closed by construction (see ``loop._run_tool_batch``): read-only
-    tools like ``fetch_url``/``search_web``/``recall``/``remember`` run
-    unattended, while guarded tools (``write_file``/``run_shell``) are
-    auto-blocked because no human is present to approve them. So a polling task
-    that fetches a page and remembers a fact runs fully; one that tries to write
-    the workspace is told it can't in this context and reports that back.
+    The agent is built with **no approver**, which is fail-closed by
+    construction (see ``gate.make_gate``): read-only tools like
+    ``fetch_url``/``search_web``/``recall``/``remember`` run unattended, while
+    guarded tools (``write_file``/``run_shell``) are auto-blocked because no
+    human is present to approve them. So a polling task that fetches a page and
+    remembers a fact runs fully; one that tries to write the workspace is told
+    it can't in this context and reports that back.
 
     Returns the run's result string (also stored on the row via ``record_run``).
     A failure inside the loop is caught here and recorded as an ``"error"`` run
-    rather than raised, mirroring ``loop._run_tool``'s boundary posture: the
-    ticker runs unattended, so one bad task must not take the thread — or its
-    sibling tasks — down. ``KeyboardInterrupt`` is *not* caught (it's not an
-    ``Exception``), so a Ctrl-C still propagates out to stop the process.
+    rather than raised, mirroring the tool boundary's posture: the worker runs
+    unattended, so one bad task must not take it — or the sibling tasks in the
+    same tick — down. ``KeyboardInterrupt`` is *not* caught (it's not an
+    ``Exception``), so a Ctrl-C still propagates out to stop the worker.
     """
     from . import loop  # lazy: avoids a scheduler <-> loop <-> tools import cycle
 
     try:
-        result = loop.run(brain, tools, task.prompt, approver=None)  # approver=None => fail-closed
+        result = loop.run(agent, task.prompt)
         status = "ok"
-    except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the thread
+    except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"
         status = "error"
     record_run(task, status, result)
@@ -214,7 +212,7 @@ def record_run(task: ScheduledTask, status: str, result: str, now: str | None = 
     a parameter for the same fixed-clock testability as ``due_tasks``.
 
     Best-effort: a ``StoreError`` degrades to a stderr note rather than raising,
-    so a failed bookkeeping write never takes the background thread down. (The
+    so a failed bookkeeping write never takes the worker down. (The
     task keeps its old ``next_run_at`` and is simply retried on a later tick.)
     """
     stamp = now if now is not None else db.utcnow()
@@ -229,93 +227,57 @@ def record_run(task: ScheduledTask, status: str, result: str, now: str | None = 
         print(f"  [scheduler] could not record run for {task.id[:8]}: {exc}", file=sys.stderr)
 
 
-# How often the background ticker wakes to look for due tasks, in seconds. This
+# How often the worker wakes to look for due tasks, in seconds. This
 # is the poll cadence, not a task's own interval: a task set to every 300s still
 # runs ~300s apart; this only bounds how soon after coming due it's noticed.
 _DEFAULT_POLL_SECONDS = 30.0
 
 
 class Scheduler:
-    """The REPL's background ticker: wakes on a fixed cadence and runs whatever
-    scheduled tasks have come due, in the same process as the interactive session.
+    """The ticker: wakes on a fixed cadence and runs whatever tasks have come due.
 
-    Serialization is the whole point of the shared ``lock``. Vegapunk runs one
-    model and one Turso connection; a background task turn and a foreground
-    (user-typed) turn must never touch either at the same time. The CLI guards
-    its own ``session.send`` with the very lock it hands here, so the two turn
-    kinds never overlap.
+    This runs in the ``vegapunk-scheduler`` worker process (see
+    ``scheduler_worker``), not in the REPL — which is the whole point. A
+    scheduled run can no longer share a turn with typed input, so there is no
+    lock here and nothing for either side to wait on: each process has its own
+    database connection (WAL plus a busy timeout lets them interleave) and its
+    own model client, and a due task simply runs while you type. It also means a
+    task's ``[think]``/``[tool]`` trace goes to the worker's log instead of
+    landing on top of your prompt.
 
-    The two directions are deliberately *not* symmetric. The ticker never queues
-    behind you: it takes the lock without blocking and skips the tick outright if
-    a typed turn holds it, leaving the tasks due for a later poll — a background
-    job should wait for a quiet moment, not sit in line ahead of your next turn.
-    The lock is also released between tasks, so a user turn waits out at most the
-    single task in flight rather than the whole due batch.
+    The cost of that separation, deliberately accepted: the worker holds the
+    agent it was built with, so a live ``/model`` swap in the REPL does not reach
+    scheduled runs (they follow ``VEGAPUNK_SCHEDULER_MODEL``, else the launch
+    config). That keeps an unattended ticker from silently following you onto a
+    billed provider.
 
-    That in-flight wait is the remaining wart: your turn can still block on a
-    task that has already started, because a model call in this process can't be
-    preempted. Fixing it properly means moving scheduled runs out of the REPL
-    process entirely, which the embedded driver forbids today (it takes an
-    exclusive file lock at connect time, so a second process can't open the
-    database at all).
-
-    The ticker is off until ``start`` and stops cleanly on ``stop`` (or, as a
-    daemon thread, when the process exits regardless). ``run_due_now`` is the
-    unit the ticker repeats, and is public so a test can drive it directly —
-    without the thread — for a deterministic check.
+    ``serve`` runs the poll loop in the calling thread — the worker process has
+    nothing else to do — until ``stop`` is set. ``run_due_now`` is the unit it
+    repeats, public so a test can drive exactly one tick.
     """
 
     def __init__(
         self,
-        brain_provider: Callable[[], Brain],
-        tools: list[Tool],
-        lock: threading.Lock,
+        agent_provider: Callable[[], Agent],
         poll_seconds: float = _DEFAULT_POLL_SECONDS,
+        stop: threading.Event | None = None,
     ) -> None:
-        # A provider, not a snapshot: /model swaps the session's brain mid-run,
-        # and a background task must follow that swap rather than run forever on
-        # the launch model. Called under the lock at each task's run time, so it
-        # reads the current brain the same instant a foreground turn would.
-        self._brain_provider = brain_provider
-        self._tools = tools
-        self._lock = lock
+        # A provider, not an Agent: resolved at each task's run time, which is
+        # the seam per-task model selection slots into later. The worker passes
+        # a closure over the one agent it built at startup.
+        self._agent_provider = agent_provider
         self._poll_seconds = poll_seconds
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        # Owned by the caller when supplied: the worker sets this from its signal
+        # handler and its parent-death watchdog, so shutdown has one channel.
+        self._stop = stop if stop is not None else threading.Event()
 
-    def start(self) -> None:
-        """Start the background ticker. Idempotent — a second call while already
-        running is a no-op, so the REPL can call it without tracking state."""
-        if self._thread is not None:
-            return
-        self._stop.clear()  # allow a restart after a previous stop()
-        self._thread = threading.Thread(
-            target=self._loop, name="vegapunk-scheduler", daemon=True
-        )
-        self._thread.start()
+    def serve(self) -> None:
+        """Poll for due tasks until stopped, in the calling thread.
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Signal the ticker to stop and wait up to ``timeout`` for it to finish.
-
-        Prompt when the thread is idle (parked on the poll) — the stop event wakes
-        it at once. If a task is mid-run the join waits up to ``timeout``; a task
-        that outlasts it is left to the daemon-thread reaper at interpreter exit
-        rather than hanging the REPL's shutdown. Idempotent — a no-op if never
-        started.
-        """
-        if self._thread is None:
-            return
-        self._stop.set()
-        self._thread.join(timeout)
-        self._thread = None
-
-    def _loop(self) -> None:
-        """Wait one poll interval, run due tasks, repeat until stopped.
-
-        Waits *before* the first tick, so nothing fires the instant the REPL
+        Waits *before* the first tick, so nothing fires the instant the worker
         launches. A ``run_due_now`` that raises unexpectedly is logged and the
-        loop continues: a background ticker must not die silently and leave the
-        session with no further scheduled runs and no hint why.
+        loop continues: the ticker must not die silently and leave the session
+        with no further scheduled runs and no hint why.
         """
         while not self._stop.wait(self._poll_seconds):
             try:
@@ -324,31 +286,13 @@ class Scheduler:
                 print(f"  [scheduler] tick failed: {exc}", file=sys.stderr)
 
     def run_due_now(self) -> None:
-        """Run every currently-due task once, each under the shared lock.
+        """Run every currently-due task once, oldest-due first.
 
-        Every acquisition is non-blocking: if a typed turn holds the lock, this
-        gives up rather than queueing, and the tasks — still due, since only
-        ``record_run`` advances a schedule — are picked up on a later tick. That
-        applies to the poll itself (the Turso connection is shared with the
-        foreground) and to each run, with the lock released between tasks so a
-        waiting user turn gets in at the seam. Bails out early once a stop has
-        been signaled, so shutdown never starts a fresh task turn.
+        Checks for a stop between tasks, so shutdown never starts a fresh task
+        turn — the one already in flight finishes, and the rest stay due (only
+        ``record_run`` advances a schedule) for the next worker to pick up.
         """
-        if not self._lock.acquire(blocking=False):
-            return  # a typed turn is mid-flight; look again next poll
-        try:
-            due = due_tasks()
-        finally:
-            self._lock.release()
-        for task in due:
+        for task in due_tasks():
             if self._stop.is_set():
                 return
-            if not self._lock.acquire(blocking=False):
-                return  # a turn started at the seam; the rest stay due
-            try:
-                # Read the live brain under the lock, the same instant a
-                # foreground turn would — so a /model swap is honored, not
-                # a launch-time snapshot.
-                run_task(task, self._brain_provider(), self._tools)
-            finally:
-                self._lock.release()
+            run_task(task, self._agent_provider())

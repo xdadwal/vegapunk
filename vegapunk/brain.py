@@ -1,4 +1,11 @@
-"""The Brain — Vegapunk's swappable model layer.
+"""The Brain — Vegapunk's swappable model layer. PARKED: nothing imports this.
+
+The live path is ``vegapunk/backend.py``. logpose owns the loop and the provider
+layer now, so ``DMRBrain``'s hand-rolled stream assembly and ``create_brain``'s
+selection both have replacements. This module stays in the tree only because
+``claude_brain`` subclasses ``Brain`` and reuses these event types, and that one
+is parked while logpose's Anthropic provider proves out — see the note there.
+The two are deleted together.
 
 ``Brain`` is the only place that knows how to talk to an LLM. The loop, the
 tools, and the CLI depend on this small interface rather than on any specific
@@ -133,6 +140,28 @@ def create_brain(provider: str, cfg: Config = config) -> Brain:
 
         return ClaudeBrain(cfg)
     raise ValueError(f"Unknown provider {provider!r} — expected 'local' or 'claude'.")
+
+
+def parse_model_spec(spec: str) -> tuple[str, str]:
+    """Split a ``provider[:model]`` spec into ``(provider, model)``.
+
+    One spelling for every place a brain is named outside the live ``/model``
+    command — ``VEGAPUNK_SCHEDULER_MODEL`` today, ``/schedule add --model`` and
+    the ``schedule_task`` tool next — so ``claude:opus`` means the same thing
+    wherever it is written. ``model`` is ``""`` when the spec names only a
+    provider, which is what ``create_brain`` wants for "the account default".
+
+    Raises ``ValueError`` naming what was expected, so a typo is refused where
+    it is typed rather than failing every scheduled run afterwards.
+    """
+    provider, _, model = spec.strip().partition(":")
+    provider = provider.lower()
+    if provider not in ("local", "claude"):
+        raise ValueError(f"Unknown provider {provider!r} — expected 'local' or 'claude'.")
+    model = model.strip()
+    if model and provider != "claude":
+        raise ValueError(f"Only claude takes a model name — got {spec!r} (try 'claude:opus').")
+    return provider, model
 
 
 class DMRBrain(Brain):

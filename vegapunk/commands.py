@@ -13,8 +13,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
-from . import db, memory, scheduler, session_store, skills
-from .brain import create_brain
+from . import db, memory, scheduler, session_store, skills, transcript
+from .backend import create_backend, current_effort, with_effort
 from .config import config
 from .session import Session
 
@@ -123,49 +123,49 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
 def _model(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg:
         return CommandResult(
-            output=f"Active: {ctx.session.brain.model_label}\n"
+            output=f"Active: {ctx.session.model_label}\n"
             "Available: local (Docker Model Runner), claude [model] (Claude subscription)"
         )
     tokens = arg.split()
     provider = tokens[0].lower()
     model = tokens[1] if len(tokens) == 2 else ""
-    # Provider is validated here, not via create_brain's ValueError — that
+    # Provider is validated here, not via create_backend's ValueError — that
     # channel must stay free for real construction errors (e.g. a junk
     # VEGAPUNK_CLAUDE_EFFORT), which deserve their own message, not "Usage:".
     if len(tokens) > 2 or provider not in ("local", "claude") or (model and provider != "claude"):
         return CommandResult(output="Usage: /model [local|claude [model]]")
     cfg = replace(config, claude_model=model) if model else config
     try:
-        brain = create_brain(provider, cfg)
+        backend = create_backend(provider, cfg)
+        # Carry a /effort choice across claude→claude swaps (a claude→local→claude
+        # round trip loses it — the local backend has nowhere to hold it).
+        effort = current_effort(ctx.session.backend)
+        if effort and backend.supports_effort:
+            backend = with_effort(backend, effort)
     except ValueError as exc:
         return CommandResult(output=str(exc))
-    # Carry a /effort choice across claude→claude swaps (a claude→local→claude
-    # round trip loses it — the local brain has nowhere to hold it).
-    effort = getattr(ctx.session.brain, "effort", None)
-    if effort and hasattr(brain, "set_effort"):
-        brain.set_effort(effort)
-    ctx.session.swap_brain(brain)
+    ctx.session.swap_backend(backend)
     return CommandResult(
-        output=f"(model switched to {brain.model_label} — the conversation continues)"
+        output=f"(model switched to {backend.model_label} — the conversation continues)"
     )
 
 
 @command("effort", "Show or set Claude's effort: /effort [low|medium|high|xhigh|max]")
 def _effort(ctx: CommandContext, arg: str) -> CommandResult:
-    brain = ctx.session.brain
-    # Duck-typed on set_effort — commands.py never imports ClaudeBrain or the
-    # SDK (local-only setups don't pay that import). hasattr, not getattr on
-    # `effort`: a Claude brain at the SDK default legitimately has effort=None.
-    if not hasattr(brain, "set_effort"):
+    backend = ctx.session.backend
+    # Asked of the backend rather than duck-typed: a backend that takes no
+    # effort setting says so, which is a different thing from one that takes it
+    # and is currently unset.
+    if not backend.supports_effort:
         return CommandResult(
             output="(the local model has no effort setting — /model claude first)"
         )
     if not arg:
-        # None = unset; the SDK's documented default is "high".
-        current = brain.effort or "high (default)"
-        return CommandResult(output=f"Effort: {current}")
+        # Unset means we send no effort parameter at all, leaving the API on its
+        # own default rather than one we picked.
+        return CommandResult(output=f"Effort: {current_effort(backend) or 'the API default'}")
     try:
-        brain.set_effort(arg.lower())
+        ctx.session.set_effort(arg.lower())
     except ValueError as exc:
         return CommandResult(output=str(exc))  # names the valid levels
     return CommandResult(output=f"(effort set to {arg.lower()})")
@@ -201,11 +201,19 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
         return CommandResult(output=f"Could not load '{name}': {exc}")
-    ctx.session.restore(messages)
+    try:
+        ctx.session.restore(messages)
+    except ValueError as exc:
+        # A blob that got past the format check but still won't parse — a
+        # half-written row, or a block type this version doesn't know. Commands
+        # are dispatched outside the REPL's error handler, so an escaping
+        # exception would take the whole session down over one bad row.
+        return CommandResult(output=f"Could not resume '{name}': {exc}")
     ctx.current_name = name
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
-    turns = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
-    return CommandResult(output=f"Resumed '{name}' ({turns} turns).")
+    return CommandResult(
+        output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
+    )
 
 
 @command("sessions", "List recent conversations, or delete one: /sessions [forget <name>]")
@@ -336,29 +344,6 @@ def _oneline(text: str | None, cap: int = 200) -> str:
     return collapsed if len(collapsed) <= cap else collapsed[: cap - 1] + "…"
 
 
-def _recent_turns(messages: list[dict], limit: int) -> list[tuple[str, str | None]]:
-    """The last ``limit`` exchanges as ``(user_text, reply_text)`` pairs.
-
-    Pairs each user message with the assistant's next text reply; the system turn,
-    tool turns, and tool-call-only assistant turns (no content) are skipped. A
-    trailing user message with no reply yet pairs with ``None``.
-    """
-    turns: list[tuple[str, str | None]] = []
-    pending: str | None = None
-    for message in messages:
-        role, content = message.get("role"), message.get("content")
-        if role == "user":
-            if pending is not None:
-                turns.append((pending, None))
-            pending = content
-        elif role == "assistant" and content and pending is not None:
-            turns.append((pending, content))
-            pending = None
-    if pending is not None:
-        turns.append((pending, None))
-    return turns[-limit:]
-
-
 @command("history", "Show the last few turns of this conversation: /history [n]")
 def _history(ctx: CommandContext, arg: str) -> CommandResult:
     limit = 5
@@ -367,7 +352,7 @@ def _history(ctx: CommandContext, arg: str) -> CommandResult:
             limit = max(1, int(arg))
         except ValueError:
             return CommandResult(output="Usage: /history [n]  (n = number of turns, default 5)")
-    turns = _recent_turns(ctx.session.messages, limit)
+    turns = transcript.recent_turns(ctx.session.messages, limit)
     if not turns:
         return CommandResult(output="(no conversation yet)")
     lines = []

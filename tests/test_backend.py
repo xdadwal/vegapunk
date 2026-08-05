@@ -25,6 +25,17 @@ from vegapunk.backend import (
 from vegapunk.config import config
 
 
+def test_a_backend_can_spawn_a_second_independent_provider():
+    # The titling agent needs its own: two agents run on two event loops, and a
+    # provider's client belongs to whichever touched it first.
+    backend = create_backend("local")
+
+    spawned = backend.spawn_provider()
+
+    assert spawned is not backend.provider
+    assert spawned.model_default == backend.provider.model_default
+
+
 def test_local_resolves_the_docker_provider_from_config():
     cfg = replace(config, base_url="http://elsewhere:9999/v1", model="ai/qwen3", context_window=8192)
 
@@ -145,8 +156,9 @@ def test_a_bad_effort_level_in_the_environment_surfaces_from_create_backend():
 
 
 def test_switching_effort_keeps_the_same_provider_instance():
-    # /effort must not drop the provider's connection pool just to change a
-    # request parameter.
+    # Load-bearing, not an optimization: a provider's HTTP client binds to the
+    # event loop that first touched it, so handing /effort a *new* provider
+    # would strand the old client on a loop the session is about to close.
     backend = create_backend("claude")
 
     switched = with_effort(backend, "low")
@@ -187,49 +199,6 @@ def test_current_effort_ignores_an_unrecognized_extra():
     )
 
     assert current_effort(backend) == ""
-
-
-class _FakeProvider:
-    """A provider that records whether it was closed. Satisfies the protocol."""
-
-    name = "fake"
-    model_default = "fake-model"
-
-    def __init__(self, closeable: bool = True) -> None:
-        self.closed = False
-        if closeable:
-            self.aclose = self._aclose
-
-    async def _aclose(self) -> None:
-        self.closed = True
-
-    def stream(self, req):  # pragma: no cover - never called
-        raise AssertionError("the fake provider does not run")
-
-
-def _backend_for(provider) -> Backend:
-    return Backend(provider=provider, model_label="fake", context_window=0)
-
-
-def test_closing_a_backend_closes_its_provider():
-    # A /model swap has to close the old provider itself: an Agent built from
-    # an instance deliberately won't. Driven with asyncio.run rather than an
-    # async test, since the suite carries no async plugin.
-    import asyncio
-
-    provider = _FakeProvider()
-
-    asyncio.run(_backend_for(provider).aclose())
-
-    assert provider.closed is True
-
-
-def test_closing_a_backend_whose_provider_cannot_be_closed_is_a_no_op():
-    # aclose is optional on the protocol; a custom provider without one must
-    # not break the swap path.
-    import asyncio
-
-    asyncio.run(_backend_for(_FakeProvider(closeable=False)).aclose())
 
 
 # ---------------------------------------------------------------------------

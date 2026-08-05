@@ -1,128 +1,88 @@
 """Tests for the approval gate — deterministic, no model/network/stdin.
 
-The gate lives in ``loop._run_tool_batch``: guarded tools are approved in a
-sequential pre-pass, then approved tools run (concurrently when there's more
-than one) while denied ones short-circuit to a fixed message. We drive that
-function directly for precise control over order and denial, and exercise the
-``CLIApprover``'s arrow-key menu by feeding keystrokes through a prompt_toolkit
-pipe (a faked stdin gates the TTY check).
+Two halves. The gate itself (``vegapunk.gate``) is what logpose consults before
+running each tool the model asked for; it's a plain callable, so it's driven
+directly here for precise control over what's guarded and what the human said.
+The ``CLIApprover``'s arrow-key menu is exercised by feeding keystrokes through
+a prompt_toolkit pipe (a faked stdin gates the TTY check).
+
+What the gate must never do is fail open: a guarded tool with nobody to ask is
+blocked, not run.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from logpose import ToolGateResult, ToolUseBlock
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from vegapunk.approval import CLIApprover, Decision, ScriptedApprover
-from vegapunk.brain import ToolCall
-from vegapunk.loop import DENIED, NO_GATE, _run_tool_batch
-from vegapunk.tools.base import Tool
+from vegapunk.gate import DENIED, NO_GATE, make_gate
+from vegapunk.tools.registry import GUARDED
 
 
-def _tool(name: str, func, guarded: bool = False) -> Tool:
-    return Tool(
-        name=name,
-        description=name,
-        parameters={"type": "object", "properties": {}, "required": []},
-        func=func,
-        guarded=guarded,
-    )
+@pytest.fixture(autouse=True)
+def _guarded_names(monkeypatch):
+    """Guard exactly ``act`` and ``shell`` for these tests, nothing else."""
+    monkeypatch.setattr("vegapunk.gate.GUARDED", {"act", "shell"})
 
 
-def _call(call_id: str, name: str, args: dict | None = None) -> ToolCall:
-    return ToolCall(id=call_id, name=name, arguments=args or {})
+def _ask(approver, name: str, arguments: dict | None = None):
+    """Put one call to the gate and return its verdict."""
+    block = ToolUseBlock(id="c1", name=name, input=arguments or {})
+    return asyncio.run(make_gate(approver)(block))
 
 
-def test_unguarded_tool_runs_without_prompting():
-    # Approver would deny everything if asked — but it must never be asked.
+def test_an_unguarded_tool_is_never_put_to_the_gate():
+    # The approver would deny everything if asked — but it must never be asked.
     approver = ScriptedApprover(default=False)
-    results = _run_tool_batch({"safe": _tool("safe", lambda _a: "ran")}, [_call("c1", "safe")], approver)
 
-    assert results[0][1] == "ran"
-    assert approver.calls == []  # unguarded tool never consulted the gate
+    assert _ask(approver, "safe") is None  # None means "let it run"
+    assert approver.calls == []
 
 
-def test_guarded_tool_runs_when_approved():
+def test_a_guarded_tool_is_allowed_when_approved():
     approver = ScriptedApprover(default=True)
-    tool = _tool("act", lambda _a: "did it", guarded=True)
 
-    results = _run_tool_batch({"act": tool}, [_call("c1", "act", {"x": 1})], approver)
-
-    assert results[0][1] == "did it"
-    assert approver.calls == [("act", {"x": 1})]  # asked, with the real args
+    assert _ask(approver, "act", {"x": 1}) is None
+    assert approver.calls == [("act", {"x": 1})]  # asked, with the real arguments
 
 
-def test_guarded_tool_denied_returns_message_and_does_not_run():
-    ran: list[bool] = []
-
-    def record(_a: dict) -> str:
-        ran.append(True)
-        return "should not happen"
-
-    approver = ScriptedApprover(default=False)
-    results = _run_tool_batch({"act": _tool("act", record, guarded=True)}, [_call("c1", "act")], approver)
-
-    assert results[0][1] == DENIED
-    assert ran == []  # the tool's function was never invoked
+def test_a_declined_tool_is_told_not_to_retry():
+    assert _ask(ScriptedApprover(default=False), "act") == DENIED
 
 
-def test_guarded_tool_declined_with_feedback_steers_the_model():
-    # Declining *with feedback* must feed the user's steer back as the result —
-    # not the generic DENIED string — and still never run the tool.
-    ran: list[bool] = []
-
-    def record(_a: dict) -> str:
-        ran.append(True)
-        return "should not happen"
-
+def test_declining_with_feedback_steers_instead_of_denying():
+    # The user's steer replaces the generic denial, and is reported as a
+    # redirection rather than a failure — the model should act on it, not
+    # treat it as something that broke.
     approver = ScriptedApprover(decisions={"shell": Decision(allow=False, feedback="use rg")})
-    results = _run_tool_batch(
-        {"shell": _tool("shell", record, guarded=True)}, [_call("c1", "shell")], approver
-    )
 
-    assert ran == []
-    assert "use rg" in results[0][1]
-    assert results[0][1] != DENIED  # the steer replaced the generic denial
+    outcome = _ask(approver, "shell")
 
-
-def test_mixed_batch_preserves_call_order_with_selective_denial():
-    approver = ScriptedApprover(default=True, decisions={"write": False})
-    by_name = {
-        "write": _tool("write", lambda _a: "WROTE", guarded=True),  # guarded, denied
-        "read": _tool("read", lambda _a: "READ"),  # unguarded, runs freely
-        "shell": _tool("shell", lambda _a: "SHELL", guarded=True),  # guarded, approved
-    }
-    calls = [_call("c1", "write"), _call("c2", "read"), _call("c3", "shell")]
-
-    results = _run_tool_batch(by_name, calls, approver)
-
-    assert [c.id for c, _ in results] == ["c1", "c2", "c3"]  # order preserved
-    assert [r for _, r in results] == [DENIED, "READ", "SHELL"]
-    # Only the two guarded tools were ever put to the gate, in call order.
-    assert [name for name, _ in approver.calls] == ["write", "shell"]
+    assert isinstance(outcome, ToolGateResult)
+    assert "use rg" in outcome.content
+    assert outcome.content != DENIED
+    assert outcome.is_error is False
 
 
-def test_guarded_tool_without_approver_is_blocked():
-    # Fail-closed: a guarded tool with no approver wired must NOT run silently —
-    # it's blocked with a distinct message, and its function is never invoked.
-    ran: list[bool] = []
-
-    def record(_a: dict) -> str:
-        ran.append(True)
-        return "should not happen"
-
-    results = _run_tool_batch({"act": _tool("act", record, guarded=True)}, [_call("c1", "act")], approver=None)
-
-    assert results[0][1] == NO_GATE
-    assert ran == []
+def test_a_guarded_tool_without_an_approver_is_blocked():
+    # Fail-closed: this is what makes an unattended scheduled run safe.
+    assert _ask(None, "act") == NO_GATE
 
 
-def test_unguarded_tool_runs_without_approver():
-    # Read-only tools still run freely when no gate is wired (the FakeBrain
-    # session tests rely on this).
-    results = _run_tool_batch({"safe": _tool("safe", lambda _a: "ran")}, [_call("c1", "safe")], approver=None)
-    assert results[0][1] == "ran"
+def test_an_unguarded_tool_still_runs_without_an_approver():
+    # Read-only tools are the whole point of an unattended run.
+    assert _ask(None, "safe") is None
+
+
+def test_the_gate_reads_the_live_guarded_set():
+    # GUARDED is populated by @tool(guarded=True) at import time; the gate must
+    # consult it rather than a copy taken when it was built.
+    assert {"write_file", "edit_file", "run_shell"} <= GUARDED
 
 
 class _FakeStdin:

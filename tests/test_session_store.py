@@ -19,6 +19,7 @@ from vegapunk.session_store import (
     slugify,
     unique_name,
 )
+from tests.fake_provider import assistant_turn, tool_turns, user_turn
 
 
 def test_slugify_basic():
@@ -40,19 +41,15 @@ def test_slugify_caps_length():
 
 
 def test_save_load_round_trip():
-    msgs = [
-        {"role": "system", "content": "SYS"},
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "yo"},
-    ]
+    msgs = [user_turn("hi"), assistant_turn("yo")]
     save_session("demo", msgs)
     assert load_session("demo") == msgs
 
 
 def test_save_session_overwrites_in_place():
-    save_session("demo", [{"role": "user", "content": "one"}])
-    save_session("demo", [{"role": "user", "content": "two"}])
-    assert load_session("demo") == [{"role": "user", "content": "two"}]
+    save_session("demo", [user_turn("one")])
+    save_session("demo", [user_turn("two")])
+    assert load_session("demo") == [user_turn("two")]
     rows = list_sessions()
     assert len(rows) == 1  # still one row
     assert rows[0][0] == "demo" and rows[0][1] == 1
@@ -89,16 +86,36 @@ def test_delete_session_is_idempotent():
 
 
 def test_list_sessions_counts_user_turns():
-    save_session(
-        "a",
-        [
-            {"role": "user", "content": "x"},
-            {"role": "assistant", "content": "y"},
-            {"role": "user", "content": "z"},
-        ],
-    )
+    save_session("a", [user_turn("x"), assistant_turn("y"), user_turn("z")])
+
     rows = list_sessions()
+
     assert rows[0][0] == "a" and rows[0][1] == 2  # two user turns
+
+
+def test_tool_traffic_is_not_counted_as_a_turn():
+    # Tool results ride on `user` messages, so a naive count would report this
+    # one-turn conversation as two and make /sessions lie.
+    save_session("a", [user_turn("do it"), *tool_turns("x", "RESULT"), assistant_turn("done")])
+
+    assert list_sessions()[0][1] == 1
+
+
+def test_a_session_saved_by_an_older_vegapunk_is_refused_not_half_restored():
+    # The old shape was OpenAI-flavored (string content, system/tool roles), and
+    # there is no faithful conversion — the system prompt has moved out of the
+    # history entirely. Better a clear message than a mangled conversation.
+    save_session("legacy", [{"role": "system", "content": "SYS"}])
+
+    with pytest.raises(db.StoreError, match="older Vegapunk"):
+        load_session("legacy")
+
+
+def test_a_string_content_message_is_recognized_as_legacy():
+    save_session("legacy", [{"role": "user", "content": "plain string"}])
+
+    with pytest.raises(db.StoreError, match="older Vegapunk"):
+        load_session("legacy")
 
 
 def test_list_sessions_orders_by_recency_with_dates_and_limit():

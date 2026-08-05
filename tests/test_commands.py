@@ -1,21 +1,28 @@
 """Tests for the slash-command system and the session commands.
 
-Commands run against a real Session (with a no-op FakeBrain — they never call the
-model) and a tmp sessions dir.
+Commands run against a real Session over a scripted provider — they never call a
+model — and a tmp sessions dir.
 """
 
 from __future__ import annotations
 
 import pytest
-from test_session import FakeBrain  # sibling module (tests/ is on sys.path)
 
 from vegapunk import db, session_store
+from vegapunk.backend import Backend, current_effort
 from vegapunk.commands import CommandContext, dispatch
-from vegapunk.session import Session
+from tests.fake_provider import (
+    assistant_turn,
+    backend_for,
+    conversation,
+    session_for,
+    tool_turns,
+    user_turn,
+)
 
 
-def _ctx() -> CommandContext:
-    return CommandContext(session=Session(FakeBrain([]), tools=[], system_prompt="SYS"))
+def _ctx(**kwargs) -> CommandContext:
+    return CommandContext(session=session_for(**kwargs))
 
 
 def test_dispatch_returns_none_for_plain_text():
@@ -43,24 +50,18 @@ def test_exit_sets_exit_flag():
 def test_new_clears_history_and_unnames():
     ctx = _ctx()
     ctx.current_name = "old"
-    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "x"}])
+    ctx.session.restore([user_turn("x")])
 
     res = dispatch("/new", ctx)
 
     assert ctx.current_name is None
-    assert ctx.session.messages == [{"role": "system", "content": "SYS"}]
+    assert ctx.session.messages == []  # the system prompt was never a message
     assert "new conversation" in res.output
 
 
 def test_save_slugifies_and_persists():
     ctx = _ctx()
-    ctx.session.restore(
-        [
-            {"role": "system", "content": "SYS"},
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "yo"},
-        ]
-    )
+    ctx.session.restore([user_turn("hi"), assistant_turn("yo")])
 
     res = dispatch("/save My Demo", ctx)
 
@@ -76,7 +77,7 @@ def test_save_requires_a_name():
 
 def test_save_renames_dropping_the_old_file():
     ctx = _ctx()
-    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    ctx.session.restore([user_turn("hi")])
     dispatch("/save first", ctx)
     dispatch("/save second", ctx)
 
@@ -87,11 +88,11 @@ def test_save_renames_dropping_the_old_file():
 
 def test_save_refuses_to_clobber_a_different_session():
     ctx = _ctx()
-    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    ctx.session.restore([user_turn("hi")])
     dispatch("/save taken", ctx)
 
     other = _ctx()
-    other.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "yo"}])
+    other.session.restore([user_turn("yo")])
     res = dispatch("/save taken", other)
 
     assert "already exists" in res.output
@@ -99,13 +100,7 @@ def test_save_refuses_to_clobber_a_different_session():
 
 def test_load_resumes_and_reports_turns():
     ctx = _ctx()
-    ctx.session.restore(
-        [
-            {"role": "system", "content": "SYS"},
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "yo"},
-        ]
-    )
+    ctx.session.restore([user_turn("hi"), assistant_turn("yo")])
     dispatch("/save demo", ctx)
 
     fresh = _ctx()
@@ -113,7 +108,7 @@ def test_load_resumes_and_reports_turns():
 
     assert "Resumed 'demo' (1 turns)" in res.output
     assert fresh.current_name == "demo"
-    assert any(m.get("content") == "hi" for m in fresh.session.messages)
+    assert fresh.session.messages == [user_turn("hi"), assistant_turn("yo")]
 
 
 def test_load_missing_lists_what_exists():
@@ -152,7 +147,7 @@ def test_sessions_shows_recent_five_newest_first_with_timestamps():
 
 def test_sessions_forget_deletes_a_saved_conversation():
     ctx = _ctx()
-    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    ctx.session.restore([user_turn("hi")])
     dispatch("/save keeper", ctx)
     dispatch("/save goner", ctx)  # renames keeper -> goner (drops keeper)
     dispatch("/save keeper", _ctx())  # a separate session named keeper again
@@ -178,7 +173,7 @@ def test_sessions_bad_subcommand_shows_usage():
 
 def test_sessions_forget_active_clears_current_name():
     ctx = _ctx()
-    ctx.session.restore([{"role": "system", "content": "SYS"}, {"role": "user", "content": "hi"}])
+    ctx.session.restore([user_turn("hi")])
     dispatch("/save active-one", ctx)
     assert ctx.current_name == "active-one"
 
@@ -307,26 +302,17 @@ def test_help_lists_memory_and_backup():
     assert "/memory" in out and "/backup" in out
 
 
-def _convo(n: int) -> list[dict]:
-    """A conversation with n user/assistant turns (q0/a0 … q{n-1}/a{n-1})."""
-    msgs: list[dict] = [{"role": "system", "content": "SYS"}]
-    for i in range(n):
-        msgs.append({"role": "user", "content": f"q{i}"})
-        msgs.append({"role": "assistant", "content": f"a{i}"})
-    return msgs
-
-
-def test_history_shows_recent_turns_without_system():
+def test_history_shows_recent_turns():
     ctx = _ctx()
-    ctx.session.restore(_convo(3))
+    ctx.session.restore(conversation(3))
     out = dispatch("/history", ctx).output
     assert "q0" in out and "a0" in out and "q2" in out and "a2" in out
-    assert "SYS" not in out  # the system turn is not a conversation turn
+    assert "SYS" not in out  # the system prompt is not a conversation turn
 
 
 def test_history_caps_to_five_by_default():
     ctx = _ctx()
-    ctx.session.restore(_convo(8))  # q0..q7
+    ctx.session.restore(conversation(8))  # q0..q7
     out = dispatch("/history", ctx).output
     assert "q7" in out and "q3" in out  # last 5 turns kept (q3..q7)
     assert "q2" not in out  # older turns dropped
@@ -334,7 +320,7 @@ def test_history_caps_to_five_by_default():
 
 def test_history_accepts_a_count():
     ctx = _ctx()
-    ctx.session.restore(_convo(8))
+    ctx.session.restore(conversation(8))
     out = dispatch("/history 2", ctx).output
     assert "q7" in out and "q6" in out
     assert "q5" not in out
@@ -350,9 +336,7 @@ def test_history_rejects_a_non_numeric_count():
 
 def test_history_marks_unanswered_trailing_user():
     ctx = _ctx()
-    ctx.session.restore(
-        [{"role": "system", "content": "SYS"}, {"role": "user", "content": "still thinking?"}]
-    )
+    ctx.session.restore([user_turn("still thinking?")])
     out = dispatch("/history", ctx).output
     assert "still thinking?" in out
     assert "vega: …" in out  # no reply yet -> placeholder
@@ -360,29 +344,21 @@ def test_history_marks_unanswered_trailing_user():
 
 def test_history_count_larger_than_turns_shows_all():
     ctx = _ctx()
-    ctx.session.restore(_convo(2))
+    ctx.session.restore(conversation(2))
     out = dispatch("/history 50", ctx).output
     assert "q0" in out and "q1" in out  # both turns, no slice error
 
 
 def test_history_skips_tool_noise():
+    # A tool result rides on a `user` message, so /history has to tell the two
+    # apart or it prints the loop talking to itself as if it were the human.
     ctx = _ctx()
-    ctx.session.restore(
-        [
-            {"role": "system", "content": "SYS"},
-            {"role": "user", "content": "do it"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "RESULT"},
-            {"role": "assistant", "content": "done"},
-        ]
-    )
+    ctx.session.restore([user_turn("do it"), *tool_turns("x", "RESULT"), assistant_turn("done")])
+
     out = dispatch("/history", ctx).output
-    assert "do it" in out and "done" in out  # paired the user msg with its text reply
-    assert "RESULT" not in out  # the tool turn is not shown
+
+    assert "do it" in out and "done" in out
+    assert "RESULT" not in out
 
 
 def test_completer_offers_slash_commands_not_bare_keywords():
@@ -465,7 +441,7 @@ def test_load_clears_a_staged_skill(skills_home, tmp_path):
     # Staged state belongs to the conversation it was staged in — restoring a
     # different one must drop it, exactly like /new does.
     _write_skill(skills_home, "commit-message","body")
-    session_store.save_session("other", [{"role": "system", "content": "SYS"}])
+    session_store.save_session("other", [user_turn("earlier")])
     ctx = _ctx()
     dispatch("/skill commit-message", ctx)
     assert ctx.pending_skill is not None
@@ -495,34 +471,27 @@ def test_skill_staged_body_is_capped(skills_home, monkeypatch):
     assert "x" * 51 not in body
 
 
-class _StubBrain(FakeBrain):
-    """A FakeBrain with a fixed identity, standing in for a real provider."""
-
-    def __init__(self, label: str) -> None:
-        super().__init__([])
-        self._label = label
-
-    @property
-    def model_label(self) -> str:
-        return self._label
+def _claude_backend(label: str = "claude-opus-5") -> Backend:
+    """A stand-in for what create_backend returns for the claude provider."""
+    return backend_for(model_label=label, context_window=200_000, supports_effort=True)
 
 
 def test_model_without_arg_shows_the_active_model_and_choices():
     out = dispatch("/model", _ctx()).output
-    assert "Active: unknown-model" in out  # FakeBrain's default identity
+    assert "Active: unknown-model" in out  # the scripted backend's identity
     assert "local" in out
     assert "claude" in out
 
 
-def test_model_switches_the_live_brain_and_keeps_history(monkeypatch):
-    stub = _StubBrain("claude:test")
-    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider, cfg: stub)
+def test_model_switches_the_live_model_and_keeps_history(monkeypatch):
+    stub = _claude_backend("claude:test")
+    monkeypatch.setattr("vegapunk.commands.create_backend", lambda provider, cfg: stub)
     ctx = _ctx()
     before = ctx.session.messages
 
     res = dispatch("/model claude", ctx)
 
-    assert ctx.session.brain is stub
+    assert ctx.session.model_label == "claude:test"
     assert "claude:test" in res.output
     assert ctx.session.messages == before  # the conversation survived the swap
 
@@ -530,15 +499,15 @@ def test_model_switches_the_live_brain_and_keeps_history(monkeypatch):
 def test_model_with_unknown_provider_prints_usage(monkeypatch):
     calls: list = []
     monkeypatch.setattr(
-        "vegapunk.commands.create_brain", lambda provider, cfg: calls.append(provider)
+        "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
     )
     ctx = _ctx()
-    original = ctx.session.brain
+    original = ctx.session.model_label
 
     res = dispatch("/model martian", ctx)
 
     assert res.output == "Usage: /model [local|claude [model]]"
-    assert ctx.session.brain is original  # nothing swapped
+    assert ctx.session.model_label == original  # nothing swapped
     assert calls == []  # rejected before construction
 
 
@@ -547,9 +516,9 @@ def test_model_claude_with_a_name_overrides_the_configured_model(monkeypatch):
 
     def _record(provider, cfg):
         seen["provider"], seen["cfg"] = provider, cfg
-        return _StubBrain("claude:opus")
+        return _claude_backend("claude:opus")
 
-    monkeypatch.setattr("vegapunk.commands.create_brain", _record)
+    monkeypatch.setattr("vegapunk.commands.create_backend", _record)
     res = dispatch("/model claude opus", _ctx())
 
     assert seen["provider"] == "claude"
@@ -564,9 +533,9 @@ def test_model_claude_without_a_name_keeps_the_configured_default(monkeypatch):
 
     def _record(provider, cfg):
         seen["cfg"] = cfg
-        return _StubBrain("claude")
+        return _claude_backend()
 
-    monkeypatch.setattr("vegapunk.commands.create_brain", _record)
+    monkeypatch.setattr("vegapunk.commands.create_backend", _record)
     dispatch("/model claude", _ctx())
 
     assert seen["cfg"] is commands_config  # untouched: VEGAPUNK_CLAUDE_MODEL still rules
@@ -575,7 +544,7 @@ def test_model_claude_without_a_name_keeps_the_configured_default(monkeypatch):
 def test_model_rejects_a_model_name_for_local_and_extra_tokens(monkeypatch):
     calls: list = []
     monkeypatch.setattr(
-        "vegapunk.commands.create_brain", lambda provider, cfg: calls.append(provider)
+        "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
     )
     ctx = _ctx()
 
@@ -588,51 +557,43 @@ def test_model_surfaces_construction_errors_verbatim(monkeypatch):
     def _explode(provider, cfg):
         raise ValueError("Unknown effort level 'turbo' — expected one of: low, medium, high, xhigh, max.")
 
-    monkeypatch.setattr("vegapunk.commands.create_brain", _explode)
+    monkeypatch.setattr("vegapunk.commands.create_backend", _explode)
     res = dispatch("/model claude", _ctx())
 
     assert "Unknown effort level" in res.output  # a real error, not the usage line
 
 
-class _EffortStub(_StubBrain):
-    """A brain with the effort surface, standing in for ClaudeBrain."""
-
-    def __init__(self, label: str, effort: str | None = None) -> None:
-        super().__init__(label)
-        self.effort = effort
-
-    def set_effort(self, level: str) -> None:
-        self.effort = level
-
-
 def test_model_swap_carries_the_session_effort_choice(monkeypatch):
-    replacement = _EffortStub("claude:opus")
-    monkeypatch.setattr("vegapunk.commands.create_brain", lambda provider, cfg: replacement)
-    ctx = CommandContext(
-        session=Session(_EffortStub("claude", effort="xhigh"), tools=[], system_prompt="SYS")
+    monkeypatch.setattr(
+        "vegapunk.commands.create_backend", lambda provider, cfg: _claude_backend("claude:opus")
     )
+    ctx = _ctx(model_label="claude", supports_effort=True)
+    dispatch("/effort xhigh", ctx)
 
     dispatch("/model claude opus", ctx)
 
-    assert replacement.effort == "xhigh"  # /effort survived the model switch
+    assert current_effort(ctx.session.backend) == "xhigh"  # survived the switch
 
 
 def _effort_ctx(effort: str | None = None) -> CommandContext:
-    return CommandContext(
-        session=Session(_EffortStub("claude", effort=effort), tools=[], system_prompt="SYS")
-    )
+    ctx = _ctx(model_label="claude", supports_effort=True)
+    if effort:
+        dispatch(f"/effort {effort}", ctx)
+    return ctx
 
 
-def test_effort_on_the_local_brain_explains_it_is_unsupported():
-    ctx = _ctx()  # plain FakeBrain — no set_effort
+def test_effort_on_a_model_without_one_explains_it_is_unsupported():
+    ctx = _ctx()  # the scripted backend declares no effort setting
     for line in ("/effort", "/effort max"):
         assert dispatch(line, ctx).output == (
             "(the local model has no effort setting — /model claude first)"
         )
 
 
-def test_effort_bare_shows_the_sdk_default_when_unset():
-    assert dispatch("/effort", _effort_ctx()).output == "Effort: high (default)"
+def test_effort_bare_says_when_no_level_has_been_set():
+    # Unset means we send no effort parameter at all, so the API picks — naming
+    # a level here would be inventing one.
+    assert dispatch("/effort", _effort_ctx()).output == "Effort: the API default"
 
 
 def test_effort_bare_shows_the_current_level():
@@ -641,18 +602,16 @@ def test_effort_bare_shows_the_current_level():
 
 def test_effort_sets_the_level_case_insensitively():
     ctx = _effort_ctx()
+
     res = dispatch("/effort XHIGH", ctx)
-    assert ctx.session.brain.effort == "xhigh"
+
+    assert current_effort(ctx.session.backend) == "xhigh"
     assert res.output == "(effort set to xhigh)"
 
 
 def test_effort_rejects_unknown_levels_with_the_valid_list():
-    class _Picky(_EffortStub):
-        def set_effort(self, level: str) -> None:
-            raise ValueError("Unknown effort level 'turbo' — expected one of: low, medium, high, xhigh, max.")
+    out = dispatch("/effort turbo", _effort_ctx()).output
 
-    ctx = CommandContext(session=Session(_Picky("claude"), tools=[], system_prompt="SYS"))
-    out = dispatch("/effort turbo", ctx).output
     for level in ("low", "medium", "high", "xhigh", "max"):
         assert level in out
 
