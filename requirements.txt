@@ -1,3 +1,10 @@
+# The agentic loop: one provider-neutral loop, message model, and event stream,
+# so Vegapunk owns tools/memory/skills/approval and not the plumbing under them.
+# Pinned to a commit because it isn't on PyPI (the name there belongs to an
+# unrelated logging library) — bump the SHA deliberately, not by re-resolving.
+logpose @ git+https://github.com/xdadwal/logpose@77037f6
+# Still used by vegapunk/embedding.py against Docker Model Runner's /embeddings
+# endpoint; the chat path goes through logpose's providers instead.
 openai>=1.0
 # Subscription-billed Claude backend: official wrapper that bundles the
 # Claude Code CLI and speaks to it over a subprocess (auth via `claude /login`
