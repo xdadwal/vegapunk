@@ -189,9 +189,9 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
 | `VEGAPUNK_PROVIDER` | Model at launch: `local` (Docker Model Runner) or `claude` (Anthropic API); switch live with `/model` | `local` |
 | `VEGAPUNK_MAX_OUTPUT_TOKENS` | Ceiling on what the model may generate in one turn (thinking included) | `16000` |
-| `VEGAPUNK_CLAUDE_MODEL` | Claude model: a full id, or the short `opus`/`sonnet`/`haiku`; empty = the provider's default | (empty) |
+| `VEGAPUNK_CLAUDE_MODEL` | Claude model: a full id, or the short `opus`/`sonnet`/`fable`/`mythos`/`haiku`; empty = the provider's default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
-| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = send none and let the API decide; adjust live with `/effort` | (empty) |
+| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = send none and let the API decide; ignored on models without the setting; adjust live with `/effort` | (empty) |
 | `VEGAPUNK_SCHEDULER_MODEL` | Model for [scheduled tasks](#scheduled-tasks), as `provider[:model]` (e.g. `local`, `claude:opus`); empty = inherit `VEGAPUNK_PROVIDER`/`VEGAPUNK_CLAUDE_MODEL`. A live `/model` swap never reaches the worker | (empty) |
 | `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's Claude turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
 
@@ -251,10 +251,17 @@ API, which is not an officially supported integration** — it relies on undocum
 details and is at your own risk, including to your account. Set `ANTHROPIC_API_KEY` to
 use the supported path, which bills per token.
 
-Pick a model per switch (`/model claude opus` — the short names expand to full ids) and
-trade speed for reasoning depth with `/effort` (`low`|`medium`|`high`|`xhigh`|`max`, the
-API's own levels); both persist for the session, and a model switch keeps your effort
-choice.
+Pick a model per switch (`/model claude opus` — `opus`/`sonnet`/`fable`/`mythos`/`haiku`
+expand to full ids) and trade speed for reasoning depth with `/effort`
+(`low`|`medium`|`high`|`xhigh`|`max`, the API's own levels); both persist for the
+session, and a model switch keeps your effort choice.
+
+Effort is a per-model capability, not a Claude-wide one: the older families
+(`haiku`, `sonnet-4-5`, `opus-4-1`) reject the parameter, so `/effort` reports it as
+unsupported there instead of sending it, and those models are asked for no adaptive
+thinking. Switching models also drops the previous model's thinking from the history —
+another model's reasoning can't be replayed, and Claude rejects a turn carrying thinking
+blocks it never signed.
 
 > The previous subscription path — driving the bundled Claude Code CLI through
 > `claude-agent-sdk` — is parked in `vegapunk/claude_brain.py` rather than deleted, in

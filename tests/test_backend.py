@@ -92,7 +92,15 @@ def test_an_empty_claude_model_defers_to_the_provider_rather_than_naming_a_defau
 
 @pytest.mark.parametrize(
     ("alias", "expected"),
-    [("opus", "claude-opus-5"), ("sonnet", "claude-sonnet-5"), ("haiku", "claude-haiku-4-5")],
+    [
+        ("opus", "claude-opus-5"),
+        ("sonnet", "claude-sonnet-5"),
+        # Missing from the alias table meant `/model claude fable` went out as
+        # the literal word and came back 404 "model: fable".
+        ("fable", "claude-fable-5"),
+        ("mythos", "claude-mythos-5"),
+        ("haiku", "claude-haiku-4-5"),
+    ],
 )
 def test_short_model_names_expand_to_full_ids(alias, expected):
     # The Claude Code CLI took these; the raw Messages API does not, so an
@@ -175,6 +183,73 @@ def test_clearing_effort_removes_the_parameter():
 def test_local_declares_that_it_has_no_effort_setting():
     assert create_backend("local").supports_effort is False
     assert create_backend("claude").supports_effort is True
+
+
+# ---------------------------------------------------------------------------
+# per-model capabilities
+#
+# "claude" is not one model: the older families answer `output_config.effort`
+# and adaptive thinking with a 400 that kills the turn, so what a backend
+# advertises has to follow the model, not the provider.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model", ["haiku", "claude-sonnet-4-5-20250929", "claude-opus-4-1"])
+def test_a_model_that_cannot_take_effort_says_so_instead_of_sending_it(model):
+    cfg = replace(config, claude_model=model, claude_effort="high")
+
+    backend = create_backend("claude", cfg)
+
+    # The env var is dropped rather than sent: the API answers it with "This
+    # model does not support the effort parameter".
+    assert backend.supports_effort is False
+    assert backend.extra == {}
+
+
+def test_effort_on_such_a_model_is_refused_by_name():
+    backend = create_backend("claude", replace(config, claude_model="haiku"))
+
+    with pytest.raises(ValueError, match="claude-haiku-4-5 has no effort setting"):
+        with_effort(backend, "high")
+
+
+def test_a_junk_effort_level_is_still_named_even_on_a_model_without_effort():
+    # Validation of the *level* comes first: a typo in VEGAPUNK_CLAUDE_EFFORT is
+    # worth saying out loud whichever model is selected.
+    cfg = replace(config, claude_model="haiku", claude_effort="turbo")
+
+    with pytest.raises(ValueError, match="Unknown effort level"):
+        create_backend("claude", cfg)
+
+
+def test_opus_4_5_keeps_its_effort_setting():
+    # The odd one out: no adaptive thinking, but effort works.
+    cfg = replace(config, claude_model="claude-opus-4-5", claude_effort="high")
+
+    backend = create_backend("claude", cfg)
+
+    assert backend.supports_effort is True
+    assert backend.extra == {"output_config": {"effort": "high"}}
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-5", "haiku", "claude-sonnet-4-5"])
+def test_models_without_adaptive_thinking_are_asked_for_none(model):
+    # logpose requests adaptive thinking by default, which these answer with
+    # "adaptive thinking is not supported on this model" — every turn, so the
+    # model is unusable until the parameter is left off.
+    backend = create_backend("claude", replace(config, claude_model=model))
+
+    assert backend.provider._thinking is None
+
+
+@pytest.mark.parametrize("model", ["", "opus", "fable", "claude-sonnet-4-6", "claude-whatever-9"])
+def test_current_models_still_get_adaptive_thinking(model):
+    # Unknown ids count as current, so a newly released model works here
+    # without a code change.
+    backend = create_backend("claude", replace(config, claude_model=model))
+
+    assert backend.provider._thinking == {"type": "adaptive", "display": "summarized"}
+    assert backend.supports_effort is True
 
 
 def test_setting_effort_on_local_is_refused_rather_than_sent():

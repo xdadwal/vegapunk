@@ -157,8 +157,11 @@ def _effort(ctx: CommandContext, arg: str) -> CommandResult:
     # effort setting says so, which is a different thing from one that takes it
     # and is currently unset.
     if not backend.supports_effort:
+        # Names the live model: it's no longer only the local one that has no
+        # effort setting — the older Claude models 400 on the parameter too.
         return CommandResult(
-            output="(the local model has no effort setting — /model claude first)"
+            output=f"({backend.model_label} has no effort setting — "
+            "switch to a model that has one, e.g. /model claude opus)"
         )
     if not arg:
         # Unset means we send no effort parameter at all, leaving the API on its
