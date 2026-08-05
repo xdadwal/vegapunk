@@ -22,8 +22,16 @@ class Config:
     model: str = os.getenv("VEGAPUNK_MODEL", "docker.io/gemma4:latest")
 
     # The OpenAI client insists on *some* key string; a local DMR server
-    # ignores it, so a placeholder is fine.
+    # ignores it, so a placeholder is fine. Only the embeddings call uses this
+    # now — the chat path goes through logpose, which deliberately sends no
+    # credential to a local model runner.
     api_key: str = os.getenv("VEGAPUNK_API_KEY", "not-needed")
+
+    # Ceiling on what the model may generate in one turn (thinking included).
+    # Declared here because the providers' own defaults are low enough to cut a
+    # long answer off mid-sentence; 16k is the working budget, not a safety
+    # limit — the runaway backstop is max_steps below.
+    max_output_tokens: int = int(os.getenv("VEGAPUNK_MAX_OUTPUT_TOKENS", "16000"))
 
     # The root the filesystem and shell tools are confined to. Defaults to the
     # directory Vegapunk was launched in, so it operates on the project you're
@@ -59,17 +67,19 @@ class Config:
     # with /model; this only sets the default at launch.
     provider: str = os.getenv("VEGAPUNK_PROVIDER", "local")
 
-    # Claude model override (e.g. "sonnet", "opus", or a full model id).
-    # Empty means whatever the Claude Code account is configured to use.
+    # Claude model override: a full model id (e.g. "claude-opus-5"), or the
+    # short "opus"/"sonnet"/"haiku", which backend.py expands. Empty means
+    # whatever the Anthropic provider defaults to.
     claude_model: str = os.getenv("VEGAPUNK_CLAUDE_MODEL", "")
 
     # Claude's context window (tokens), for the toolbar gauge — same role as
     # context_window above but for the claude provider.
     claude_context_window: int = int(os.getenv("VEGAPUNK_CLAUDE_CONTEXT_WINDOW", "200000"))
 
-    # Claude's effort level: low|medium|high|xhigh|max. Empty means the SDK
-    # default ("high"). Adjust live with /effort. Validated by ClaudeBrain,
-    # not here — config must not import the SDK (local-only setups never do).
+    # Claude's effort level: low|medium|high|xhigh|max — how much the model may
+    # think and do per turn. Empty means the API's own default. Adjust live with
+    # /effort. Validated in backend.py, not here, so a bad value arrives as a
+    # message rather than an import-time crash.
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
     # The embedded database holding sessions, long-term memory, and REPL input
