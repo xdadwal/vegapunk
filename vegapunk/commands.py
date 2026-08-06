@@ -17,7 +17,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import db, memory, menu, scheduler, session_store, skills, transcript
+from . import db, menu, scheduler, session_store, skills, transcript
 from .backend import (
     ALIASES,
     EFFORT_LEVELS,
@@ -462,24 +462,6 @@ def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     return _resume(ctx, arg)
 
 
-@command("memory", "List or remove remembered facts: /memory [list | remove <id>]")
-def _memory(ctx: CommandContext, arg: str) -> CommandResult:
-    sub, _, rest = arg.partition(" ")
-    sub = sub.strip().lower()
-    if sub in ("", "list"):
-        rows = memory.list_memory()
-        if not rows:
-            return CommandResult(output="(nothing remembered yet)")
-        lines = [f"  {m.id[:8]}  {m.created_at[:10]}  {_oneline(m.content)}" for m in rows]
-        return CommandResult(output="\n".join(lines))
-    if sub == "remove":
-        result = memory.forget_memory(rest)
-        if result.startswith("Forgot:"):
-            result = result.replace("Forgot:", "Removed:", 1) + " (the system prompt updates next session)"
-        return CommandResult(output=result)
-    return CommandResult(output="Usage: /memory [list | remove <id>]")
-
-
 def _format_tasks() -> str:
     tasks = scheduler.list_tasks()
     if not tasks:
@@ -518,15 +500,6 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
     if sub == "remove":
         return CommandResult(output=scheduler.remove_task(rest))
     return CommandResult(output="Usage: /schedule [list | add <seconds> <prompt> | remove <id>]")
-
-
-@command("backup", "Snapshot the database: /backup")
-def _backup(ctx: CommandContext, arg: str) -> CommandResult:
-    try:
-        path = db.backup_now()
-    except db.StoreError as exc:
-        return CommandResult(output=f"Backup failed: {exc}")
-    return CommandResult(output=f"Backed up to {path}")
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")

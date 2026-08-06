@@ -35,7 +35,6 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 # Sub-commands that take a fixed vocabulary of their own.
 _SUBCOMMANDS = {
     "sessions": ["remove"],
-    "memory": ["list", "remove"],
     "schedule": ["list", "add", "remove"],
 }
 

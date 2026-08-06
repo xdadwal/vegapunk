@@ -41,7 +41,7 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 
 - **Persistent history** across sessions (recalled with ↑/↓), stored in the database.
 - **Persistent memory** — durable facts and preferences you share are saved and auto-loaded into
-  future sessions, so Vegapunk still knows them next time. Prune them with `/memory forget <id>`,
+  future sessions, so Vegapunk still knows them next time.
   and (optionally) search them semantically with the `recall` tool — set `VEGAPUNK_EMBED_MODEL` to
   an embedding model your endpoint serves and Vegapunk embeds facts for similarity search, falling
   back to plain text matching otherwise.
@@ -97,9 +97,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
 | `/reason` | Show the display-only reasoning from the last completed turn, when the provider supplied it |
 | `/sessions [name \| remove <name>]` | Resume a saved conversation, list recent conversations, or remove one by name |
-| `/memory [list \| remove <id>]` | List remembered facts, or remove one by its short id |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
-| `/backup` | Snapshot the database to `.vegapunk/backups/` |
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
@@ -222,7 +220,7 @@ in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
   REPLs, which would both autosave the same conversation and run the same due task. Multi-process
   access needs 64-bit Linux/macOS and a local filesystem (not NFS/SMB).
 - **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
-  newest three); take one any time with `/backup`.
+  newest three).
 - **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
   secrets" posture as before applies.
 - **Recovery.** The file is a standard SQLite database, so any `sqlite3` client can open
