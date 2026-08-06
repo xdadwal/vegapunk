@@ -257,23 +257,19 @@ The command set was reviewed as a whole rather than one at a time, which is what
 surfaced these — each is a problem of the *set*, invisible when you look at any
 single command.
 
-### `/clear` is removed
+### Four commands are removed
 
-It was an alias for `/new`. In every shell `clear` means "clear the screen", so
+Each is superseded, and each is removed outright rather than deprecated. A
+deprecation cycle is ceremony for a tool with one user: the notice would be read
+once, and the removal would still have to be remembered later. The cost of being
+wrong is retyping a word.
+
+**`/clear`** aliased `/new`. In every shell `clear` means "clear the screen", so
 someone typing it to tidy their scrollback silently discarded their
-conversation. Deleted outright rather than rebound: a command that clears the
-screen is not something Vegapunk needs to own, and leaving the word bound to
-anything keeps the trap warm. `/new` and `/reset` are unchanged.
+conversation. Deleted rather than rebound — leaving the word bound to anything
+keeps the trap warm. `/new` and `/reset` are unchanged.
 
-### The plural commands are deprecated
-
-`/model` vs `/models` and `/skill` vs `/skills` are one letter apart and do
-different things. Once each singular has a picker, the plural has no job left —
-a picker is already a list you choose from.
-
-The test applied was whether the singular does the *complete* job. Both pass:
-
-`/model` absorbs `/models` through the picker's drill-down:
+**`/models`** is absorbed by `/model`'s picker drill-down:
 
 | Input | Does |
 |---|---|
@@ -283,17 +279,31 @@ The test applied was whether the singular does the *complete* job. Both pass:
 
 The middle step is the one `/models` existed for.
 
-`/skill` absorbs `/skills` because its picker lists every skill with its
-description and `Esc` stages nothing — so browsing is "open it and leave".
+**`/skills`** is absorbed by `/skill`, whose picker lists every skill with its
+description and stages nothing on `Esc` — so browsing is "open it and leave".
 
-Both plurals stay registered and keep working, printing a dim one-line notice
-naming the singular. They are removed in a later release, once the notice has
-been seen a few times. Nothing breaks today; the deprecation is the warning, not
-the removal.
+**`/load`** is absorbed by `/sessions`. Resuming and listing were already the
+same act once the list is selectable; keeping a second command to do it from the
+other direction only split the session surface in two.
 
-**`/sessions` is exempt.** There is no `/session`, and neither `/load` nor
-`/save` removes a saved conversation, so `/sessions remove` has no singular home.
-It is a plural, but not half of a pair, so the rule does not reach it.
+### `/sessions` owns saved conversations
+
+One command for the whole lifecycle:
+
+| Input | Does |
+|---|---|
+| `/sessions` | pick a conversation and resume it (a plain list when piped) |
+| `/sessions <name>` | resume that one, without the picker |
+| `/sessions remove <name>` | delete it |
+
+`/save <name>` still renames the current conversation, which is the one session
+operation that acts on what you are in rather than on the stored set.
+
+`remove` as a first token is always the sub-command, so a conversation named
+`remove` can only be resumed from the picker. Named here because it is the kind
+of thing that is obvious in the code and baffling at the prompt.
+
+The resume logic itself does not move — only the name that reaches it.
 
 ### One verb for removal: `remove`
 
@@ -306,18 +316,19 @@ one idea. `remove` wins:
 | `/memory forget <id>` | `/memory remove <id>` |
 | `/schedule remove <id>` | unchanged |
 
-`forget` stays accepted as an alias on the two that had it, so existing habits
-and anything scripted keep working.
+`forget` is dropped rather than kept as an alias, for the same reason the four
+removed commands are not deprecated: one user, one word to relearn, and an alias
+left behind is a second spelling to keep working forever.
 
 ### New: `/status`
 
 One block answering "what am I actually running?": backend and whether its
 credential is live, model, effort, context fullness, session name, scheduler
-worker health, and workspace root. Every field already exists — spread between
-the toolbar, which has room for two, and nowhere.
+worker health, and workspace root. Every field already exists, spread between
+the toolbar — which has room for two — and nowhere, so `/status` assembles
+rather than calculates.
 
-Every field is already computed somewhere, so `/status` assembles rather than
-calculates — with one cost worth naming: credential liveness comes from
+One cost worth naming: credential liveness comes from
 `provider_status()`, which reads credential stores including a Keychain
 subprocess on macOS. That is the same round trip `/model`'s listing already
 pays, and it is why `/status` is a command you ask for rather than something
@@ -363,11 +374,12 @@ than replacing it.
   `VEGAPUNK_UI`, TTY-ness and `NO_COLOR`.
 - Selector tests keep driving the real widget through a prompt_toolkit pipe, as
   `tests/test_menu.py` does now.
-- Command changes are pinned by their existing tests plus: `/clear` is no longer
-  a command; `forget` and `remove` reach the same handler; `/models` and
-  `/skills` still work and say they are deprecated; `/model`'s drill-down
-  reaches the model step, which is what makes `/models` redundant; `/status`
-  names every field it claims.
+- Command changes are pinned by their existing tests plus: the four removed
+  names are no longer commands and say so via the unknown-command path;
+  `forget` and `remove` reach the same handler; `/model`'s drill-down reaches
+  the model step and `/skill`'s picker lists every skill, which is what makes
+  the plurals redundant; `/sessions` resumes, lists and removes, and treats a
+  leading `remove` as the sub-command; `/status` names every field it claims.
 
 ## Non-goals
 
@@ -394,6 +406,6 @@ Four sequential PRs, each green:
 3. Hiding reasoning, and the live status tail on the spinner.
 4. Chrome: startup header, error blocks, turn separators, input prompt, and the
    restyled selectors.
-5. Commands: remove `/clear`, deprecate `/models` and `/skills`, unify removal
-   on `remove`, and add `/status`. Last because it is independent of the
-   renderer work and should not hold it up.
+5. Commands: remove `/clear`, `/models`, `/skills` and `/load`; give `/sessions`
+   the full lifecycle; unify removal on `remove`; add `/status`. Last because
+   it is independent of the renderer work and should not hold it up.
