@@ -17,7 +17,16 @@ from typing import Callable
 from logpose import provider_catalog, provider_status
 
 from . import db, memory, scheduler, session_store, skills, transcript
-from .backend import ALIASES, create_backend, current_effort, with_effort, with_model
+from .backend import (
+    ALIASES,
+    available_models,
+    create_backend,
+    current_effort,
+    describe,
+    resolve_model_choice,
+    with_effort,
+    with_model,
+)
 from .config import config
 from .session import Session
 
@@ -159,9 +168,13 @@ def _model(ctx: CommandContext, arg: str) -> CommandResult:
     if len(tokens) > 2:
         return CommandResult(output="Usage: /model [provider [model]]")
     try:
+        # Checked against what the backend actually serves, so a typo is caught
+        # here rather than as a 404 on your next message. Returns the expanded
+        # id, so `opus` is stored as `claude-opus-5`.
+        chosen = resolve_model_choice(provider, model)
         # The override rides on whichever config field this backend reads, so
-        # `/model codex gpt-5.1` is the same gesture as `/model claude opus`.
-        cfg = with_model(config, provider, model)
+        # `/model codex gpt-5.4` is the same gesture as `/model claude opus`.
+        cfg = with_model(config, provider, chosen)
         backend = create_backend(provider, cfg)
         # Carry a /effort choice across claude→claude swaps (a claude→local→claude
         # round trip loses it — the local backend has nowhere to hold it).
@@ -173,6 +186,40 @@ def _model(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.session.swap_backend(backend)
     return CommandResult(
         output=f"(model switched to {backend.model_label} — the conversation continues)"
+    )
+
+
+def _live_backend_name(ctx: CommandContext) -> str:
+    """logpose's name for the backend this session is running on."""
+    return ctx.session.backend.provider.name
+
+
+@command("models", "List the models a backend serves: /models [provider]")
+def _models(ctx: CommandContext, arg: str) -> CommandResult:
+    """What this backend will actually answer to, asked of the backend itself.
+
+    Defaults to the live one, so `/models` answers "what else could I switch
+    to right now" without naming anything. The list is one network round trip,
+    cached for the session.
+    """
+    provider = arg.split()[0].lower() if arg else _live_backend_name(ctx)
+    try:
+        # Validated first and separately, so an unknown name is reported as
+        # such rather than folded into "couldn't list its models" below.
+        known = describe(provider).name
+    except ValueError as exc:
+        return CommandResult(output=str(exc))
+    try:
+        served = available_models(provider)
+    except Exception as exc:  # noqa: BLE001 — a backend that won't answer isn't fatal
+        return CommandResult(output=f"({provider} couldn't list its models: {exc})")
+    if not served:
+        return CommandResult(output=f"({provider} reported no models)")
+    live = ctx.session.model_label
+    lines = [f"  {'*' if name == live else ' '} {name}" for name in served]
+    return CommandResult(
+        output=f"{known} serves:\n" + "\n".join(lines) +
+        f"\nSwitch with /model {provider} <name>."
     )
 
 

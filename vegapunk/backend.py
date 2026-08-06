@@ -21,7 +21,9 @@ Anthropic path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from difflib import get_close_matches
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -335,6 +337,66 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
         extra=_effort_extra(key, effort),
         spawn_provider=spawn,
         effort_key=key,
+    )
+
+
+# Model lists, keyed by logpose provider name. Cached for the life of the
+# process: the list is a network round trip, it changes on Anthropic's and
+# OpenAI's release cadence rather than during a session, and /model would
+# otherwise pay for it on every switch.
+_MODEL_CACHE: dict[str, list[str]] = {}
+
+
+def available_models(name: str, cfg: Config = config) -> list[str]:
+    """The model ids this backend actually serves, newest first.
+
+    Asked of the backend rather than kept in a table here, so the answer is
+    right for *your* account — which models an Anthropic or OpenAI subscription
+    exposes differs between them, and a hardcoded list would go stale silently.
+
+    Costs one network round trip the first time per provider, then nothing.
+    Raises whatever the provider raises (no credential, no endpoint, no
+    network); callers decide whether that is fatal or merely unhelpful.
+    """
+    info = describe(name)
+    if info.name not in _MODEL_CACHE:
+        # A throwaway provider on its own event loop: the session's provider is
+        # bound to the loop its agent runs on, and asyncio.run here would be a
+        # different one.
+        provider = create_backend(name, cfg).spawn_provider()
+        _MODEL_CACHE[info.name] = list(asyncio.run(provider.list_models()))
+    return _MODEL_CACHE[info.name]
+
+
+def resolve_model_choice(name: str, model: str, cfg: Config = config) -> str:
+    """Check ``model`` against what the backend serves; return what to request.
+
+    Expands Vegapunk's short Claude names first, so ``opus`` is checked as
+    ``claude-opus-5``. An id the backend doesn't list raises ``ValueError``
+    naming the closest matches — the alternative is a switch that looks like it
+    worked and then 404s on your next message, which is where this used to fail.
+
+    Discovery failing is *not* fatal: an unreachable local runner or a provider
+    that won't answer shouldn't stop you selecting a model you know is right, so
+    the choice is passed through unchecked.
+    """
+    wanted = _resolve_model(model) if describe(name).api == "messages" else model
+    if not wanted:
+        return wanted
+    try:
+        served = available_models(name, cfg)
+    except Exception:  # noqa: BLE001 — discovery is a convenience, not a gate
+        return wanted
+    # Exact, or the undated base of a dated snapshot: Anthropic lists
+    # `claude-haiku-4-5-20251001` but answers to `claude-haiku-4-5` too, and
+    # rejecting the alias the API itself accepts would be Vegapunk being stricter
+    # than the service it is talking to.
+    if any(candidate == wanted or candidate.startswith(f"{wanted}-") for candidate in served):
+        return wanted
+    close = get_close_matches(wanted, served, n=3, cutoff=0.4) or served[:3]
+    raise ValueError(
+        f"{describe(name).name} doesn't serve {wanted!r}. Closest: {', '.join(close)}. "
+        f"See /models {name} for the full list."
     )
 
 

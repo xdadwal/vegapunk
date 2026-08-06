@@ -523,7 +523,9 @@ def test_model_claude_with_a_name_overrides_the_configured_model(monkeypatch):
     res = dispatch("/model claude opus", _ctx())
 
     assert seen["provider"] == "claude"
-    assert seen["cfg"].claude_model == "opus"
+    # Expanded, not passed through: /model verifies the choice against what the
+    # backend serves, and stores the id it will actually request.
+    assert seen["cfg"].claude_model == "claude-opus-5"
     assert "claude:opus" in res.output
 
 
@@ -686,3 +688,43 @@ def test_model_listing_marks_the_unofficial_and_the_unavailable(monkeypatch):
     assert "[unofficial]" not in lines["anthropic"]  # BYOK is the supported one
     assert "no key" in lines["anthropic"]  # the probe's own actionable detail
     assert lines["anthropic"].lstrip().startswith("·")  # marked as not ready
+
+
+def test_models_lists_what_the_live_backend_serves_and_marks_the_active_one():
+    ctx = _ctx(model_label="claude-opus-5")
+    ctx.session.swap_backend(_claude_backend("claude-opus-5"))
+
+    out = dispatch("/models claude", ctx).output
+
+    assert "claude-code serves:" in out
+    assert "claude-sonnet-5" in out
+    assert "/model claude <name>" in out
+
+
+def test_models_reports_a_backend_that_will_not_answer(monkeypatch):
+    def _unreachable(name, cfg=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("vegapunk.commands.available_models", _unreachable)
+
+    out = dispatch("/models codex", _ctx()).output
+
+    assert "couldn't list its models" in out
+    assert "connection refused" in out
+
+
+def test_models_rejects_an_unknown_provider():
+    assert "Unknown provider 'martian'" in dispatch("/models martian", _ctx()).output
+
+
+def test_model_switch_refuses_an_id_the_backend_does_not_serve(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
+    )
+    ctx = _ctx()
+
+    res = dispatch("/model codex gpt-4o", ctx)
+
+    assert "doesn't serve 'gpt-4o'" in res.output
+    assert calls == []  # rejected before anything was built or swapped

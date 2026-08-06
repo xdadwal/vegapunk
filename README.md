@@ -94,6 +94,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
 | `/model [provider [name]]` | List backends with their credential and readiness, or switch mid-conversation (e.g. `/model claude opus`) |
+| `/models [provider]` | List the models a backend actually serves (live, cached per session), marking the active one |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
@@ -273,9 +274,29 @@ one, so nobody gets silently billed per token by a stray `ANTHROPIC_API_KEY`.
 
 ### Models and effort
 
-Pick a model per switch (`/model claude opus` — `opus`/`sonnet`/`fable`/`mythos`/`haiku`
-expand to full ids; `/model codex gpt-5.1` and `/model local ai/qwen3` work the same
-way) and trade speed for reasoning depth with `/effort`
+`/models [provider]` lists what a backend actually serves — asked of the backend, so
+the answer is right for *your* account rather than a table that goes stale:
+
+```
+claude-code serves:
+  * claude-opus-5
+    claude-sonnet-5
+    claude-fable-5
+    …
+```
+
+Pick one with `/model <provider> <name>` (`opus`/`sonnet`/`fable`/`haiku` expand to full
+ids; `/model codex gpt-5.4` and `/model local ai/qwen3` work the same way). The choice is
+checked against that list before the switch, so a typo is caught while you're typing
+rather than as a 404 on your next message:
+
+```
+> /model codex gpt-4o
+codex doesn't serve 'gpt-4o'. Closest: gpt-5.4, gpt-5.5, gpt-5.4-mini. See /models codex.
+```
+
+A backend that won't answer never blocks the switch — discovery is a convenience, not a
+gate. Trade speed for reasoning depth with `/effort`
 (`low`|`medium`|`high`|`xhigh`|`max`, the APIs' own levels); both persist for the
 session, and a model switch keeps your effort choice. The two wire APIs spell effort
 differently — Anthropic's `output_config.effort`, the Responses API's `reasoning.effort`

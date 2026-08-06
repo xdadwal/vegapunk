@@ -22,6 +22,7 @@ from vegapunk.backend import (
     create_backend,
     current_effort,
     describe,
+    resolve_model_choice,
     validate_effort,
     with_effort,
     with_model,
@@ -450,3 +451,50 @@ def test_an_unknown_context_window_is_zero_rather_than_invented():
     # 0 is the documented "unknown" sentinel: the toolbar then shows tokens
     # without a percentage instead of one measured against a guess.
     assert create_backend("codex").context_window == 0
+
+
+# ---------------------------------------------------------------------------
+# model discovery: what a backend actually serves
+# ---------------------------------------------------------------------------
+
+
+def test_a_model_the_backend_does_not_serve_is_refused_with_suggestions():
+    """The gap this closes: naming a model was unvalidated, so a typo swapped
+    the backend cleanly and then 404'd on the next message."""
+    with pytest.raises(ValueError) as caught:
+        resolve_model_choice("codex", "gpt-5.1")
+
+    message = str(caught.value)
+    assert "doesn't serve 'gpt-5.1'" in message
+    assert "gpt-5.5" in message  # the closest real ones
+    assert "/models codex" in message  # and where to see them all
+
+
+def test_a_short_claude_name_is_expanded_before_it_is_checked():
+    assert resolve_model_choice("claude", "opus") == "claude-opus-5"
+
+
+def test_an_undated_alias_of_a_dated_snapshot_is_accepted():
+    """Anthropic lists `claude-haiku-4-5-20251001` but answers to
+    `claude-haiku-4-5`. Rejecting it would make Vegapunk stricter than the API."""
+    assert resolve_model_choice("claude", "haiku") == "claude-haiku-4-5"
+
+
+def test_no_model_named_means_no_discovery_call(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("discovery must not run when no model was named")
+
+    monkeypatch.setattr("vegapunk.backend.available_models", _boom)
+
+    assert resolve_model_choice("claude", "") == ""
+
+
+def test_discovery_failing_does_not_block_a_choice(monkeypatch):
+    """A backend that won't answer shouldn't stop you selecting a model you know
+    is right — the check is a convenience, not a gate."""
+    def _unreachable(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("vegapunk.backend.available_models", _unreachable)
+
+    assert resolve_model_choice("codex", "gpt-5.4") == "gpt-5.4"
