@@ -122,6 +122,7 @@ def test_reasoning_is_traced_to_stderr_and_kept_out_of_the_reply(capsys):
 
     assert "deliberating" in capsys.readouterr().err
     assert reply == "the answer"  # reasoning is a watch channel, not the answer
+    assert session.last_reasoning == "deliberating"
 
 
 def test_reasoning_stays_in_history_because_the_provider_requires_it():

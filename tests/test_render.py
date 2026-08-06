@@ -14,7 +14,7 @@ import pytest
 from rich.console import Console
 
 from vegapunk import style
-from vegapunk.render import UI_MODES, PlainRenderer, RichRenderer
+from vegapunk.render import UI_MODES, PlainRenderer, RichRenderer, _split_completed_markdown, pick
 
 
 @pytest.fixture
@@ -243,6 +243,49 @@ def test_the_plain_renderer_prints_nothing_when_a_tool_is_requested(plain, capsy
 # ---------------------------------------------------------------------------
 
 
+def test_split_completed_markdown_keeps_only_the_trailing_block_live():
+    committed, trailing = _split_completed_markdown("first paragraph\n\nsecond")
+
+    assert committed == "first paragraph\n\n"
+    assert trailing == "second"
+
+
+def test_split_completed_markdown_does_not_split_a_fenced_code_block():
+    committed, trailing = _split_completed_markdown("```python\n\nprint('hi')\n```")
+
+    assert committed == ""
+    assert trailing == "```python\n\nprint('hi')\n```"
+
+
+def test_split_completed_markdown_keeps_loose_list_items_together():
+    """A typical structured assistant response may contain blank list gaps."""
+    committed, trailing = _split_completed_markdown(
+        "Use a CLI agent this way:\n\n- Give it durable preferences.\n\n- Ask it to use tools."
+    )
+
+    assert committed == "Use a CLI agent this way:\n\n"
+    assert trailing == "- Give it durable preferences.\n\n- Ask it to use tools."
+
+
+def test_rich_reply_commits_a_completed_block_without_repeating_the_live_tail():
+    """The completed paragraph becomes static; only ``second`` is live.
+
+    A non-terminal console gives us the final bytes without cursor-control
+    redraws, making this a public-output regression test rather than a check of
+    the renderer's private Live state.
+    """
+    console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("first paragraph")
+    rich.reply_delta("\n\nsecond paragraph")
+    rich.reply_end()
+
+    output = console.file.getvalue()
+    assert output.count("first paragraph") == 1
+    assert output.count("second paragraph") == 1
+
+
 def _rich_console(*, force_terminal: bool = True) -> Console:
     """``force_terminal=False`` simulates a pipe or redirect: an io.StringIO
     has no real tty either way, but leaving ``force_terminal`` at its default
@@ -413,25 +456,49 @@ def test_rich_reply_abort_then_a_new_reply_still_renders_cleanly():
     assert "second" in out
 
 
-def test_rich_trace_methods_still_produce_the_plain_bytes_on_stderr(capsys, monkeypatch):
-    """Restyling the reply must not touch the watch channel: trace output is
-    delegated to PlainRenderer verbatim, so it pins the same bytes as
-    PlainRenderer's own tests, on the same stream."""
-    monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="never"))
-    console = _rich_console()
-    rich = RichRenderer(console=console)
+def test_rich_trace_uses_compact_glyphs_and_never_prints_raw_reasoning():
+    reply_console = _rich_console()
+    trace_console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=reply_console, trace_console=trace_console)
 
     rich.step(2)
     rich.reasoning("think")
     rich.reasoning("ing")
     rich.reasoning_end()
+    rich.tool_call("echo", {"text": "hi"})
     rich.tool_result("echo", {"text": "hi"}, "hi", is_error=False)
     rich.note("the model ran out of tokens; this turn is cut off")
 
-    assert capsys.readouterr().err == (
-        "  [think] step 2\n"
-        "  [reason] thinking\n"
-        "  [tool] echo({'text': 'hi'}) -> hi\n"
-        "  [note] the model ran out of tokens; this turn is cut off\n"
-    )
-    assert console.file.getvalue() == ""  # trace never lands on the reply channel
+    trace = trace_console.file.getvalue()
+    assert "● thinking · step 2" in trace
+    assert "● thinking · 8 chars · /reason" in trace
+    assert "thinking" not in trace.replace("thinking ·", "")
+    assert '● echo(text="hi")' in trace
+    assert "⎿ hi" in trace
+    assert "● the model ran out of tokens" in trace
+    assert reply_console.file.getvalue() == ""  # trace never lands on the reply channel
+
+
+def test_rich_trace_collapses_multiline_tool_output_to_one_line():
+    trace_console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=_rich_console(), trace_console=trace_console)
+
+    rich.tool_result("read", {}, "first line\nsecond line", is_error=False)
+
+    assert "⎿ first line second line" in trace_console.file.getvalue()
+
+
+def test_rich_reasoning_can_stream_in_full(monkeypatch):
+    monkeypatch.setattr("vegapunk.render.config", replace(style.config, reasoning="full"))
+    trace_console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=_rich_console(), trace_console=trace_console)
+
+    rich.reasoning("the full thought")
+    rich.reasoning_end()
+
+    assert "⎿ the full thought" in trace_console.file.getvalue()
+
+
+def test_pick_refuses_an_unknown_reasoning_mode():
+    with pytest.raises(ValueError, match="VEGAPUNK_REASONING"):
+        pick(replace(style.config, reasoning="summary"))

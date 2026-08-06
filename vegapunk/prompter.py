@@ -34,8 +34,7 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 
 # Sub-commands that take a fixed vocabulary of their own.
 _SUBCOMMANDS = {
-    "sessions": ["forget"],
-    "memory": ["list", "forget"],
+    "sessions": ["remove"],
     "schedule": ["list", "add", "remove"],
 }
 
@@ -63,20 +62,20 @@ def _argument_options(command: str, words: list[str]) -> list[str]:
     (possibly empty) word under the cursor.
     """
     position = len(words) - 1  # 0 = first argument, 1 = second, …
-    if command in ("model", "models"):
+    if command == "model":
         # First a backend, then that backend's models — but only ones already
         # fetched, so a keystroke never waits on the network.
         return backend_names() if position == 0 else cached_models(words[0])
     if command == "effort":
         return list(EFFORT_LEVELS) if position == 0 else []
-    if command in ("load", "save"):
+    if command == "save":
         return _session_names() if position == 0 else []
     if command == "skill":
         return _skill_names() if position == 0 else []
     if command == "sessions":
         if position == 0:
-            return _SUBCOMMANDS["sessions"]
-        return _session_names() if words[0] == "forget" else []
+            return [*_SUBCOMMANDS["sessions"], *_session_names()]
+        return _session_names() if words[0] == "remove" else []
     if command in _SUBCOMMANDS:
         return _SUBCOMMANDS[command] if position == 0 else []
     return []
@@ -153,7 +152,7 @@ class PromptToolkitPrompter(Prompter):
             history = DbHistory()
         # Shaka gold for the person giving the orders — gated through the same
         # seam as everything else, so NO_COLOR/VEGAPUNK_COLOR strip it too.
-        message = [("bold fg:ansiyellow", "you> ")] if style.enabled(sys.stdout) else "you> "
+        message = [("bold fg:ansiyellow", "❯ ")] if style.enabled(sys.stdout) else "❯ "
         self._session: PromptSession[str] = PromptSession(
             message=message,
             history=history,

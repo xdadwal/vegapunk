@@ -41,7 +41,7 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
 
 - **Persistent history** across sessions (recalled with ↑/↓), stored in the database.
 - **Persistent memory** — durable facts and preferences you share are saved and auto-loaded into
-  future sessions, so Vegapunk still knows them next time. Prune them with `/memory forget <id>`,
+  future sessions, so Vegapunk still knows them next time.
   and (optionally) search them semantically with the `recall` tool — set `VEGAPUNK_EMBED_MODEL` to
   an embedding model your endpoint serves and Vegapunk embeds facts for similarity search, falling
   back to plain text matching otherwise.
@@ -95,18 +95,15 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 |---------|--------------|
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
-| `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
-| `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
+| `/reason` | Show the display-only reasoning from the last completed turn, when the provider supplied it |
+| `/sessions [name \| remove <name>]` | Resume a saved conversation, list recent conversations, or remove one by name |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
-| `/backup` | Snapshot the database to `.vegapunk/backups/` |
-| `/skills` | List available skills |
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
-| `/load <name>` | Resume a saved conversation |
 | `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
-| `/models [provider]` | Pick from the models a backend actually serves (live, cached per session); lists them when piped |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
-| `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
+| `/status` | Show backend readiness, model, effort, context, session, scheduler, and workspace |
+| `/new` | Start a fresh conversation (alias: `/reset`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
 ## Tools
@@ -195,7 +192,8 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
-| `VEGAPUNK_UI` | How a turn is drawn. Currently always plain output regardless of this value; `auto` following the terminal, `rich`, and `NO_COLOR` forcing `plain` are the intended behaviour once a rich renderer exists | `auto` |
+| `VEGAPUNK_UI` | How a turn is drawn: `auto` uses rich output on a colour-capable terminal and plain output otherwise; `rich` forces rich output; `plain` forces plain output. `NO_COLOR` makes `auto` plain. | `auto` |
+| `VEGAPUNK_REASONING` | Rich-mode reasoning display: `collapsed` shows a compact summary and enables `/reason`; `full` streams it into the trace. Plain output retains its existing full trace. | `collapsed` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
 | `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
@@ -222,7 +220,7 @@ in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
   REPLs, which would both autosave the same conversation and run the same due task. Multi-process
   access needs 64-bit Linux/macOS and a local filesystem (not NFS/SMB).
 - **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
-  newest three); take one any time with `/backup`.
+  newest three).
 - **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
   secrets" posture as before applies.
 - **Recovery.** The file is a standard SQLite database, so any `sqlite3` client can open
@@ -339,7 +337,7 @@ blocks it never signed.
 vegapunk/
   __main__.py    # `python -m vegapunk` entry → cli.main()
   cli.py         # interactive REPL and command dispatch
-  commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
+  commands.py    # slash commands (/help, /status, /save, /sessions, /memory, /backup, /new, /exit)
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the live trace: logpose's event stream → what you watch on stderr

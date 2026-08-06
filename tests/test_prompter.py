@@ -62,14 +62,14 @@ def _complete(text: str) -> list[str]:
 
 
 def test_completer_suggests_commands_and_leaves_prose_alone():
-    assert _complete("/cl") == ["/clear"]
+    assert _complete("/cl") == []
     # A sentence is what you're mostly typing; popping a menu into it would be
     # worse than offering nothing.
     assert _complete("tell me ex") == []
 
 
 def test_completer_offers_backends_after_a_model_command():
-    for line in ("/model ", "/models "):
+    for line in ("/model ",):
         offered = _complete(line)
         assert "claude" in offered and "codex" in offered and "local" in offered
 
@@ -88,15 +88,15 @@ def test_completer_offers_saved_sessions_for_load_and_forget():
     save_session("alpha-chat", [])
     save_session("beta-chat", [])
 
-    assert set(_complete("/load ")) == {"alpha-chat", "beta-chat"}
-    assert _complete("/sessions forget al") == ["alpha-chat"]
-    assert _complete("/sessions ") == ["forget"]  # the sub-command first
+    assert set(_complete("/sessions ")) == {"alpha-chat", "beta-chat", "remove"}
+    assert _complete("/sessions remove al") == ["alpha-chat"]
+    assert "remove" in _complete("/sessions ")
 
 
 def test_completer_never_makes_a_network_call_for_model_ids(monkeypatch):
     """Completion runs on every keystroke, so it may only offer ids already
     fetched — blocking the line you are typing on an HTTP round trip would be
-    far worse than offering nothing until /models has been run once."""
+    far worse than offering nothing until /model has been run once."""
     def _boom(*args, **kwargs):
         raise AssertionError("completion must not fetch models")
 
@@ -143,7 +143,7 @@ def test_prompt_message_is_plain_off_a_tty():
     # Under pytest stdout isn't a TTY and the suite pins color mode "auto",
     # so the constructor must pick the plain string, not style tuples.
     prompter = PromptToolkitPrompter(history=InMemoryHistory())
-    assert prompter._session.message == "you> "
+    assert prompter._session.message == "❯ "
 
 
 def test_prompt_message_is_gold_when_color_forced(monkeypatch):
@@ -153,4 +153,4 @@ def test_prompt_message_is_gold_when_color_forced(monkeypatch):
 
     monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
     prompter = PromptToolkitPrompter(history=InMemoryHistory())
-    assert prompter._session.message == [("bold fg:ansiyellow", "you> ")]
+    assert prompter._session.message == [("bold fg:ansiyellow", "❯ ")]

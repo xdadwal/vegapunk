@@ -62,6 +62,11 @@ class Config:
     # "plain" (always). See render.pick().
     ui: str = os.getenv("VEGAPUNK_UI", "auto")
 
+    # Rich terminals collapse reasoning to a compact status by default; set to
+    # "full" to stream it in the trace. Plain mode keeps its historic full
+    # trace so scripts and logs remain byte-compatible.
+    reasoning: str = os.getenv("VEGAPUNK_REASONING", "collapsed")
+
     # The model's context window (tokens), for the toolbar's fullness gauge.
     # DMR doesn't expose it over the API, so it's declared here; the default
     # matches the local DMR setup (check yours: `docker model logs | grep

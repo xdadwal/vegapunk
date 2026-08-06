@@ -116,6 +116,7 @@ class Session:
         # the first turn — and again after reset/restore, when any old number
         # would describe a conversation the model hasn't seen yet.
         self.context_tokens: int | None = None
+        self._last_reasoning = ""
         self._conversation = Conversation()
 
     def _build_agent(self) -> Agent:
@@ -147,6 +148,7 @@ class Session:
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
+            self._last_reasoning = self._renderer.last_reasoning
             return reply
         except BaseException:
             # Interrupted (Ctrl-C inside a pull), abandoned (``.close()``
@@ -169,6 +171,11 @@ class Session:
     def renderer(self) -> Renderer:
         """The renderer this session's turns print through."""
         return self._renderer
+
+    @property
+    def last_reasoning(self) -> str:
+        """Display-only reasoning from the last completed turn."""
+        return self._last_reasoning
 
     @property
     def model_label(self) -> str:
@@ -234,6 +241,7 @@ class Session:
         """
         self._conversation.clear()
         self.context_tokens = None  # a fresh conversation has no footprint yet
+        self._last_reasoning = ""
 
     def restore(self, messages: list[dict]) -> None:
         """Replace the conversation with a saved one (resume).
@@ -250,6 +258,7 @@ class Session:
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None
+        self._last_reasoning = ""
 
     def suggest_name(self) -> str:
         """Ask the model for a short title for this conversation, from its first

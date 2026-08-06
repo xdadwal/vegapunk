@@ -545,6 +545,18 @@ def test_the_spinner_draws_and_erases_on_a_tty(capsys, monkeypatch):
     assert err.endswith("\r\x1b[K")
 
 
+def test_spinner_status_names_the_step_and_latest_context(capsys, monkeypatch):
+    from vegapunk.loop import _Spinner, _spinner_status
+
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    spinner = _Spinner()
+    spinner.set_status(_spinner_status(3, 12_345))
+    spinner.start()
+    spinner.stop()
+
+    assert "thinking… · step 3 · 12,345 tok" in capsys.readouterr().err
+
+
 def test_the_spinner_is_silent_off_a_tty(capsys, monkeypatch):
     from vegapunk.loop import _Spinner
 
