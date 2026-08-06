@@ -195,6 +195,7 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
+| `VEGAPUNK_UI` | How a turn is drawn: `auto` (follow the terminal), `rich`, or `plain`. `NO_COLOR` forces `plain` | `auto` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
 | `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
@@ -342,6 +343,7 @@ vegapunk/
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the live trace: logpose's event stream → what you watch on stderr
+  render.py      # how a turn is shown: every printed byte goes through here
   menu.py        # the inline arrow-key picker every selection prompt runs on
   session.py     # conversation state across turns
   backend.py     # which model to talk to: name → logpose provider, label, context window
