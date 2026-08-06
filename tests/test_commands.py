@@ -473,7 +473,7 @@ def test_skill_staged_body_is_capped(skills_home, monkeypatch):
 
 def _claude_backend(label: str = "claude-opus-5") -> Backend:
     """A stand-in for what create_backend returns for the claude provider."""
-    return backend_for(model_label=label, context_window=200_000, supports_effort=True)
+    return backend_for(model_label=label, context_window=200_000, effort_key="output_config")
 
 
 def test_model_without_arg_shows_the_active_model_and_choices():
@@ -506,7 +506,8 @@ def test_model_with_unknown_provider_prints_usage(monkeypatch):
 
     res = dispatch("/model martian", ctx)
 
-    assert res.output == "Usage: /model [local|claude [model]]"
+    assert "Unknown provider 'martian'" in res.output
+    assert "claude" in res.output and "codex" in res.output  # names the real options
     assert ctx.session.model_label == original  # nothing swapped
     assert calls == []  # rejected before construction
 
@@ -541,15 +542,16 @@ def test_model_claude_without_a_name_keeps_the_configured_default(monkeypatch):
     assert seen["cfg"] is commands_config  # untouched: VEGAPUNK_CLAUDE_MODEL still rules
 
 
-def test_model_rejects_a_model_name_for_local_and_extra_tokens(monkeypatch):
+def test_model_rejects_more_than_a_provider_and_a_model(monkeypatch):
     calls: list = []
     monkeypatch.setattr(
         "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
     )
     ctx = _ctx()
 
-    assert dispatch("/model local opus", ctx).output == "Usage: /model [local|claude [model]]"
-    assert dispatch("/model claude opus high", ctx).output == "Usage: /model [local|claude [model]]"
+    # Three tokens is still nonsense; two is now meaningful for *every* backend,
+    # since each one has a config field a model override can land in.
+    assert dispatch("/model claude opus high", ctx).output == "Usage: /model [provider [model]]"
     assert calls == []
 
 
@@ -567,7 +569,7 @@ def test_model_swap_carries_the_session_effort_choice(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.commands.create_backend", lambda provider, cfg: _claude_backend("claude:opus")
     )
-    ctx = _ctx(model_label="claude", supports_effort=True)
+    ctx = _ctx(model_label="claude", effort_key="output_config")
     dispatch("/effort xhigh", ctx)
 
     dispatch("/model claude opus", ctx)
@@ -576,7 +578,7 @@ def test_model_swap_carries_the_session_effort_choice(monkeypatch):
 
 
 def _effort_ctx(effort: str | None = None) -> CommandContext:
-    ctx = _ctx(model_label="claude", supports_effort=True)
+    ctx = _ctx(model_label="claude", effort_key="output_config")
     if effort:
         dispatch(f"/effort {effort}", ctx)
     return ctx
@@ -626,3 +628,61 @@ def test_help_lists_effort():
 
 def test_help_lists_model():
     assert "/model" in dispatch("/help", _ctx()).output
+
+
+async def _fake_status():
+    """A scripted ``provider_status`` — the real one reads the Keychain."""
+    from logpose import ProviderStatus, provider_catalog
+
+    return [
+        ProviderStatus(
+            name=info.name,
+            ready=info.name != "anthropic",
+            detail="" if info.name != "anthropic" else "no key",
+            credential=None if info.name == "anthropic" else "oauth",
+        )
+        for info in provider_catalog()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# /model's listing — built from logpose's catalog, not a table here
+# ---------------------------------------------------------------------------
+
+
+def test_model_listing_names_every_backend_with_its_credential(monkeypatch):
+    # Readiness reads credential stores, so it's faked: this test is about what
+    # the listing says, and a real probe would make it machine-dependent.
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx(model_label="ai/qwen3")
+
+    out = dispatch("/model", ctx).output
+
+    assert "Active: ai/qwen3" in out
+    for name in ("docker", "claude-code", "codex", "anthropic", "openai"):
+        assert name in out
+    assert "docker|local" in out  # the alias is shown beside the real name
+    assert "claude-code|claude" in out
+
+
+def test_model_listing_marks_the_unofficial_and_the_unavailable(monkeypatch):
+    """The two facts you need when choosing, and neither is hardcoded here.
+
+    ``officially_supported`` comes from the catalog; readiness comes from a live
+    probe, so a missing credential is reported while you're choosing rather than
+    as an AuthError on your next message.
+    """
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+
+    out = dispatch("/model", _ctx()).output
+
+    # Each listing line is "[· ]name[|alias] (credential)[ [unofficial]][ — detail]".
+    lines = {
+        line.strip().lstrip("· ").split(" ")[0].split("|")[0]: line
+        for line in out.splitlines()
+        if "(" in line
+    }
+    assert "[unofficial]" in lines["claude-code"]  # subscription path, disclaimed
+    assert "[unofficial]" not in lines["anthropic"]  # BYOK is the supported one
+    assert "no key" in lines["anthropic"]  # the probe's own actionable detail
+    assert lines["anthropic"].lstrip().startswith("·")  # marked as not ready

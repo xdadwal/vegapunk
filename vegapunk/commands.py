@@ -9,14 +9,20 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
+from logpose import provider_catalog, provider_status
+
 from . import db, memory, scheduler, session_store, skills, transcript
-from .backend import create_backend, current_effort, with_effort
+from .backend import ALIASES, create_backend, current_effort, with_effort, with_model
 from .config import config
 from .session import Session
+
+# Sorted once: /model's listing shows each provider's Vegapunk alias beside it.
+_ALIAS_ITEMS = sorted(ALIASES.items())
 
 # A handler takes the live context and the text after the command name.
 Handler = Callable[["CommandContext", str], "CommandResult"]
@@ -119,23 +125,43 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="(new conversation)")
 
 
-@command("model", "Show or switch the model: /model [local|claude [model]]")
+def _catalog_listing() -> str:
+    """One line per selectable backend: name, what it authenticates with, and
+    whether it can actually run right now.
+
+    Readiness is asked of logpose rather than guessed, so a missing credential
+    is reported here — at the moment you are choosing — instead of as an
+    ``AuthError`` on your next message. It reads credential stores (including a
+    Keychain subprocess on macOS), which is why /model pays for it only when
+    called with no argument.
+    """
+    status = {s.name: s for s in asyncio.run(provider_status())}
+    lines = []
+    for info in sorted(provider_catalog(), key=lambda i: i.name):
+        names = "|".join([info.name, *(a for a, t in _ALIAS_ITEMS if t == info.name)])
+        ready = status.get(info.name)
+        mark = "  " if ready is None or ready.ready else "· "
+        note = "" if ready is None or ready.ready else f" — {ready.detail}"
+        unsupported = "" if info.officially_supported else " [unofficial]"
+        lines.append(f"  {mark}{names} ({info.credential}){unsupported}{note}")
+    return "\n".join(lines)
+
+
+@command("model", "Show or switch the model: /model [provider [model]]")
 def _model(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg:
         return CommandResult(
-            output=f"Active: {ctx.session.model_label}\n"
-            "Available: local (Docker Model Runner), claude [model] (Claude subscription)"
+            output=f"Active: {ctx.session.model_label}\nAvailable:\n{_catalog_listing()}"
         )
     tokens = arg.split()
     provider = tokens[0].lower()
     model = tokens[1] if len(tokens) == 2 else ""
-    # Provider is validated here, not via create_backend's ValueError — that
-    # channel must stay free for real construction errors (e.g. a junk
-    # VEGAPUNK_CLAUDE_EFFORT), which deserve their own message, not "Usage:".
-    if len(tokens) > 2 or provider not in ("local", "claude") or (model and provider != "claude"):
-        return CommandResult(output="Usage: /model [local|claude [model]]")
-    cfg = replace(config, claude_model=model) if model else config
+    if len(tokens) > 2:
+        return CommandResult(output="Usage: /model [provider [model]]")
     try:
+        # The override rides on whichever config field this backend reads, so
+        # `/model codex gpt-5.1` is the same gesture as `/model claude opus`.
+        cfg = with_model(config, provider, model)
         backend = create_backend(provider, cfg)
         # Carry a /effort choice across claude→claude swaps (a claude→local→claude
         # round trip loses it — the local backend has nowhere to hold it).
@@ -150,7 +176,7 @@ def _model(ctx: CommandContext, arg: str) -> CommandResult:
     )
 
 
-@command("effort", "Show or set Claude's effort: /effort [low|medium|high|xhigh|max]")
+@command("effort", "Show or set reasoning effort: /effort [low|medium|high|xhigh|max]")
 def _effort(ctx: CommandContext, arg: str) -> CommandResult:
     backend = ctx.session.backend
     # Asked of the backend rather than duck-typed: a backend that takes no
