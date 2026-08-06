@@ -19,6 +19,7 @@ from test_loop import _force_color  # sibling test modules (tests/ is on sys.pat
 from vegapunk import db, style
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
+from vegapunk.render import PlainRenderer
 from tests.fake_provider import backend_for, says, session_for
 
 
@@ -128,6 +129,7 @@ class _MidStreamInterruptSession:
 
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
+    renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
@@ -155,6 +157,7 @@ class _FailingTurnSession:
 
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
+    renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
@@ -197,6 +200,7 @@ class _SuspendedReply:
 class _SuspendedSession:
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
+    renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
@@ -463,3 +467,37 @@ def test_staged_skill_rides_the_next_message_then_clears(skills_home, capsys):
 
     # ...and was cleared afterwards: the follow-up message is unadorned.
     assert provider.requests[1].messages[-1].text == "plain follow-up"
+
+
+def test_the_reply_is_rendered_through_the_sessions_renderer(capsys):
+    """One renderer spans both channels of a turn.
+
+    If the CLI printed the reply itself, the trace and the reply would be two
+    independent writers to one terminal — which is exactly what breaks once the
+    reply owns a live region.
+    """
+    from vegapunk.cli import _render_reply
+
+    class Recorder:
+        def __init__(self):
+            self.deltas = []
+            self.ended = 0
+
+        def reply_delta(self, text):
+            self.deltas.append(text)
+
+        def reply_end(self):
+            self.ended += 1
+
+    recorder = Recorder()
+
+    def events():
+        yield TextDelta("all ")
+        yield TextDelta("done")
+        return "all done"
+
+    _render_reply(events(), recorder)
+
+    assert recorder.deltas == ["all ", "done"]
+    assert recorder.ended == 1
+    assert capsys.readouterr().out == ""  # the CLI printed nothing itself

@@ -22,14 +22,9 @@ from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
+from .render import Renderer
 from .session import Session
 from .tools import ALL_TOOLS
-
-
-def _vega_prefix() -> str:
-    """The reply-line prefix — Punk Records speaking, bold magenta. The reset
-    lands before the space so the reply text itself streams in default color."""
-    return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
 
 
 def _context_gauge(used: int | None, window: int) -> str:
@@ -61,33 +56,21 @@ def _status_line(ctx: CommandContext) -> str:
     return left + " " * max(pad, 1) + right
 
 
-def _render_reply(events: Generator[TextDelta, None, str]) -> None:
-    """Stream a turn's reply to stdout: the ``vega>`` prefix on the first text
-    delta, then each fragment as it arrives, with the line closed at the end. A
-    reply with no text still gets its (blank) prompt line, so the user sees the
-    turn ended rather than a silently missing reply.
+def _render_reply(events: Generator[TextDelta, None, str], renderer: Renderer) -> None:
+    """Stream a turn's reply through ``renderer``.
 
     Kept out of ``main``'s loop, which has enough going on. The pull-by-``next``
-    shape is deliberate (rather than a ``for``) so a Ctrl-C landing between pulls
-    still surfaces from here for ``main`` to catch and roll back.
+    shape is deliberate (rather than a ``for``) so a Ctrl-C landing between
+    pulls still surfaces from here for ``main`` to catch and roll back.
     """
-    streamed = False
-    line_open = False
     while True:
         try:
             event = next(events)
         except StopIteration:  # .value carries the reply; already rendered
             break
-        if isinstance(event, TextDelta) and event.text:
-            if not streamed:
-                print(_vega_prefix(), end="", flush=True)
-                streamed = True
-            print(event.text, end="", flush=True)
-            line_open = not event.text.endswith("\n")
-    if not streamed:
-        print(_vega_prefix())  # an empty reply still gets its prompt line
-    elif line_open:
-        print()
+        if isinstance(event, TextDelta):
+            renderer.reply_delta(event.text)
+    renderer.reply_end()
 
 
 def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
@@ -188,7 +171,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.
                 events = session.send(user_input)
-                _render_reply(events)
+                _render_reply(events, session.renderer)
             except (KeyboardInterrupt, ApprovalCancelled):
                 # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
                 # approval prompt arrives as ApprovalCancelled instead, because
