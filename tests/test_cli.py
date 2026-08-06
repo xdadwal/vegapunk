@@ -109,6 +109,9 @@ class _BoomSession:
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
 
+    def __init__(self) -> None:
+        self.renderer = PlainRenderer()  # cli's except-block reset touches this
+
     def close(self) -> None:
         pass
 
@@ -129,7 +132,9 @@ class _MidStreamInterruptSession:
 
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
-    renderer = PlainRenderer()  # main() renders the stream through it
+
+    def __init__(self) -> None:
+        self.renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
@@ -150,6 +155,55 @@ def test_ctrl_c_mid_generation_is_caught_after_partial_output(capsys):
     assert "bye." in out  # and the loop survived
 
 
+class _InterruptThenReplySession:
+    """One renderer instance across two turns, like the real Session: the
+    first turn dies mid-stream (Ctrl-C), the second replies normally. Pins
+    that the renderer's _spoke/_line_open don't leak across the interrupt —
+    see Renderer.reply_abort's docstring."""
+
+    model_label = "stub-model"  # main() reads these for the banner and toolbar
+    context_window = 0
+    messages: list = []  # empty history is fine — autosave only needs it iterable
+
+    def __init__(self) -> None:
+        self.renderer = PlainRenderer()  # one instance for the whole session
+        self._calls = 0
+
+    def close(self) -> None:
+        pass
+
+    def suggest_name(self) -> str:  # autosave after the second, successful turn
+        return "stub-session"
+
+    def send(self, _user_input: str):
+        self._calls += 1
+        if self._calls == 1:
+            def interrupted():
+                yield TextDelta("par")
+                raise KeyboardInterrupt
+
+            return interrupted()
+
+        def normal():
+            yield TextDelta("second turn reply")
+            return "second turn reply"
+
+        return normal()
+
+
+def test_the_prompt_prefix_returns_after_an_interrupted_turn(capsys):
+    """Regression for Finding 1: a renderer that survives an interrupted turn
+    must still prefix the very next reply with 'vega> ' — before the fix,
+    _spoke stayed True across turns and the prefix silently vanished."""
+    main(
+        prompter=ScriptedPrompter(["go", "hi", "/exit"]),
+        session=_InterruptThenReplySession(),
+    )
+    out = capsys.readouterr().out
+    assert "(interrupted)" in out  # first turn died as expected
+    assert "vega> second turn reply" in out  # and the second still got its prefix
+
+
 class _FailingTurnSession:
     """send() streams a little then raises, like ClaudeBrain when the backend
     is unauthenticated or the subprocess dies — after rolling back, the real
@@ -157,7 +211,9 @@ class _FailingTurnSession:
 
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
-    renderer = PlainRenderer()  # main() renders the stream through it
+
+    def __init__(self) -> None:
+        self.renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
@@ -200,12 +256,12 @@ class _SuspendedReply:
 class _SuspendedSession:
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
-    renderer = PlainRenderer()  # main() renders the stream through it
 
     def close(self) -> None:
         pass
 
     def __init__(self) -> None:
+        self.renderer = PlainRenderer()  # main() renders the stream through it
         self.reply = _SuspendedReply()
 
     def send(self, _user_input: str):

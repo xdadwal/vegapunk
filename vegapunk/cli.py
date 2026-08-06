@@ -182,6 +182,11 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                     # rolls the partial turn out of history deterministically
                     # (rather than whenever the abandoned generator gets GC'd).
                     events.close()
+                # The renderer's own reply_end() would print here (a pending
+                # newline, or a bare prompt line) — silently, before the
+                # "(interrupted)" message below. reply_abort() resets its state
+                # without printing, so the next turn still gets its prefix.
+                session.renderer.reply_abort()
                 print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
                 continue
             except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
@@ -189,6 +194,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # so show the error — Claude auth failures arrive here with their
                 # "run `claude /login`" hint — and keep the session (approvals,
                 # /model, staged skills) alive for the user to recover.
+                session.renderer.reply_abort()  # see reply_abort's docstring
                 print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
                 continue
             _autosave_turn(ctx)

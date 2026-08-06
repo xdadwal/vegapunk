@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 from vegapunk import style
-from vegapunk.render import PlainRenderer
+from vegapunk.render import UI_MODES, PlainRenderer
 
 
 @pytest.fixture
@@ -40,6 +40,19 @@ def test_a_long_tool_result_is_truncated_with_a_count(plain, capsys):
     err = capsys.readouterr().err
     assert "… (+300 more chars)" in err
     assert "x" * 500 not in err
+
+
+def test_shorten_does_not_touch_a_result_at_or_under_the_limit():
+    from vegapunk.render import _shorten
+
+    assert _shorten("y" * 200) == "y" * 200
+    assert _shorten("short") == "short"
+
+
+def test_shorten_uses_the_singular_when_exactly_one_char_over():
+    from vegapunk.render import _shorten
+
+    assert _shorten("y" * 201) == "y" * 200 + "… (+1 more char)"
 
 
 def test_reasoning_opens_one_line_and_closes_once(plain, capsys):
@@ -93,6 +106,47 @@ def test_a_reply_ending_in_a_newline_is_not_double_spaced(plain, capsys):
     assert capsys.readouterr().out == "vega> done\n"
 
 
+def test_reply_end_called_twice_prints_a_second_prompt_line(plain, capsys):
+    """Pins the actual (non-idempotent) behaviour: reply_end prints a prompt
+    line every time it's called, so a caller that calls it twice for one turn
+    gets two 'vega> ' lines. Callers must call it exactly once per turn that
+    reaches it — reply_abort() is the tool for the paths that don't."""
+    plain.reply_delta("done")
+    plain.reply_end()
+    plain.reply_end()
+
+    assert capsys.readouterr().out == "vega> done\nvega> \n"
+
+
+def test_reply_abort_resets_state_without_printing_so_the_next_turn_gets_its_prefix(
+    plain, capsys
+):
+    """Regression for the renderer becoming per-session state: a turn that ends
+    abnormally (Ctrl-C, a failed turn) must not leak _spoke/_line_open into the
+    next turn's first delta, and reply_abort() must not print anything itself —
+    the caller's own interrupt/error message follows immediately after."""
+    plain.reply_delta("par")  # first turn dies mid-reply, e.g. Ctrl-C
+    plain.reply_abort()
+    assert capsys.readouterr().out == "vega> par"  # abort itself printed nothing more
+
+    plain.reply_delta("second turn reply")
+    plain.reply_end()
+    assert capsys.readouterr().out == "vega> second turn reply\n"
+
+
+def test_reply_abort_after_an_empty_aborted_turn_still_prefixes_the_next_reply(plain, capsys):
+    """The trickier case the reviewer called out: if reply_end ran instead of
+    reply_abort on an aborted turn with no output at all, it would take the
+    'elif self._line_open' branch and print a bare newline with no prompt at
+    all. reply_abort must leave the invariant intact for the next turn."""
+    plain.reply_abort()  # no reply_delta calls at all — nothing spoken
+    assert capsys.readouterr().out == ""
+
+    plain.reply_delta("next")
+    plain.reply_end()
+    assert capsys.readouterr().out == "vega> next\n"
+
+
 # ---------------------------------------------------------------------------
 # choosing a renderer
 # ---------------------------------------------------------------------------
@@ -107,6 +161,17 @@ def test_pick_returns_a_renderer_satisfying_the_protocol():
                    "reply_delta", "reply_end"):
         assert callable(getattr(chosen, method)), f"{method} missing"
     assert isinstance(chosen, Renderer)  # runtime_checkable
+
+
+@pytest.mark.parametrize("mode", UI_MODES)
+def test_pick_returns_plain_for_every_known_mode_today(mode):
+    """pick's actual contract, today: every known VEGAPUNK_UI value yields
+    PlainRenderer — there's no other implementation yet (see pick's docstring).
+    This is the thing that changes, and this test breaks, the day a rich
+    renderer lands and 'auto'/'rich' start returning something else."""
+    from vegapunk.render import pick
+
+    assert isinstance(pick(replace(style.config, ui=mode)), PlainRenderer)
 
 
 def test_an_unknown_ui_mode_is_refused_by_name():

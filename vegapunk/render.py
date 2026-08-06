@@ -54,7 +54,25 @@ class Renderer(Protocol):
         """A fragment of the assistant's answer arrived."""
 
     def reply_end(self) -> None:
-        """The answer is complete. Idempotent."""
+        """The answer is complete. NOT idempotent — a second call prints another
+        prompt line, so callers must call it exactly once per turn that reaches
+        this point."""
+
+    def reply_abort(self) -> None:
+        """The turn ended abnormally (interrupted, cancelled, or failed) before
+        ``reply_end`` ran. Resets any in-progress reply state *without* printing
+        anything, so the next turn starts clean.
+
+        Exists because a renderer instance now lives for the whole session
+        instead of being a fresh local per turn: without this, a turn that never
+        reaches ``reply_end`` (Ctrl-C mid-reply, Ctrl-C at an approval prompt, a
+        raised exception) leaves ``_spoke``/``_line_open`` set, and the *next*
+        turn's first delta silently skips its ``vega> `` prefix. A bare
+        ``reply_end`` call in a ``finally`` isn't a substitute: on the abnormal
+        path it would print the pending newline itself, and the caller's own
+        "(interrupted)" message would then land after a blank line the old
+        code never produced.
+        """
 
 
 class PlainRenderer:
@@ -118,6 +136,10 @@ class PlainRenderer:
             print(self._prefix())  # an empty reply still gets its prompt line
         elif self._line_open:
             print()
+        self._spoke = False
+        self._line_open = False
+
+    def reply_abort(self) -> None:
         self._spoke = False
         self._line_open = False
 

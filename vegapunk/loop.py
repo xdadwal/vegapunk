@@ -88,8 +88,9 @@ def trace(
     Display invariant: any reply text is always yielded as deltas *before* being
     returned — a provider that didn't stream its answer and the step-limit notice
     are each synthesized into one delta — so a renderer can print exactly what it
-    receives. Reasoning is not re-yielded; it's traced live to stderr here,
-    beside [think]/[tool], and never reaches stdout. It *does* stay in history,
+    receives. Reasoning is not re-yielded; the renderer traces it live (today,
+    to stderr beside [think]/[tool] — a future renderer needn't use stderr at
+    all), and it never reaches stdout. It *does* stay in history,
     unlike under the old hand-rolled brains — the Anthropic API rejects a later
     turn whose thinking blocks were altered, so the assistant turn is stored and
     replayed verbatim.
