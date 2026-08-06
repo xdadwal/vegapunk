@@ -147,10 +147,11 @@ def trace(
             elif isinstance(event, ToolCall):
                 in_tool_phase = True
                 if spoke_this_turn:
-                    # The model spoke *and* called tools: close the spoken line
-                    # so the tool trace doesn't glue onto it mid-line.
+                    # The model spoke *and* called tools: tell the renderer to
+                    # close the spoken line, rather than faking a "\n" delta as
+                    # if the model had said it — see reply_break's docstring.
                     spoke_this_turn = False
-                    yield TextDelta("\n")
+                    renderer.reply_break()
                 pending_args[event.id] = event.input
                 # Announced before the wait, not after it: what follows is the
                 # tool running — or a human at an approval prompt — and a
