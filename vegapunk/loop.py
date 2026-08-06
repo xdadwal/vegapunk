@@ -41,7 +41,8 @@ from logpose import (
     stream_sync,
 )
 
-from . import style
+from . import render
+from .render import Renderer
 
 # What the model is told when it runs out of steps. Yielded before it's returned
 # (see the display invariant below), so a renderer never has to decide whether
@@ -49,13 +50,16 @@ from . import style
 STEP_LIMIT_NOTICE = "(Stopped after hitting the step limit without a final answer.)"
 
 
-def run(agent: Agent, user_input: str) -> str:
+def run(agent: Agent, user_input: str, renderer: Renderer | None = None) -> str:
     """One-shot: run a single request to completion and return the reply.
 
-    Drains the turn stream internally (no live rendering), so script callers
-    keep the simple call-and-get-a-string contract.
+    Drains the turn stream internally (no live rendering by the caller), so
+    script callers keep the simple call-and-get-a-string contract.
     """
-    turns = trace(stream_sync(agent, user_input, conversation=Conversation()))
+    turns = trace(
+        stream_sync(agent, user_input, conversation=Conversation()),
+        renderer or render.pick(),
+    )
     while True:
         try:
             next(turns)
@@ -64,7 +68,9 @@ def run(agent: Agent, user_input: str) -> str:
             return reply
 
 
-def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tuple[str, int | None]]:
+def trace(
+    events: Generator[Event, None, None], renderer: Renderer
+) -> Generator[TextDelta, None, tuple[str, int | None]]:
     """Render one run's event stream, and stream the reply back up.
 
     Yields ``TextDelta`` fragments of the assistant's speech as the model
@@ -102,7 +108,6 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
     # result, which arrives later — hold them by id in between.
     pending_args: dict[str, dict] = {}
 
-    reasoning = _ReasoningLine()
     spinner = _Spinner()
     try:
         stream = iter(events)
@@ -119,7 +124,7 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
                 # The runaway backstop. Say so on both channels: the model's
                 # answer is missing, and pretending otherwise would be a lie.
                 spinner.stop()
-                reasoning.close()
+                renderer.reasoning_end()
                 yield TextDelta(STEP_LIMIT_NOTICE)
                 return STEP_LIMIT_NOTICE, context_tokens
             spinner.stop()
@@ -129,17 +134,12 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
                 in_tool_phase = False
                 spoke_this_turn = False
                 step += 1
-                # The [think] marker shows where each model roundtrip starts,
-                # which makes batched-vs-chained tool calling visible.
-                print(
-                    style.paint(f"  [think] step {step}", style.DIM, sys.stderr),
-                    file=sys.stderr,
-                )
+                renderer.step(step)
 
             if isinstance(event, ThinkingDelta):
-                reasoning.write(event.text)
+                renderer.reasoning(event.text)
             elif isinstance(event, TextDelta):
-                reasoning.close()
+                renderer.reasoning_end()
                 if event.text:
                     spoke_this_turn = True
                     yield event
@@ -152,18 +152,13 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
                     yield TextDelta("\n")
                 pending_args[event.id] = event.input
             elif isinstance(event, ToolResult):
-                marker = style.paint(
-                    f"  [tool] {event.name}",
-                    style.RED if event.is_error else style.CYAN,
-                    sys.stderr,
-                )
                 arguments = pending_args.pop(event.id, {})
-                print(f"{marker}({arguments}) -> {_shorten(event.content)}", file=sys.stderr)
+                renderer.tool_result(event.name, arguments, event.content, event.is_error)
                 # The next wait is the model's, so the spinner may resume.
                 in_tool_phase = False
             elif isinstance(event, TurnEnd):
                 turn_open = False
-                reasoning.close()
+                renderer.reasoning_end()
                 footprint = _footprint(event.usage)
                 # Each turn sees the whole conversation, so the latest report is
                 # the current footprint; keep the previous one if a server omits
@@ -174,14 +169,7 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
                     # Out of tokens mid-answer: say so on the watch channel
                     # rather than passing a silently amputated reply off as the
                     # model's chosen ending.
-                    print(
-                        style.paint(
-                            "  [note] the model ran out of tokens; this turn is cut off",
-                            style.YELLOW,
-                            sys.stderr,
-                        ),
-                        file=sys.stderr,
-                    )
+                    renderer.note("the model ran out of tokens; this turn is cut off")
             elif isinstance(event, RunEnd):
                 reply = event.result.text
                 if reply and not spoke_this_turn:
@@ -189,11 +177,8 @@ def trace(events: Generator[Event, None, None]) -> Generator[TextDelta, None, tu
                     # answer displayed — see the display invariant above.
                     yield TextDelta(reply)
     finally:
-        # Runs on normal end, on interrupt, and on generator close. Closing the
-        # stream is what cancels in-flight tools and tears down the provider
-        # connection when a caller walks away mid-turn.
         spinner.stop()
-        reasoning.close()
+        renderer.reasoning_end()
         events.close()
 
     return reply, context_tokens
@@ -211,35 +196,6 @@ def _footprint(usage) -> int:
         + usage.cache_creation_input_tokens
         + usage.output_tokens
     )
-
-
-class _ReasoningLine:
-    """The live ``[reason]`` line on stderr — Punk Records murmuring.
-
-    Opens on the first reasoning fragment and closes when the reply starts (or
-    the stream ends), so the trace reads as one line per turn even though it's
-    written as it's generated. Color opens once at the line start and resets
-    once at the close, not per fragment: a Ctrl-C landing mid-reasoning — the
-    likeliest interrupt point — would otherwise stain the whole terminal dim.
-    """
-
-    def __init__(self) -> None:
-        self._open = False
-        self._reset = ""
-
-    def write(self, text: str) -> None:
-        if not self._open:
-            self._reset = style.RESET if style.enabled(sys.stderr) else ""
-            open_code = style.DIM + style.MAGENTA if self._reset else ""
-            print(f"{open_code}  [reason] ", end="", file=sys.stderr, flush=True)
-            self._open = True
-        print(text, end="", file=sys.stderr, flush=True)
-
-    def close(self) -> None:
-        """Close the line if it's open. Idempotent, so callers needn't check."""
-        if self._open:
-            self._open = False
-            print(self._reset, file=sys.stderr)
 
 
 class _Spinner:
@@ -288,17 +244,3 @@ class _Spinner:
             # \r plus erase-to-end-of-line clears only the spinner's own
             # line; the [think] line above it is untouched.
             print("\r\x1b[K", end="", file=sys.stderr, flush=True)
-
-
-def _shorten(result: str, limit: int = 200) -> str:
-    """Trim a tool result for the trace — display only; the model always gets
-    the full result (capped separately by config.output_char_cap).
-
-    200 chars keeps a whole-file read from flooding the watch channel while
-    still showing enough to recognize what came back; hardcoded until someone
-    actually needs to tune it.
-    """
-    extra = len(result) - limit
-    if extra <= 0:
-        return result
-    return f"{result[:limit]}… (+{extra:,} more char{'s' if extra != 1 else ''})"

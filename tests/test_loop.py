@@ -39,6 +39,7 @@ from vegapunk import style
 from vegapunk.approval import Decision, ScriptedApprover
 from vegapunk.gate import DENIED, NO_GATE
 from vegapunk.loop import STEP_LIMIT_NOTICE, run, trace
+from vegapunk.render import PlainRenderer
 from tests.fake_provider import Turn, agent_for, call, says, wants
 
 
@@ -101,7 +102,7 @@ def _drive(turns, **kwargs) -> tuple[list[TextDelta], str, int | None]:
     """Run one request and split what it yielded from what it returned."""
     kwargs.setdefault("tools", TOOLS)
     agent, _provider = agent_for(turns, **kwargs)
-    generator = trace(stream_sync(agent, "go", conversation=Conversation()))
+    generator = trace(stream_sync(agent, "go", conversation=Conversation()), PlainRenderer())
     deltas: list[TextDelta] = []
     while True:
         try:
@@ -461,7 +462,7 @@ def test_abandoning_the_stream_closes_the_provider():
     agent, provider = agent_for(
         [wants(call("echo", {"text": "a"})), says("done")], tools=TOOLS, repeat_last=True
     )
-    generator = trace(stream_sync(agent, "go", conversation=Conversation()))
+    generator = trace(stream_sync(agent, "go", conversation=Conversation()), PlainRenderer())
     next(generator)  # start the run, land on the first delta
 
     generator.close()
@@ -490,7 +491,7 @@ def test_trace_renders_a_stream_it_did_not_create():
         finally:
             closed = True
 
-    generator = trace(scripted())
+    generator = trace(scripted(), PlainRenderer())
     deltas = []
     while True:
         try:
@@ -555,18 +556,46 @@ def test_stopping_a_spinner_twice_is_harmless(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 6. formatting helpers
+# 6. the renderer seam
 # ---------------------------------------------------------------------------
 
 
-def test_shorten_leaves_short_results_alone():
-    from vegapunk.loop import _shorten
+def test_trace_prints_through_the_renderer_it_is_given():
+    """The seam is real: nothing reaches a stream except through the renderer.
 
-    assert _shorten("short") == "short"
+    Driven with a recording double rather than capsys, so a regression that
+    re-adds a bare `print` to loop.py fails here instead of passing silently
+    because the bytes happened to match.
+    """
 
+    class Recorder:
+        def __init__(self):
+            self.calls = []
 
-def test_shorten_reports_how_much_it_hid():
-    from vegapunk.loop import _shorten
+        def __getattr__(self, name):
+            def record(*args, **kwargs):
+                self.calls.append((name, args, kwargs))
 
-    assert _shorten("y" * 201) == "y" * 200 + "… (+1 more char)"
-    assert _shorten("y" * 250).endswith("… (+50 more chars)")
+            return record
+
+    recorder = Recorder()
+    agent, _provider = agent_for(
+        [wants(call("echo", {"text": "hi"}), thinking="mulling"), says("done")], tools=TOOLS
+    )
+    generator = trace(stream_sync(agent, "go", conversation=Conversation()), recorder)
+    while True:
+        try:
+            next(generator)
+        except StopIteration:
+            break
+
+    named = [name for name, _args, _kwargs in recorder.calls]
+    assert named.count("step") == 2
+    assert "reasoning" in named
+    assert "reasoning_end" in named
+    assert "tool_result" in named
+    tool = next(c for c in recorder.calls if c[0] == "tool_result")
+    assert tool[1][0] == "echo"           # name
+    assert tool[1][1] == {"text": "hi"}   # arguments
+    assert tool[1][2] == "hi"             # content
+    assert tool[1][3] is False            # is_error
