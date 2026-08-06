@@ -59,8 +59,9 @@ changed the shape of the work.
    beneath their call.
 5. **No full-screen multi-pane app.** See Non-goals.
 6. **Keep the spinner**; add a live status tail to it rather than replacing it.
-7. **Collapsed reasoning by default**, with `/reason` to print the last turn's
-   thinking in full.
+7. **Reasoning is not displayed at all.** The spinner shows that thinking is
+   streaming; its content never reaches the screen. This replaces an earlier
+   collapse-and-expand design, and removes the `/reason` command it needed.
 
 ## Architecture
 
@@ -69,13 +70,13 @@ changed the shape of the work.
 New module `vegapunk/render.py`. A `Renderer` protocol with two
 implementations, chosen at construction:
 
-- **`RichRenderer`** — live markdown, glyph trace, gutter, collapsed reasoning,
-  live status. Used when the stream is a terminal.
-- **`PlainRenderer`** — today's exact bytes, unchanged: `[think] step N`,
-  `[tool] name(args) -> result`, `[reason] …`. Used when output is piped, under
-  `NO_COLOR`, under `VEGAPUNK_UI=plain`, and throughout the test suite. Nothing
-  in this spec alters those bytes, which is what lets the existing suite stand
-  as the regression check.
+- **`RichRenderer`** — live markdown, glyph trace, gutter, live status. Used
+  when the stream is a terminal.
+- **`PlainRenderer`** — today's bytes: `[think] step N`, `[tool] name(args) ->
+  result`. Used when output is piped, under `NO_COLOR`, under
+  `VEGAPUNK_UI=plain`, and throughout the test suite. Only the `[reason]` line
+  changes (it goes away — see Reasoning), so the existing suite stands as the
+  regression check for everything else.
 
 The seam is the same one `style.enabled()` already applies per stream, and it
 earns its place three ways:
@@ -139,7 +140,7 @@ Glyphs, used consistently across trace, reply and selectors:
 | Glyph | Meaning |
 |---|---|
 | `❯` | the user's input line |
-| `●` | an event: a tool call, a reasoning block |
+| `●` | an event: a tool call |
 | `⎿` | that event's result, indented beneath it |
 | `┃` | the reply gutter, bounding the assistant's answer |
 | `──` | a dim rule separating turns and titling a selector |
@@ -155,7 +156,6 @@ A rendered turn:
 
 ● list_dir(path=".")
   ⎿ 29 entries · requirements.txt, scheduler.log, … (+168 chars)
-● thinking · 2.1k chars · /reason
 
 ┃ Here's what's in the workspace root:
 ┃
@@ -164,8 +164,11 @@ A rendered turn:
 ┃
 ┃   Total: 29 entries — 12 dirs, 17 files
 
-⠋ thinking… 4s · step 2 · 12.4k tok
+⠹ thinking… 4s · step 2 · 1.2k reasoning · 12.4k tok
 ```
+
+The status line above is transient — it occupies one line while the model works
+and erases itself when the reply begins. Nothing of the reasoning survives it.
 
 ## Surfaces
 
@@ -187,28 +190,42 @@ output collapsed to a summary plus a character count. Failures take Atlas red.
 `_shorten`'s 200-character display cap is unchanged and keeps applying to both
 renderers.
 
-### Reasoning: collapsed, with `/reason`
+### Reasoning: shown as activity, never as text
 
-A terminal is append-only. Once a line has scrolled, nothing can expand it in
-place without a full-screen application, so "collapse and expand" is two
-mechanisms rather than one:
+Reasoning content is not displayed. On a real task it runs to thousands of
+characters per step and buries the answer, which is the loudest reason the
+current output reads as noisy.
 
-- **While streaming**, reasoning renders inside the live region showing its most
-  recent line, updating in place. This is possible precisely because the region
-  is still live.
-- **On finalisation** it collapses to `● thinking · 2.1k chars · /reason`.
-- **`/reason`** prints the last turn's reasoning in full, on demand.
-- `VEGAPUNK_REASONING=full` opts out of collapsing entirely.
+What replaces it is a liveness signal, not a summary: while `ThinkingDelta`s
+arrive, the status line stays up and its reasoning counter climbs. That
+distinguishes *thinking* from *stalled* — the one thing the content was
+actually being used for — without putting a word of it on screen.
 
-Retroactive in-place expansion of scrolled output is not achievable and is not
-promised.
+`VEGAPUNK_SHOW_THINKING=1` restores the full text for debugging "why did it do
+that?", which is the only case that wants it. Off by default.
+
+Reasoning still stays in the conversation history regardless: the Anthropic API
+rejects a later turn whose thinking blocks were altered, so it is stored and
+replayed verbatim. Hidden is a display decision, not a data one.
+
+**This is the one place `PlainRenderer`'s bytes change.** The `[reason]` line
+disappears from the piped output too, because a display decision this deliberate
+should not depend on whether you are on a terminal. Roughly four tests in
+`tests/test_loop.py` pin that line and will be updated — the only expected churn
+in the existing suite, and it is a behaviour change rather than drift.
 
 ### Spinner and live status
 
 The spinner glyph stays. It gains a status tail: elapsed seconds, step number,
-and cumulative tokens — all already present on the events `loop.py` consumes
-(`TurnEnd.usage`, the existing step counter). It continues to draw only on a
-TTY and to erase its own line on stop.
+cumulative tokens, and — while reasoning streams — a character count of it. All
+are already present on the events `loop.py` consumes (`TurnEnd.usage`, the
+existing step counter, `ThinkingDelta`). It continues to draw only on a TTY and
+to erase its own line on stop.
+
+Because reasoning is no longer written out, the spinner now stays up *through*
+the thinking phase rather than stopping at the first event, and stops when the
+reply's first `TextDelta` arrives. That is the whole of the "model is thinking"
+representation.
 
 ### Input prompt
 
@@ -239,7 +256,7 @@ the shared dim style.
 | Variable | Values | Default |
 |---|---|---|
 | `VEGAPUNK_UI` | `auto` \| `rich` \| `plain` | `auto` |
-| `VEGAPUNK_REASONING` | `collapsed` \| `full` | `collapsed` |
+| `VEGAPUNK_SHOW_THINKING` | `0` \| `1` | `0` |
 
 `auto` selects `RichRenderer` when the stream is a terminal, `PlainRenderer`
 otherwise. `NO_COLOR` forces `plain`.
@@ -262,7 +279,8 @@ than replacing it.
 - Pinned behaviours: markdown actually renders (no literal `**`); a multi-line
   tool result stays one trace line; the live region is closed before a trace
   line prints; a completed block is committed and only the trailing block stays
-  live; reasoning
+  live; reasoning content never reaches either stream while
+  `VEGAPUNK_SHOW_THINKING` is off, and the status line reports it as activity; reasoning
   collapses and `/reason` reprints it; renderer selection follows
   `VEGAPUNK_UI`, TTY-ness and `NO_COLOR`.
 - Selector tests keep driving the real widget through a prompt_toolkit pipe, as
@@ -290,6 +308,6 @@ Four sequential PRs, each green:
    default until the rich path lands.
 2. The rich trace and reply: glyphs, gutter, live markdown with per-block
    commit, single-line tool results.
-3. Reasoning collapse, `/reason`, and the live status tail on the spinner.
+3. Hiding reasoning, and the live status tail on the spinner.
 4. Chrome: startup header, error blocks, turn separators, input prompt, and the
    restyled selectors.
