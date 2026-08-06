@@ -61,6 +61,16 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   task never delays your typing and its tool trace goes to `scheduler.log` beside the database
   rather than onto your prompt. See [Scheduled tasks](#scheduled-tasks).
 - **Slash commands** (see below) — anything else you type goes to the model.
+- **Inline pickers.** Run `/model`, `/models`, `/load`, `/skill` or `/effort` with no argument
+  on a terminal and you get an arrow-key menu instead of a usage line — backends with their
+  credential and whether they can run, a backend's real model ids, saved conversations with
+  turn counts, skills with their summaries, effort levels. The current value is marked and the
+  cursor starts on it; `Esc` backs out and changes nothing. The menu is inline and erases
+  itself, so scrollback keeps only what you did. Piped or scripted sessions keep the plain
+  text behaviour, so nothing here changes what a script sees.
+- **Tab completion** for slash commands *and* their arguments — providers, model ids, saved
+  session names, skills, effort levels, sub-commands. Model ids come from what `/models` has
+  already fetched, so a keystroke never waits on the network.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
 - **Streaming output** — replies print token by token as the model generates them, instead of
@@ -93,8 +103,8 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
-| `/model [provider [name]]` | List backends with their credential and readiness, or switch mid-conversation (e.g. `/model claude opus`) |
-| `/models [provider]` | List the models a backend actually serves (live, cached per session), marking the active one |
+| `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
+| `/models [provider]` | Pick from the models a backend actually serves (live, cached per session); lists them when piped |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
@@ -332,6 +342,7 @@ vegapunk/
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the live trace: logpose's event stream → what you watch on stderr
+  menu.py        # the inline arrow-key picker every selection prompt runs on
   session.py     # conversation state across turns
   backend.py     # which model to talk to: name → logpose provider, label, context window
   gate.py        # the approval gate logpose consults before running each tool

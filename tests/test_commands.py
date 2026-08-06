@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from vegapunk import db, session_store
-from vegapunk.backend import Backend, current_effort
+from vegapunk.backend import EFFORT_LEVELS, Backend, current_effort
 from vegapunk.commands import CommandContext, dispatch
 from tests.fake_provider import (
     assistant_turn,
@@ -728,3 +728,116 @@ def test_model_switch_refuses_an_id_the_backend_does_not_serve(monkeypatch):
 
     assert "doesn't serve 'gpt-4o'" in res.output
     assert calls == []  # rejected before anything was built or swapped
+
+
+# ---------------------------------------------------------------------------
+# the inline pickers — what /model, /models, /load and /effort do on a terminal
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def on_a_terminal(monkeypatch):
+    """Pretend there's a TTY, and script the picker instead of drawing one.
+
+    Returns a recorder: set ``.answer`` to what the user "picks" (None = backed
+    out), and read ``.options`` afterwards to assert what they were shown.
+    """
+
+    class Recorder:
+        answer: str | None = None
+        title: str = ""
+        options: list = []
+
+        def choose(self, title, options, **kwargs):
+            self.title, self.options = title, list(options)
+            return self.answer
+
+    recorder = Recorder()
+    monkeypatch.setattr("vegapunk.commands._interactive", lambda: True)
+    monkeypatch.setattr("vegapunk.commands.menu.choose", recorder.choose)
+    return recorder
+
+
+def test_bare_model_opens_a_backend_picker_marking_the_live_one(on_a_terminal, monkeypatch):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx()
+    on_a_terminal.answer = None  # back out
+
+    res = dispatch("/model", ctx)
+
+    labels = [o.label for o in on_a_terminal.options]
+    assert "claude-code" in labels and "codex" in labels
+    # The alias and the credential ride along as detail, so you can choose
+    # without having memorised either.
+    detail = next(o.detail for o in on_a_terminal.options if o.label == "claude-code")
+    assert "claude" in detail and "subscription" in detail and "unofficial" in detail
+    assert res.output == "(unchanged)"
+
+
+def test_backing_out_of_the_backend_picker_changes_nothing(on_a_terminal, monkeypatch):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx()
+    before = ctx.session.model_label
+    on_a_terminal.answer = None
+
+    assert dispatch("/model", ctx).output == "(unchanged)"
+    assert ctx.session.model_label == before
+
+
+def test_bare_models_picks_a_model_on_the_live_backend(on_a_terminal, monkeypatch):
+    swapped: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_backend",
+        lambda provider, cfg: swapped.append((provider, cfg.claude_model)) or _claude_backend("x"),
+    )
+    ctx = _ctx()
+    ctx.session.swap_backend(_claude_backend("claude-opus-5"))
+    on_a_terminal.answer = "claude-sonnet-5"
+
+    dispatch("/models claude", ctx)
+
+    assert [o.label for o in on_a_terminal.options] == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+    ]
+    assert [o.active for o in on_a_terminal.options] == [True, False, False]  # the live one
+    assert swapped == [("claude", "claude-sonnet-5")]
+
+
+def test_bare_load_picks_a_saved_session(on_a_terminal):
+    ctx = _ctx()
+    ctx.session.restore([user_turn("hi"), assistant_turn("yo")])
+    dispatch("/save demo", ctx)
+    on_a_terminal.answer = "demo"
+
+    res = dispatch("/load", _ctx())
+
+    assert "Resumed 'demo'" in res.output
+    assert on_a_terminal.options[0].detail.startswith("1 turns")
+
+
+def test_bare_load_with_no_saved_sessions_says_so(on_a_terminal):
+    assert dispatch("/load", _ctx()).output == "(no saved sessions)"
+
+
+def test_bare_effort_picks_a_level(on_a_terminal):
+    ctx = _ctx(model_label="claude", effort_key="output_config")
+    on_a_terminal.answer = "high"
+
+    res = dispatch("/effort", ctx)
+
+    assert [o.label for o in on_a_terminal.options] == list(EFFORT_LEVELS)
+    assert "effort set to high" in res.output
+    assert current_effort(ctx.session.backend) == "high"
+
+
+def test_the_pickers_stay_out_of_the_way_without_a_terminal(monkeypatch):
+    """Every non-interactive path — tests, pipes, the scheduler — keeps the
+    plain-text behaviour it had before the pickers existed."""
+    monkeypatch.setattr("vegapunk.commands._interactive", lambda: False)
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+
+    assert "Available:" in dispatch("/model", _ctx()).output
+    assert dispatch("/load", _ctx()).output == "Usage: /load <name>"
+    assert "Effort:" in dispatch("/effort", _ctx(effort_key="output_config")).output

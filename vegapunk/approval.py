@@ -19,13 +19,9 @@ from dataclasses import dataclass
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.input import Input
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.containers import HSplit, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.output import Output
 
-from . import style
+from . import menu, style
 
 # The approval choices, in menu order: (returned value, label shown).
 _CHOICES = [
@@ -53,58 +49,23 @@ class Decision:
 def _build_menu(
     tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
 ) -> Application:
-    """An inline arrow-key approval menu: Up/Down to move, Enter to choose.
+    """The approval menu, built on the shared picker (``vegapunk/menu.py``).
 
     Returns an Application whose ``.run()`` yields the chosen value
-    ('yes' / 'no' / 'always'). Inline (not full-screen) and ``erase_when_done``
-    so it disappears after choosing and the scrollback stays clean. ``input`` /
-    ``output`` are passed only by tests (a prompt_toolkit pipe + DummyOutput).
+    ('yes' / 'no' / 'feedback' / 'always'), or ``None`` if the user backed out —
+    which :meth:`CLIApprover.approve` reads as a decline, the safe answer.
+
+    The tool name pops Egghead-cyan inside the bold header; these are
+    prompt_toolkit style tuples, rendered (or not) by its own output layer, so
+    DummyOutput-driven tests see only the returned choice.
     """
-    state = {"idx": 0}
-
-    def render():
-        # The tool name pops Egghead-cyan inside the bold header; these are
-        # prompt_toolkit style tuples, rendered (or not) by its own output
-        # layer, so DummyOutput-driven tests see only the returned choice.
-        lines = [
-            ("bold", "approve tool?  "),
-            ("bold fg:ansicyan", tool_name),
-            ("bold", f"({arguments})\n"),
-        ]
-        for i, (_value, label) in enumerate(_CHOICES):
-            selected = i == state["idx"]
-            prefix = "> " if selected else "  "
-            lines.append(("reverse" if selected else "", f"{prefix}{label}\n"))
-        return lines
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    def _(event) -> None:
-        state["idx"] = (state["idx"] - 1) % len(_CHOICES)
-
-    @kb.add("down")
-    def _(event) -> None:
-        state["idx"] = (state["idx"] + 1) % len(_CHOICES)
-
-    @kb.add("enter")
-    def _(event) -> None:
-        event.app.exit(result=_CHOICES[state["idx"]][0])
-
-    @kb.add("c-c")
-    def _(event) -> None:
-        event.app.exit(result="no")  # interrupting the menu == decline (safe)
-
-    control = FormattedTextControl(render, focusable=True, show_cursor=False)
-    body = HSplit([Window(control, height=len(_CHOICES) + 1)])
-    return Application(
-        layout=Layout(body),
-        key_bindings=kb,
-        full_screen=False,
-        erase_when_done=True,
-        input=input,
-        output=output,
-    )
+    title = [
+        ("bold", "approve tool?  "),
+        ("bold fg:ansicyan", tool_name),
+        ("bold", f"({arguments})\n"),
+    ]
+    options = [menu.Option(value=value, label=label) for value, label in _CHOICES]
+    return menu.build(title, options, input=input, output=output)
 
 
 class Approver(ABC):
@@ -142,6 +103,8 @@ class CLIApprover(Approver):
             )
             return Decision(allow=False)
 
+        # None is a backed-out menu (Esc/Ctrl-C). Declining is the safe read:
+        # never run a guarded tool because someone dismissed the prompt.
         choice = self._ask(tool_name, arguments)
         if choice == "always":
             self._always_allowed.add(tool_name)

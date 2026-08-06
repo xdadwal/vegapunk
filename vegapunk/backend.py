@@ -368,6 +368,19 @@ def available_models(name: str, cfg: Config = config) -> list[str]:
     return _MODEL_CACHE[info.name]
 
 
+def cached_models(name: str) -> list[str]:
+    """Model ids already fetched for this backend, or ``[]``.
+
+    Never makes a request. Tab completion calls this on every keystroke, and a
+    completer that blocks on the network would freeze the line you are typing —
+    far worse than offering nothing until ``/models`` has been run once.
+    """
+    try:
+        return list(_MODEL_CACHE.get(canonical_name(name), []))
+    except (KeyError, ValueError):
+        return []
+
+
 def resolve_model_choice(name: str, model: str, cfg: Config = config) -> str:
     """Check ``model`` against what the backend serves; return what to request.
 

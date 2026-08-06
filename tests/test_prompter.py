@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import CompleteEvent, WordCompleter
+from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.input.defaults import create_pipe_input
@@ -55,12 +55,60 @@ def test_history_persists_to_db(tmp_path):
     assert "remember me" in list(DbHistory().load_history_strings())
 
 
-def test_prompter_uses_whole_line_command_completer():
+def _complete(text: str) -> list[str]:
+    """What the live prompter would offer for ``text``, cursor at the end."""
     completer = PromptToolkitPrompter(history=InMemoryHistory())._session.completer
-    assert isinstance(completer, WordCompleter)
-    # Slash-command prefix → suggests the command; a normal sentence → stays silent.
-    assert [c.text for c in completer.get_completions(Document("/cl", 3), CompleteEvent())] == ["/clear"]
-    assert list(completer.get_completions(Document("tell me ex", 10), CompleteEvent())) == []
+    return [c.text for c in completer.get_completions(Document(text, len(text)), CompleteEvent())]
+
+
+def test_completer_suggests_commands_and_leaves_prose_alone():
+    assert _complete("/cl") == ["/clear"]
+    # A sentence is what you're mostly typing; popping a menu into it would be
+    # worse than offering nothing.
+    assert _complete("tell me ex") == []
+
+
+def test_completer_offers_backends_after_a_model_command():
+    for line in ("/model ", "/models "):
+        offered = _complete(line)
+        assert "claude" in offered and "codex" in offered and "local" in offered
+
+
+def test_completer_narrows_backends_by_what_is_typed():
+    assert _complete("/model cla") == ["claude", "claude-code"]
+
+
+def test_completer_offers_effort_levels():
+    assert _complete("/effort ") == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_completer_offers_saved_sessions_for_load_and_forget():
+    from vegapunk.session_store import save_session
+
+    save_session("alpha-chat", [])
+    save_session("beta-chat", [])
+
+    assert set(_complete("/load ")) == {"alpha-chat", "beta-chat"}
+    assert _complete("/sessions forget al") == ["alpha-chat"]
+    assert _complete("/sessions ") == ["forget"]  # the sub-command first
+
+
+def test_completer_never_makes_a_network_call_for_model_ids(monkeypatch):
+    """Completion runs on every keystroke, so it may only offer ids already
+    fetched — blocking the line you are typing on an HTTP round trip would be
+    far worse than offering nothing until /models has been run once."""
+    def _boom(*args, **kwargs):
+        raise AssertionError("completion must not fetch models")
+
+    monkeypatch.setattr("vegapunk.backend.available_models", _boom)
+
+    assert _complete("/model claude ") == []
+
+
+def test_completer_offers_cached_model_ids_once_they_are_known(monkeypatch):
+    monkeypatch.setattr("vegapunk.prompter.cached_models", lambda name: ["claude-opus-5", "x"])
+
+    assert _complete("/model claude claude-") == ["claude-opus-5"]
 
 
 def test_auto_suggest_from_history():

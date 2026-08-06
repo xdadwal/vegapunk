@@ -15,20 +15,95 @@ from collections.abc import Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import History
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
-from . import style
+from . import skills, style
+from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
+from .session_store import list_sessions
 
 # The slash commands the REPL understands, offered as completions — derived from
 # the command registry so they never drift from what the REPL actually handles.
 _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
+
+# Sub-commands that take a fixed vocabulary of their own.
+_SUBCOMMANDS = {
+    "sessions": ["forget"],
+    "memory": ["list", "forget"],
+    "schedule": ["list", "add", "remove"],
+}
+
+
+def _session_names() -> list[str]:
+    """Saved conversation names, newest first. Degrades to none on a DB error —
+    a completer must never be the thing that breaks the prompt."""
+    try:
+        return [name for name, _turns, _updated in list_sessions()]
+    except Exception:  # noqa: BLE001 — completion is a convenience
+        return []
+
+
+def _skill_names() -> list[str]:
+    try:
+        return [skill.name for skill in skills.list_skills()]
+    except Exception:  # noqa: BLE001 — same
+        return []
+
+
+def _argument_options(command: str, words: list[str]) -> list[str]:
+    """What can follow ``/command`` given the words already typed.
+
+    ``words`` is everything after the command name, the last entry being the
+    (possibly empty) word under the cursor.
+    """
+    position = len(words) - 1  # 0 = first argument, 1 = second, …
+    if command in ("model", "models"):
+        # First a backend, then that backend's models — but only ones already
+        # fetched, so a keystroke never waits on the network.
+        return backend_names() if position == 0 else cached_models(words[0])
+    if command == "effort":
+        return list(EFFORT_LEVELS) if position == 0 else []
+    if command in ("load", "save"):
+        return _session_names() if position == 0 else []
+    if command == "skill":
+        return _skill_names() if position == 0 else []
+    if command == "sessions":
+        if position == 0:
+            return _SUBCOMMANDS["sessions"]
+        return _session_names() if words[0] == "forget" else []
+    if command in _SUBCOMMANDS:
+        return _SUBCOMMANDS[command] if position == 0 else []
+    return []
+
+
+class SlashCompleter(Completer):
+    """Completes a slash command, then completes its arguments.
+
+    Only ever fires on a line starting with ``/`` — ordinary prose is what you
+    are mostly typing, and popping a menu into the middle of a sentence would be
+    worse than no completion at all.
+    """
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/") or "\n" in text:
+            return
+        head, *rest = text[1:].split(" ")
+        if not rest:  # still typing the command name
+            for name in _COMMANDS:
+                if name.startswith(text):
+                    yield Completion(name, start_position=-len(text))
+            return
+        word = rest[-1]
+        for option in _argument_options(head.lower(), rest):
+            if option.startswith(word):
+                yield Completion(option, start_position=-len(word))
 
 
 class Prompter(ABC):
@@ -86,9 +161,10 @@ class PromptToolkitPrompter(Prompter):
             key_bindings=_build_key_bindings(),
             enable_history_search=False,  # plain chronological recall, not prefix-search
             auto_suggest=AutoSuggestFromHistory(),  # grey ghost text, accept with Right/End
-            # sentence=True matches the whole line, so completion never pops up
-            # mid-sentence — only when the line so far is a command prefix.
-            completer=WordCompleter(_COMMANDS, sentence=True),
+            # Completes the command name, then its arguments — providers,
+            # models, session names, skills, effort levels. Never fires unless
+            # the line starts with "/", so prose is left alone.
+            completer=SlashCompleter(),
             complete_while_typing=True,
             # A callable is re-evaluated on every render, so a status line
             # like "model · session-name" stays current without any wiring.
