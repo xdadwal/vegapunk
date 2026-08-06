@@ -134,10 +134,11 @@ UI_MODES = ("auto", "rich", "plain")
 def pick(cfg: Config = config) -> Renderer:
     """The renderer for this process.
 
-    ``auto`` follows the terminal, which is the same rule ``style.enabled``
-    already applies to colour, so one mental model covers both. ``NO_COLOR``
-    forces plain: a user asking for no escape codes is not asking for a live
-    re-rendering region either.
+    Always ``PlainRenderer`` for now — there's no other implementation yet.
+    Once ``RichRenderer`` exists, ``auto`` should follow the terminal (the
+    same rule ``style.enabled`` already applies to colour) and ``NO_COLOR``
+    should force plain; this is the only function that will need to change
+    to add that.
 
     Raises:
         ValueError: If ``VEGAPUNK_UI`` is not a known mode. Said out loud rather
