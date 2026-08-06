@@ -257,6 +257,16 @@ def test_split_completed_markdown_does_not_split_a_fenced_code_block():
     assert trailing == "```python\n\nprint('hi')\n```"
 
 
+def test_split_completed_markdown_keeps_loose_list_items_together():
+    """A typical structured assistant response may contain blank list gaps."""
+    committed, trailing = _split_completed_markdown(
+        "Use a CLI agent this way:\n\n- Give it durable preferences.\n\n- Ask it to use tools."
+    )
+
+    assert committed == "Use a CLI agent this way:\n\n"
+    assert trailing == "- Give it durable preferences.\n\n- Ask it to use tools."
+
+
 def test_rich_reply_commits_a_completed_block_without_repeating_the_live_tail():
     """The completed paragraph becomes static; only ``second`` is live.
 

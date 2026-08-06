@@ -253,17 +253,35 @@ def _split_completed_markdown(text: str) -> tuple[str, str]:
     need to be redrawn for ordinary streaming Markdown. Fence bodies are the
     exception — blank lines inside them are content, not block boundaries.
     """
+    lines = text.splitlines(keepends=True)
     in_fence = False
     committed_at = 0
     offset = 0
-    for line in text.splitlines(keepends=True):
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith(("```", "~~~")):
             in_fence = not in_fence
         elif not in_fence and not stripped:
-            committed_at = offset + len(line)
+            previous = next((item for item in reversed(lines[:index]) if item.strip()), "")
+            following = next((item for item in lines[index + 1 :] if item.strip()), "")
+            # A blank line is legal *inside* a loose Markdown list. Do not
+            # freeze its first item into a separate Panel just because the
+            # next streamed chunk has not arrived yet; Rich then loses the
+            # list's shared indentation and bullet structure. A list followed
+            # by ordinary prose is a real block boundary, so that can commit.
+            if following and not (_is_list_line(previous) and _is_list_line(following)):
+                committed_at = offset + len(line)
         offset += len(line)
     return text[:committed_at], text[committed_at:]
+
+
+def _is_list_line(line: str) -> bool:
+    stripped = line.lstrip()
+    if len(line) != len(stripped):
+        return True  # an indented list continuation belongs to its item
+    return stripped.startswith(("- ", "* ", "+ ")) or (
+        len(stripped) > 2 and stripped[0].isdigit() and ". " in stripped[:4]
+    )
 
 
 class RichRenderer:
