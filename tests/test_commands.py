@@ -582,11 +582,15 @@ def _effort_ctx(effort: str | None = None) -> CommandContext:
     return ctx
 
 
-def test_effort_on_a_model_without_one_explains_it_is_unsupported():
-    ctx = _ctx()  # the scripted backend declares no effort setting
+def test_effort_on_a_model_without_one_names_the_model_it_is_talking_about():
+    # The message names the live model rather than saying "the local model":
+    # the older Claude models 400 on the effort parameter too, so /model claude
+    # is no longer the answer — a model that has the setting is.
+    ctx = _ctx(model_label="claude-haiku-4-5")  # declares no effort setting
     for line in ("/effort", "/effort max"):
         assert dispatch(line, ctx).output == (
-            "(the local model has no effort setting — /model claude first)"
+            "(claude-haiku-4-5 has no effort setting — "
+            "switch to a model that has one, e.g. /model claude opus)"
         )
 
 

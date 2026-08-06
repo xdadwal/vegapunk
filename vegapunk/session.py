@@ -19,7 +19,9 @@ from logpose import (
     Agent,
     Conversation,
     Message,
+    RedactedThinkingBlock,
     TextDelta,
+    ThinkingBlock,
     close_sync,
     run_sync,
     stream_sync,
@@ -36,6 +38,37 @@ _TITLE_PROMPT = (
     "Reply with a short 3-5 word title for a conversation that begins "
     "with the next message. Give the title only — no quotes, no punctuation."
 )
+
+
+def _without_thinking(messages: list[Message]) -> list[Message]:
+    """The same history with every thinking block removed.
+
+    Thinking is the one part of the history that does *not* travel between
+    models. Anthropic signs its thinking blocks and rejects a turn whose blocks
+    were altered — but it equally rejects one carrying a block it never signed
+    (``messages.N.content.0.thinking.signature: Field required``), which is
+    exactly what a local reasoning model's thinking looks like. So a
+    conversation that starts on a thinking model and then moves to Claude fails
+    on *every* later turn, permanently, until /new.
+
+    Dropping the blocks at the moment of the swap is what keeps the
+    conversation portable: they're display-only here (already traced to
+    stderr), and the new model has no use for another model's reasoning. An
+    assistant turn left with no content at all is dropped whole — an empty
+    content array is itself a 400.
+    """
+    kept: list[Message] = []
+    for message in messages:
+        content = [
+            block
+            for block in message.content
+            if not isinstance(block, (ThinkingBlock, RedactedThinkingBlock))
+        ]
+        if len(content) == len(message.content):
+            kept.append(message)
+        elif content:
+            kept.append(message.model_copy(update={"content": content}))
+    return kept
 
 
 class Session:
@@ -143,6 +176,10 @@ class Session:
         if backend.provider is self._agent.provider:
             self._agent.extra = dict(backend.extra)
         else:
+            # A real model change: another model's thinking cannot be replayed
+            # to this one, so it doesn't travel. ``send`` hands the conversation
+            # to the agent per turn, so swapping it here is enough.
+            self._conversation = Conversation(_without_thinking(self._conversation.messages))
             old = self._agent
             self._agent = self._build_agent()
             self._retire(old)
@@ -176,7 +213,12 @@ class Session:
         Raises ``ValueError`` if a message doesn't parse — the caller has
         already checked the format, so this is the backstop, not the gate.
         """
-        self._conversation = Conversation(Message.model_validate(m) for m in messages)
+        # Thinking is stripped for the same reason as in swap_backend: a saved
+        # conversation carries no record of which model produced it, so its
+        # thinking blocks cannot be assumed replayable to whatever is live now.
+        self._conversation = Conversation(
+            _without_thinking([Message.model_validate(m) for m in messages])
+        )
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None

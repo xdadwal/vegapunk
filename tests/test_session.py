@@ -325,6 +325,46 @@ def test_swapping_the_backend_keeps_the_conversation():
     assert len(provider.last_request.messages) == 3
 
 
+def test_swapping_the_model_leaves_the_old_model_s_thinking_behind():
+    # Regression: a conversation that began on a thinking model (the local
+    # reasoning ones produce unsigned thinking blocks) and then moved to Claude
+    # failed on every later turn with
+    # "messages.N.content.0.thinking.signature: Field required" — permanently,
+    # until /new. Thinking is display-only here, so it doesn't make the trip.
+    session = _session([says("the answer", thinking="deliberating")])
+    _reply(session.send("think about it"))
+    replacement, provider = _backend(says("still here"))
+
+    session.swap_backend(replacement)
+
+    assert _reply(session.send("again")) == "still here"
+    replayed = provider.last_request.messages[1]
+    assert [b.type for b in replayed.content] == ["text"]
+
+
+def test_resuming_a_saved_conversation_drops_thinking_it_cannot_vouch_for():
+    # A saved session records no model, so its thinking can't be assumed
+    # replayable to whatever is live now — and an assistant turn left with no
+    # content at all is itself a 400, so it goes rather than travels empty.
+    session = _session(says("ok"))
+
+    session.restore(
+        [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "hmm"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hmm"},
+                    {"type": "text", "text": "hello"},
+                ],
+            },
+        ]
+    )
+
+    assert [[b["type"] for b in m["content"]] for m in session.messages] == [["text"], ["text"]]
+
+
 def test_setting_effort_keeps_the_conversation_running():
     # Regression: /effort used to rebuild the agent, which handed the shared
     # provider's HTTP client to a new event loop and closed the old one — every

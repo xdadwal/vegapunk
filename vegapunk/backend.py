@@ -30,13 +30,58 @@ EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 # Short model names the Claude Code CLI accepted, which the raw Messages API
 # does not. Kept so an existing VEGAPUNK_CLAUDE_MODEL=sonnet (or `/model claude
 # opus`) keeps working instead of 404ing on its first turn. Anything else is
-# passed through untouched — this is a compatibility shim for two words, not a
-# model registry, and a full id always wins.
+# passed through untouched — this is a compatibility shim for a handful of
+# words, not a model registry, and a full id always wins.
 _MODEL_ALIASES = {
     "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
+    "fable": "claude-fable-5",
+    "mythos": "claude-mythos-5",
     "haiku": "claude-haiku-4-5",
 }
+
+# Not every Claude model takes every parameter, and the API answers one it
+# doesn't with a 400 that kills the turn. Both lists name what a model *lacks*,
+# so an unrecognized (i.e. newly released) id is assumed to be current and works
+# without a code change here; only the older families need naming. Matched as a
+# prefix, so dated snapshots (…-4-5-20250929) resolve like their base id.
+#
+# - no adaptive thinking: the API rejects {"type": "adaptive"} outright, so the
+#   thinking parameter is omitted for these models.
+# - no effort: `output_config.effort` comes back "This model does not support
+#   the effort parameter", so /effort must report it as unsupported rather than
+#   send it. (opus-4-5 is the odd one: effort yes, adaptive thinking no.)
+_NO_ADAPTIVE_THINKING = (
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-1",
+    "claude-3",
+)
+_NO_EFFORT = (
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-1",
+    "claude-3",
+)
+
+
+def _resolve_model(name: str) -> str:
+    """Expand a short model name; "" means "whatever the provider defaults to"."""
+    return _MODEL_ALIASES.get(name, name)
+
+
+def supports_adaptive_thinking(model: str) -> bool:
+    """Whether ``model`` accepts ``thinking={"type": "adaptive"}``.
+
+    "" (the provider's own default model) is current by definition, so it does.
+    """
+    return not model.startswith(_NO_ADAPTIVE_THINKING)
+
+
+def supports_effort(model: str) -> bool:
+    """Whether ``model`` accepts ``output_config.effort``."""
+    return not model.startswith(_NO_EFFORT)
 
 
 @dataclass(frozen=True)
@@ -125,20 +170,31 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
         # An empty claude_model means "whatever the provider defaults to": don't
         # name a default here, ask the provider what its is, so the label can
         # never drift from the model actually being requested.
+        model = _resolve_model(cfg.claude_model)
         kwargs: dict[str, Any] = {"max_tokens": cfg.max_output_tokens}
-        if cfg.claude_model:
-            kwargs["model_default"] = _MODEL_ALIASES.get(cfg.claude_model, cfg.claude_model)
+        if model:
+            kwargs["model_default"] = model
+        # logpose asks for adaptive thinking by default; models that predate it
+        # 400 on the parameter, so those get none at all.
+        if not supports_adaptive_thinking(model):
+            kwargs["thinking"] = None
 
         def spawn_claude() -> Provider:
             return resolve("anthropic", **kwargs)
 
         provider = spawn_claude()
+        # A configured effort is validated whatever the model (a typo in
+        # VEGAPUNK_CLAUDE_EFFORT should be named as such), then dropped when the
+        # model can't take it — /model haiku shouldn't fail because an env var
+        # from an earlier model is still set.
+        effort = validate_effort(cfg.claude_effort) if cfg.claude_effort else ""
+        takes_effort = supports_effort(model)
         return Backend(
             provider=provider,
             model_label=provider.model_default,
             context_window=cfg.claude_context_window,
-            supports_effort=True,
-            extra=_effort_extra(cfg.claude_effort),
+            supports_effort=takes_effort,
+            extra=_effort_extra(effort) if takes_effort else {},
             spawn_provider=spawn_claude,
         )
     raise ValueError(f"Unknown provider {name!r} — expected 'local' or 'claude'.")
@@ -154,7 +210,10 @@ def with_effort(backend: Backend, level: str) -> Backend:
     ship an Anthropic-only parameter to a local server.
     """
     if not backend.supports_effort:
-        raise ValueError(f"{backend.model_label} has no effort setting — /model claude first.")
+        raise ValueError(
+            f"{backend.model_label} has no effort setting — "
+            "switch to a model that has one, e.g. /model claude opus."
+        )
     return replace(backend, extra=_effort_extra(level))
 
 
