@@ -12,9 +12,10 @@ stderr, so watching the loop work never contaminates the answer.
 from __future__ import annotations
 
 import sys
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from . import style
+from .config import Config, config
 
 
 def _shorten(result: str, limit: int = 200) -> str:
@@ -30,6 +31,7 @@ def _shorten(result: str, limit: int = 200) -> str:
     return f"{result[:limit]}… (+{extra:,} more char{'s' if extra != 1 else ''})"
 
 
+@runtime_checkable
 class Renderer(Protocol):
     """How a turn is shown. One instance spans both channels of one turn."""
 
@@ -124,3 +126,26 @@ class PlainRenderer:
         """Punk Records speaking. The reset lands before the space so the reply
         itself streams in the default colour."""
         return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
+
+
+UI_MODES = ("auto", "rich", "plain")
+
+
+def pick(cfg: Config = config) -> Renderer:
+    """The renderer for this process.
+
+    ``auto`` follows the terminal, which is the same rule ``style.enabled``
+    already applies to colour, so one mental model covers both. ``NO_COLOR``
+    forces plain: a user asking for no escape codes is not asking for a live
+    re-rendering region either.
+
+    Raises:
+        ValueError: If ``VEGAPUNK_UI`` is not a known mode. Said out loud rather
+            than defaulting, because silently ignoring the setting is how you
+            spend an afternoon wondering why it does nothing.
+    """
+    if cfg.ui not in UI_MODES:
+        raise ValueError(
+            f"Unknown VEGAPUNK_UI {cfg.ui!r} — expected one of: {', '.join(UI_MODES)}."
+        )
+    return PlainRenderer()

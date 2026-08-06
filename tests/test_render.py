@@ -91,3 +91,28 @@ def test_a_reply_ending_in_a_newline_is_not_double_spaced(plain, capsys):
     plain.reply_end()
 
     assert capsys.readouterr().out == "vega> done\n"
+
+
+# ---------------------------------------------------------------------------
+# choosing a renderer
+# ---------------------------------------------------------------------------
+
+
+def test_pick_returns_a_renderer_satisfying_the_protocol():
+    from vegapunk.render import Renderer, pick
+
+    chosen = pick()
+
+    for method in ("step", "reasoning", "reasoning_end", "tool_result", "note",
+                   "reply_delta", "reply_end"):
+        assert callable(getattr(chosen, method)), f"{method} missing"
+    assert isinstance(chosen, Renderer)  # runtime_checkable
+
+
+def test_an_unknown_ui_mode_is_refused_by_name():
+    """A typo in VEGAPUNK_UI should say so at launch rather than silently
+    picking a default the user did not ask for."""
+    from vegapunk.render import pick
+
+    with pytest.raises(ValueError, match="VEGAPUNK_UI"):
+        pick(replace(style.config, ui="fancy"))
