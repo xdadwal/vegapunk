@@ -183,12 +183,12 @@ class PlainRenderer:
 # renderer; they're filled in only because Box requires all eight.
 _GUTTER_BOX = Box(
     "    \n"
-    "│   \n"
+    "┃   \n"
     "    \n"
-    "│   \n"
+    "┃   \n"
     "    \n"
     "    \n"
-    "│   \n"
+    "┃   \n"
     "    \n"
 )
 
@@ -285,7 +285,21 @@ class RichRenderer:
 
     def _finish_live(self) -> None:
         if self._live is not None:
+            # rich.live_render.LiveRender never emits a trailing newline
+            # after the region's last row — Live.stop() is what closes that
+            # line, and it only does so when console.is_terminal is True (a
+            # real terminal owns its own cursor; a file or pipe doesn't need
+            # one repositioned). Off a terminal — piped output, or a plain
+            # redirect — stop() leaves the cursor mid-row, and whatever
+            # prints next (the "[tool]" trace line on stderr, sharing the
+            # same screen; "(saved as ...)" on stdout) lands glued onto the
+            # reply. Checked before stop() runs, since stop() flips this same
+            # is_terminal-gated behaviour internally and we don't want to
+            # double up on a real terminal, where it already closes the line.
+            needs_newline = not self._console.is_terminal
             self._live.stop()
+            if needs_newline:
+                self._console.line()
         self._live = None
         self._buffer = ""
 

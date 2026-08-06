@@ -134,3 +134,90 @@ public contracts over implementation details.
   `pyproject.toml`, no `ruff`/`mypy` in `.venv/bin`), so the only gate run
   was `pytest`, per the repo's own testing rule ("Match whatever the repo
   already uses").
+
+## Follow-up: reply's final line was gluing onto whatever printed next
+
+Found running against a live model (coordinator's report): after a
+multi-line reply, the CLI's own `(saved as '...')` line landed on the tail
+of the reply's last row instead of starting fresh — e.g.:
+
+```
+│    inputs automatically and shrinks failing cases to a minimal reproducer.
+                                                                                (saved as 'python-testing-libraries-overview')
+bye.
+```
+
+**Root cause**: `rich.live_render.LiveRender.__rich_console__` never emits a
+trailing newline after a live region's *last* row (by design — a real
+terminal repositions its own cursor). `Live.stop()` is what closes that
+final line, via `console.line()` — but only `if console.is_terminal`. Off a
+terminal (a pipe, a redirect — confirmed by reproducing with `Console(file
+=sys.stdout)`, no `force_terminal`, piped through `tail`, and inspecting the
+raw bytes: padding spaces run straight into `(saved as 'x')` with no `0a`
+between them), `stop()` skips that call and the cursor is left mid-row.
+Since `VEGAPUNK_UI=rich` forces `RichRenderer` even off a real terminal (by
+design — see `pick()`), this path is reachable in normal piped use, not just
+a contrived edge case. Verified this precisely by reading
+`Live.stop()`/`Live.process_renderables()`/`LiveRender.__rich_console__`
+source, then confirming with byte-level `xxd` diffs before and after the
+fix, on both a piped (`force_terminal=False`) and a real
+(`force_terminal=True`) console — the fix changes only the former.
+
+**Fix** (`vegapunk/render.py`, `RichRenderer._finish_live`): check
+`self._console.is_terminal` *before* calling `self._live.stop()` (stop()
+flips related state, so the check has to happen first), and if it's
+`False`, call `self._console.line()` ourselves afterward. On a real
+terminal this is a no-op addition — `Live.stop()` already closed the line —
+so no double newline / stray blank line. `_finish_live()` backs both
+`reply_end()` and `tool_call()`, so the same fix covers the `[tool]` trace
+line the coordinator also flagged: it's on stderr, a different file
+descriptor, but the same physical terminal screen as stdout, so an
+unclosed stdout line would have glued it on too.
+
+**Also fixed**: the gutter character, `│` (U+2502, light) → `┃` (U+2503,
+heavy), in `_GUTTER_BOX`.
+
+**New tests** (`tests/test_render.py`), added because — per the
+coordinator's note — the existing gutter/markdown tests all used
+`force_terminal=True` and so never exercised the broken path:
+- `_rich_console()` gained a `force_terminal` parameter (still defaults to
+  `True`, unchanged for existing callers).
+- `test_rich_reply_end_ends_with_exactly_one_newline_off_a_terminal` —
+  `force_terminal=False`; asserts the output ends in exactly one `\n`, then
+  writes a follow-on line directly to the same stream (simulating "whatever
+  the CLI prints next") and asserts it lands as its own line, not glued.
+- `test_rich_reply_end_does_not_double_the_newline_on_a_real_terminal` —
+  the inverse regression: `force_terminal=True` must not gain a second
+  newline from the fix.
+- `test_rich_tool_call_also_ends_with_exactly_one_newline_off_a_terminal` —
+  same shape, for the `tool_call` path.
+- Updated `test_rich_reply_is_bounded_by_a_left_gutter_bar` to assert `┃`
+  instead of `│`.
+
+**Test command and output**:
+```
+.venv/bin/python -m pytest -q
+```
+```
+675 passed in 5.04s
+```
+(675 = 672 from the first pass + 3 new tests here.)
+
+Also reproduced end-to-end through `cli.main` with `VEGAPUNK_UI=rich` and a
+scripted multi-line markdown reply (fake provider, no live model needed to
+confirm the fix — the defect and its fix are both in `RichRenderer`, not in
+anything model-dependent), piped through `tail`:
+```
+┃  • Hypothesis — property-based testing
+┃  • pytest — the standard runner
+┃  • tox — matrix runner
+
+(saved as 'scripted-title')
+bye.
+```
+`(saved as ...)` now starts cleanly on its own line, and the gutter is the
+heavy `┃`.
+
+No assertions were weakened; trace bytes on stderr are unchanged (pinned by
+the existing `test_rich_trace_methods_still_produce_the_plain_bytes_on_stderr`,
+still passing verbatim).
