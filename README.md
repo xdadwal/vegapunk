@@ -96,18 +96,16 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
 | `/reason` | Show the display-only reasoning from the last completed turn, when the provider supplied it |
-| `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
-| `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
+| `/sessions [name \| remove <name>]` | Resume a saved conversation, list recent conversations, or remove one by name |
+| `/memory [list \| remove <id>]` | List remembered facts, or remove one by its short id |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
 | `/backup` | Snapshot the database to `.vegapunk/backups/` |
-| `/skills` | List available skills |
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
-| `/load <name>` | Resume a saved conversation |
 | `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
-| `/models [provider]` | Pick from the models a backend actually serves (live, cached per session); lists them when piped |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
-| `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
+| `/status` | Show backend readiness, model, effort, context, session, scheduler, and workspace |
+| `/new` | Start a fresh conversation (alias: `/reset`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
 ## Tools
@@ -341,7 +339,7 @@ blocks it never signed.
 vegapunk/
   __main__.py    # `python -m vegapunk` entry → cli.main()
   cli.py         # interactive REPL and command dispatch
-  commands.py    # slash commands (/help, /save, /load, /sessions, /memory, /backup, /new, /exit)
+  commands.py    # slash commands (/help, /status, /save, /sessions, /memory, /backup, /new, /exit)
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the live trace: logpose's event stream → what you watch on stderr

@@ -1,4 +1,4 @@
-"""The REPL's slash commands — ``/help``, ``/save``, ``/load``, ``/sessions``,
+"""The REPL's slash commands — ``/help``, ``/save``, ``/sessions``,
 ``/new``, ``/exit``.
 
 Mirrors the ``@tool`` registry (``tools/registry.py``): a ``@command`` decorator
@@ -48,6 +48,8 @@ class CommandContext:
     # A skill staged by /skill, to be folded into the user's NEXT message
     # (name, body) — the CLI consumes and clears it; /new drops it.
     pending_skill: tuple[str, str] | None = None
+    scheduler: object | None = None
+    scheduler_log: str | None = None
 
 
 @dataclass
@@ -128,7 +130,7 @@ def _exit(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="bye.", exit=True)
 
 
-@command("new", "Start a fresh conversation", "reset", "clear")
+@command("new", "Start a fresh conversation", "reset")
 def _new(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.session.reset()
     ctx.current_name = None  # next turn auto-names a fresh saved session
@@ -175,6 +177,39 @@ def _catalog_listing() -> str:
     return "\n".join(lines)
 
 
+@command("status", "Show backend, session, scheduler, and workspace status")
+def _status(ctx: CommandContext, arg: str) -> CommandResult:
+    if arg:
+        return CommandResult(output="Usage: /status")
+    provider = _live_backend_name(ctx)
+    try:
+        statuses = {item.name: item for item in asyncio.run(provider_status())}
+        credential = statuses.get(provider)
+        readiness = "ready" if credential is None or credential.ready else credential.detail
+    except Exception as exc:  # noqa: BLE001 — status must not make the REPL unusable
+        readiness = f"unavailable ({exc})"
+    effort = current_effort(ctx.session.backend) or "API default"
+    used = ctx.session.context_tokens
+    window = ctx.session.context_window
+    context = "unknown" if used is None else f"{used:,}/{window:,} tok" if window else f"{used:,} tok"
+    if ctx.scheduler is None:
+        worker = "not running"
+    else:
+        code = getattr(ctx.scheduler, "poll")()
+        worker = "running" if code is None else f"exited ({code})"
+    if ctx.scheduler_log:
+        worker += f" · {ctx.scheduler_log}"
+    return CommandResult(output="\n".join([
+        f"Backend: {provider} · {readiness}",
+        f"Model: {ctx.session.model_label}",
+        f"Effort: {effort}",
+        f"Context: {context}",
+        f"Session: {ctx.current_name or 'unsaved'}",
+        f"Scheduler: {worker}",
+        f"Workspace: {config.workspace_root}",
+    ]))
+
+
 @command("model", "Show or switch the model: /model [provider [model]]")
 def _model(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg and _interactive():
@@ -218,7 +253,11 @@ def _pick_backend(ctx: CommandContext) -> CommandResult:
     chosen = _pick("choose a backend", options)
     if chosen is None:
         return CommandResult(output="(unchanged)")
-    return _switch(ctx, chosen, "")
+    try:
+        served = available_models(chosen)
+    except Exception:
+        served = []
+    return _pick_model(ctx, chosen, served) if served else _switch(ctx, chosen, "")
 
 
 def _pick_model(ctx: CommandContext, provider: str, served: list[str]) -> CommandResult:
@@ -258,7 +297,6 @@ def _live_backend_name(ctx: CommandContext) -> str:
     return ctx.session.backend.provider.name
 
 
-@command("models", "List the models a backend serves: /models [provider]")
 def _models(ctx: CommandContext, arg: str) -> CommandResult:
     """What this backend will actually answer to, asked of the backend itself.
 
@@ -283,10 +321,7 @@ def _models(ctx: CommandContext, arg: str) -> CommandResult:
         return _pick_model(ctx, provider, served)
     live = ctx.session.model_label
     lines = [f"  {'*' if name == live else ' '} {name}" for name in served]
-    return CommandResult(
-        output=f"{known} serves:\n" + "\n".join(lines) +
-        f"\nSwitch with /model {provider} <name>."
-    )
+    return CommandResult(output=f"{known} serves:\n" + "\n".join(lines))
 
 
 
@@ -307,7 +342,7 @@ def _pick_session(ctx: CommandContext) -> CommandResult:
     chosen = _pick("resume which conversation?", options)
     if chosen is None:
         return CommandResult(output="(nothing loaded)")
-    return _load(ctx, chosen)
+    return _resume(ctx, chosen)
 
 
 def _pick_skill() -> str | None:
@@ -376,13 +411,12 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Saved as '{name}'.")
 
 
-@command("load", "Resume a saved session: /load <name>")
-def _load(ctx: CommandContext, arg: str) -> CommandResult:
+def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
     if not name:
         if _interactive():
             return _pick_session(ctx)
-        return CommandResult(output="Usage: /load <name>")
+        return CommandResult(output="Usage: /sessions <name>")
     try:
         messages = session_store.load_session(name)
     except session_store.SessionNotFound:
@@ -404,31 +438,31 @@ def _load(ctx: CommandContext, arg: str) -> CommandResult:
     )
 
 
-@command("sessions", "List recent conversations, or delete one: /sessions [forget <name>]")
+@command("sessions", "Resume, list, or remove conversations: /sessions [name | remove <name>]")
 def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
     if not sub:
-        return CommandResult(output=_format_sessions())
-    if sub == "forget":
+        return _pick_session(ctx) if _interactive() else CommandResult(output=_format_sessions())
+    if sub == "remove":
         name = session_store.slugify(rest)
         if not name:
-            return CommandResult(output="Usage: /sessions forget <name>")
+            return CommandResult(output="Usage: /sessions remove <name>")
         try:
             if not session_store.exists(name):
-                return CommandResult(output=f"No session '{name}' to forget.\n{_format_sessions()}")
+                return CommandResult(output=f"No session '{name}' to remove.\n{_format_sessions()}")
             session_store.delete_session(name)
         except db.StoreError as exc:
-            return CommandResult(output=f"Could not forget '{name}': {exc}")
+            return CommandResult(output=f"Could not remove '{name}': {exc}")
         if ctx.current_name == name:
             # The live conversation's saved copy is gone; the next turn re-saves
             # it under a fresh name rather than resurrecting the deleted one.
             ctx.current_name = None
-        return CommandResult(output=f"Forgot session '{name}'.")
-    return CommandResult(output="Usage: /sessions [forget <name>]")
+        return CommandResult(output=f"Removed session '{name}'.")
+    return _resume(ctx, arg)
 
 
-@command("memory", "List or forget remembered facts: /memory [list | forget <id>]")
+@command("memory", "List or remove remembered facts: /memory [list | remove <id>]")
 def _memory(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
@@ -438,12 +472,12 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
             return CommandResult(output="(nothing remembered yet)")
         lines = [f"  {m.id[:8]}  {m.created_at[:10]}  {_oneline(m.content)}" for m in rows]
         return CommandResult(output="\n".join(lines))
-    if sub == "forget":
+    if sub == "remove":
         result = memory.forget_memory(rest)
         if result.startswith("Forgot:"):
-            result += " (the system prompt updates next session)"
+            result = result.replace("Forgot:", "Removed:", 1) + " (the system prompt updates next session)"
         return CommandResult(output=result)
-    return CommandResult(output="Usage: /memory [list | forget <id>]")
+    return CommandResult(output="Usage: /memory [list | remove <id>]")
 
 
 def _format_tasks() -> str:
@@ -493,16 +527,6 @@ def _backup(ctx: CommandContext, arg: str) -> CommandResult:
     except db.StoreError as exc:
         return CommandResult(output=f"Backup failed: {exc}")
     return CommandResult(output=f"Backed up to {path}")
-
-
-@command("skills", "List available skills (SKILL.md directories under .agents/skills/)")
-def _skills(ctx: CommandContext, arg: str) -> CommandResult:
-    rows = skills.list_skills()
-    if not rows:
-        return CommandResult(
-            output=f"(no skills — add <name>/SKILL.md directories under {skills.skills_dir()})"
-        )
-    return CommandResult(output="\n".join(f"  {s.name} — {s.description}" for s in rows))
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")

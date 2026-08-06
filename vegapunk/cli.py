@@ -130,6 +130,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     # landing on top of your prompt. Coordination is entirely through the
     # database — /schedule writes rows, the worker polls them.
     scheduler, scheduler_log = worker.start()
+    ctx.scheduler, ctx.scheduler_log = scheduler, str(scheduler_log)
     warned_worker_died = False
     try:
         while True:

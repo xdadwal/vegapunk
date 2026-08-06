@@ -33,8 +33,10 @@ def test_dispatch_returns_none_for_plain_text():
 
 def test_help_lists_the_commands():
     out = dispatch("/help", _ctx()).output
-    for name in ("/help", "/save", "/load", "/sessions", "/new", "/exit"):
+    for name in ("/help", "/save", "/sessions", "/status", "/new", "/exit"):
         assert name in out
+    for removed in ("/clear", "/load", "/models", "/skills"):
+        assert removed not in out
 
 
 def test_unknown_command_points_to_help():
@@ -113,7 +115,7 @@ def test_load_resumes_and_reports_turns():
     dispatch("/save demo", ctx)
 
     fresh = _ctx()
-    res = dispatch("/load demo", fresh)
+    res = dispatch("/sessions demo", fresh)
 
     assert "Resumed 'demo' (1 turns)" in res.output
     assert fresh.current_name == "demo"
@@ -121,7 +123,7 @@ def test_load_resumes_and_reports_turns():
 
 
 def test_load_missing_lists_what_exists():
-    res = dispatch("/load ghost", _ctx())
+    res = dispatch("/sessions ghost", _ctx())
     assert "No session 'ghost'" in res.output
 
 
@@ -161,23 +163,23 @@ def test_sessions_forget_deletes_a_saved_conversation():
     dispatch("/save goner", ctx)  # renames keeper -> goner (drops keeper)
     dispatch("/save keeper", _ctx())  # a separate session named keeper again
 
-    res = dispatch("/sessions forget goner", _ctx())
-    assert "Forgot session 'goner'" in res.output
+    res = dispatch("/sessions remove goner", _ctx())
+    assert "Removed session 'goner'" in res.output
     remaining = dispatch("/sessions", _ctx()).output
     assert "goner" not in remaining and "keeper" in remaining
 
 
 def test_sessions_forget_unknown_lists_what_exists():
-    res = dispatch("/sessions forget ghost", _ctx())
-    assert "No session 'ghost' to forget" in res.output
+    res = dispatch("/sessions remove ghost", _ctx())
+    assert "No session 'ghost' to remove" in res.output
 
 
 def test_sessions_forget_requires_a_name():
-    assert "Usage: /sessions forget <name>" in dispatch("/sessions forget   ", _ctx()).output
+    assert "Usage: /sessions remove <name>" in dispatch("/sessions remove   ", _ctx()).output
 
 
 def test_sessions_bad_subcommand_shows_usage():
-    assert dispatch("/sessions frobnicate", _ctx()).output == "Usage: /sessions [forget <name>]"
+    assert "No session 'frobnicate'" in dispatch("/sessions frobnicate", _ctx()).output
 
 
 def test_sessions_forget_active_clears_current_name():
@@ -186,7 +188,7 @@ def test_sessions_forget_active_clears_current_name():
     dispatch("/save active-one", ctx)
     assert ctx.current_name == "active-one"
 
-    dispatch("/sessions forget active-one", ctx)
+    dispatch("/sessions remove active-one", ctx)
     assert ctx.current_name is None  # the deleted session is no longer "current"
 
 
@@ -213,14 +215,14 @@ def test_memory_forget_removes_by_prefix():
     save_memory("forget me")
     goner = next(m for m in list_memory() if m.content == "forget me")
 
-    res = dispatch(f"/memory forget {goner.id[:8]}", _ctx())
-    assert "Forgot: forget me" in res.output
+    res = dispatch(f"/memory remove {goner.id[:8]}", _ctx())
+    assert "Removed: forget me" in res.output
     assert "updates next session" in res.output  # honest about the staleness
     assert [m.content for m in list_memory()] == ["keep me"]
 
 
 def test_memory_forget_unknown_prefix():
-    assert "No memory fact matches" in dispatch("/memory forget deadbeef", _ctx()).output
+    assert "No memory fact matches" in dispatch("/memory remove deadbeef", _ctx()).output
 
 
 def test_memory_bad_subcommand_shows_usage():
@@ -393,14 +395,13 @@ def _write_skill(home, name, text):
 
 def test_skills_lists_name_and_description(skills_home):
     _write_skill(skills_home, "commit-message","---\ndescription: Commit rules\n---\nbody")
-    result = dispatch("/skills", _ctx())
-    assert "commit-message — Commit rules" in result.output
+    result = dispatch("/skill", _ctx())
+    assert "Available: commit-message" in result.output
 
 
 def test_skills_empty_points_at_the_directory(skills_home):
-    result = dispatch("/skills", _ctx())
-    assert "no skills" in result.output
-    assert str(skills_home) in result.output
+    result = dispatch("/skill", _ctx())
+    assert "(none installed)" in result.output
 
 
 def test_skill_stages_for_the_next_message(skills_home):
@@ -443,7 +444,7 @@ def test_new_clears_a_staged_skill(skills_home):
 
 def test_help_lists_skill_commands(skills_home):
     out = dispatch("/help", _ctx()).output
-    assert "/skills" in out and "/skill" in out
+    assert "/skill" in out and "/skill" in out
 
 
 def test_load_clears_a_staged_skill(skills_home, tmp_path):
@@ -454,15 +455,15 @@ def test_load_clears_a_staged_skill(skills_home, tmp_path):
     ctx = _ctx()
     dispatch("/skill commit-message", ctx)
     assert ctx.pending_skill is not None
-    dispatch("/load other", ctx)
+    dispatch("/sessions other", ctx)
     assert ctx.pending_skill is None
 
 
 def test_skills_lists_survivors_when_a_file_is_degraded(skills_home, capsys):
     _write_skill(skills_home, "good", "---\ndescription: Fine\n---\nbody")
     _write_skill(skills_home, "empty", "")
-    result = dispatch("/skills", _ctx())
-    assert "good — Fine" in result.output
+    result = dispatch("/skill", _ctx())
+    assert "Available: good" in result.output
     assert "empty" not in result.output  # skipped (with a stderr note), not listed
 
 
@@ -656,6 +657,19 @@ async def _fake_status():
     ]
 
 
+def test_status_names_every_live_session_fact(monkeypatch):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx(model_label="ai/qwen3", context_window=1000)
+    ctx.session.context_tokens = 250
+    ctx.current_name = "demo"
+
+    out = dispatch("/status", ctx).output
+
+    for label in ("Backend:", "Model:", "Effort:", "Context:", "Session:", "Scheduler:", "Workspace:"):
+        assert label in out
+    assert "250/1,000 tok" in out and "demo" in out
+
+
 # ---------------------------------------------------------------------------
 # /model's listing — built from logpose's catalog, not a table here
 # ---------------------------------------------------------------------------
@@ -703,11 +717,9 @@ def test_models_lists_what_the_live_backend_serves_and_marks_the_active_one():
     ctx = _ctx(model_label="claude-opus-5")
     ctx.session.swap_backend(_claude_backend("claude-opus-5"))
 
-    out = dispatch("/models claude", ctx).output
+    out = dispatch("/model claude", ctx).output
 
-    assert "claude-code serves:" in out
-    assert "claude-sonnet-5" in out
-    assert "/model claude <name>" in out
+    assert "model switched" in out
 
 
 def test_models_reports_a_backend_that_will_not_answer(monkeypatch):
@@ -716,14 +728,13 @@ def test_models_reports_a_backend_that_will_not_answer(monkeypatch):
 
     monkeypatch.setattr("vegapunk.commands.available_models", _unreachable)
 
-    out = dispatch("/models codex", _ctx()).output
+    out = dispatch("/model codex", _ctx()).output
 
-    assert "couldn't list its models" in out
-    assert "connection refused" in out
+    assert "model switched" in out
 
 
 def test_models_rejects_an_unknown_provider():
-    assert "Unknown provider 'martian'" in dispatch("/models martian", _ctx()).output
+    assert "Unknown provider 'martian'" in dispatch("/model martian", _ctx()).output
 
 
 def test_model_switch_refuses_an_id_the_backend_does_not_serve(monkeypatch):
@@ -740,7 +751,7 @@ def test_model_switch_refuses_an_id_the_backend_does_not_serve(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# the inline pickers — what /model, /models, /load and /effort do on a terminal
+# the inline pickers — what /model, /model, /sessions and /effort do on a terminal
 # ---------------------------------------------------------------------------
 
 
@@ -803,15 +814,7 @@ def test_bare_models_picks_a_model_on_the_live_backend(on_a_terminal, monkeypatc
     ctx.session.swap_backend(_claude_backend("claude-opus-5"))
     on_a_terminal.answer = "claude-sonnet-5"
 
-    dispatch("/models claude", ctx)
-
-    assert [o.label for o in on_a_terminal.options] == [
-        "claude-opus-5",
-        "claude-sonnet-5",
-        "claude-haiku-4-5-20251001",
-    ]
-    assert [o.active for o in on_a_terminal.options] == [True, False, False]  # the live one
-    assert swapped == [("claude", "claude-sonnet-5")]
+    assert "Unknown command /models" in dispatch("/models claude", ctx).output
 
 
 def test_bare_load_picks_a_saved_session(on_a_terminal):
@@ -820,14 +823,14 @@ def test_bare_load_picks_a_saved_session(on_a_terminal):
     dispatch("/save demo", ctx)
     on_a_terminal.answer = "demo"
 
-    res = dispatch("/load", _ctx())
+    res = dispatch("/sessions", _ctx())
 
     assert "Resumed 'demo'" in res.output
     assert on_a_terminal.options[0].detail.startswith("1 turns")
 
 
 def test_bare_load_with_no_saved_sessions_says_so(on_a_terminal):
-    assert dispatch("/load", _ctx()).output == "(no saved sessions)"
+    assert dispatch("/sessions", _ctx()).output == "(no saved sessions)"
 
 
 def test_bare_effort_picks_a_level(on_a_terminal):
@@ -848,5 +851,5 @@ def test_the_pickers_stay_out_of_the_way_without_a_terminal(monkeypatch):
     monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
 
     assert "Available:" in dispatch("/model", _ctx()).output
-    assert dispatch("/load", _ctx()).output == "Usage: /load <name>"
+    assert dispatch("/sessions", _ctx()).output == "(no saved sessions)"
     assert "Effort:" in dispatch("/effort", _ctx(effort_key="output_config")).output
