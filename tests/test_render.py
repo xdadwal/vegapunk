@@ -181,3 +181,13 @@ def test_an_unknown_ui_mode_is_refused_by_name():
 
     with pytest.raises(ValueError, match="VEGAPUNK_UI"):
         pick(replace(style.config, ui="fancy"))
+
+
+def test_the_plain_renderer_prints_nothing_when_a_tool_is_requested(plain, capsys):
+    """The hook exists for renderers that own screen space. Plain prints the
+    arguments beside the result, so it has nothing to say before the tool runs
+    — and must not start a line it would then have to unpick."""
+    plain.tool_call("echo", {"text": "hi"})
+
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""

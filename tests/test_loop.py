@@ -590,6 +590,11 @@ def test_trace_prints_through_the_renderer_it_is_given():
             break
 
     named = [name for name, _args, _kwargs in recorder.calls]
+    # The gap between these two is where the tool runs and where a human may be
+    # at an approval prompt, so a renderer must be told before it, not only after.
+    assert named.index("tool_call") < named.index("tool_result")
+    requested = next(c for c in recorder.calls if c[0] == "tool_call")
+    assert requested[1] == ("echo", {"text": "hi"})
     assert named.count("step") == 2
     assert "reasoning" in named
     assert "reasoning_end" in named

@@ -44,6 +44,19 @@ class Renderer(Protocol):
     def reasoning_end(self) -> None:
         """No more reasoning this turn. Idempotent — callers needn't check."""
 
+    def tool_call(self, name: str, arguments: dict) -> None:
+        """A tool was requested — it has not run yet.
+
+        Separate from :meth:`tool_result` because the gap between them is where
+        a tool actually runs, and where a human may be answering an approval
+        prompt. A renderer that owns part of the screen has to hand it back
+        before that wait begins; being told only at ``tool_result`` would mean
+        finding out after the fact.
+
+        ``PlainRenderer`` ignores it — it prints the arguments beside the
+        result, so it has nothing to say yet.
+        """
+
     def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
         """A tool ran and produced ``content``."""
 
@@ -110,6 +123,10 @@ class PlainRenderer:
         if self._reasoning_open:
             self._reasoning_open = False
             print(self._reasoning_reset, file=sys.stderr)
+
+    def tool_call(self, name: str, arguments: dict) -> None:
+        """Nothing to print yet: the arguments go out beside the result, on one
+        line, so there is no half-written line to close before the tool runs."""
 
     def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
         marker = style.paint(
