@@ -553,3 +553,12 @@ def _history(ctx: CommandContext, arg: str) -> CommandResult:
         lines.append(f"  you:  {_oneline(user_text)}")
         lines.append(f"  vega: {_oneline(reply_text) if reply_text else '…'}")
     return CommandResult(output="\n".join(lines))
+
+
+@command("reason", "Show the last turn's reasoning")
+def _reason(ctx: CommandContext, arg: str) -> CommandResult:
+    if arg:
+        return CommandResult(output="Usage: /reason")
+    if not ctx.session.last_reasoning:
+        return CommandResult(output="(no reasoning was available for the last turn)")
+    return CommandResult(output=ctx.session.last_reasoning)

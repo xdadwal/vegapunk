@@ -153,7 +153,7 @@ class PromptToolkitPrompter(Prompter):
             history = DbHistory()
         # Shaka gold for the person giving the orders — gated through the same
         # seam as everything else, so NO_COLOR/VEGAPUNK_COLOR strip it too.
-        message = [("bold fg:ansiyellow", "you> ")] if style.enabled(sys.stdout) else "you> "
+        message = [("bold fg:ansiyellow", "❯ ")] if style.enabled(sys.stdout) else "❯ "
         self._session: PromptSession[str] = PromptSession(
             message=message,
             history=history,

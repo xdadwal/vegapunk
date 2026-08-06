@@ -113,8 +113,8 @@ def build(
             option = options[i]
             selected = i == state["idx"]
             style = "reverse" if selected else ""
-            mark = "*" if option.active else " "
-            lines.append((style, f"{'>' if selected else ' '} {mark} {option.label}"))
+            mark = "●" if option.active else " "
+            lines.append((style, f"{'❯' if selected else ' '} {mark} {option.label}"))
             if option.detail:
                 # Dim only when this row isn't selected: `reverse` already
                 # inverts the row, and dimming on top of it is unreadable.

@@ -12,6 +12,7 @@ stderr, so watching the loop work never contaminates the answer.
 from __future__ import annotations
 
 import io
+import json
 import sys
 from typing import Protocol, runtime_checkable
 
@@ -20,6 +21,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.markup import escape
 
 from . import style
 from .config import Config, config
@@ -38,9 +40,26 @@ def _shorten(result: str, limit: int = 200) -> str:
     return f"{result[:limit]}… (+{extra:,} more char{'s' if extra != 1 else ''})"
 
 
+def _tool_arguments(arguments: dict) -> str:
+    """Render tool arguments as a call signature, not a Python dict repr."""
+    return ", ".join(
+        f"{key}={json.dumps(value, ensure_ascii=False, default=str)}"
+        for key, value in arguments.items()
+    )
+
+
+def _tool_summary(content: str) -> str:
+    """Keep a result to one readable trace line, retaining the old cap."""
+    return _shorten(" ".join(content.split()) or "(no output)")
+
+
 @runtime_checkable
 class Renderer(Protocol):
     """How a turn is shown. One instance spans both channels of one turn."""
+
+    @property
+    def last_reasoning(self) -> str:
+        """The current turn's accumulated, display-only reasoning."""
 
     def step(self, number: int) -> None:
         """A model round trip began."""
@@ -122,6 +141,7 @@ class PlainRenderer:
     def __init__(self) -> None:
         self._reasoning_open = False
         self._reasoning_reset = ""
+        self._turn_reasoning = ""
         self._spoke = False
         self._line_open = False
 
@@ -130,9 +150,12 @@ class PlainRenderer:
     def step(self, number: int) -> None:
         # The marker shows where each model round trip starts, which is what
         # makes batched-vs-chained tool calling visible.
+        if number == 1:
+            self._turn_reasoning = ""
         print(style.paint(f"  [think] step {number}", style.DIM, sys.stderr), file=sys.stderr)
 
     def reasoning(self, text: str) -> None:
+        self._turn_reasoning += text
         if not self._reasoning_open:
             # Colour opens once at the line start and resets once at the close,
             # not per fragment: a Ctrl-C landing mid-reasoning would otherwise
@@ -198,6 +221,10 @@ class PlainRenderer:
         itself streams in the default colour."""
         return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
 
+    @property
+    def last_reasoning(self) -> str:
+        return self._turn_reasoning
+
 
 # A Box whose only visible edge is the left one. Panel draws its top and
 # bottom borders from the first/last lines below (all spaces, so those rows
@@ -218,36 +245,78 @@ _GUTTER_BOX = Box(
 )
 
 
+def _split_completed_markdown(text: str) -> tuple[str, str]:
+    """Return complete Markdown blocks and the still-growing trailing block.
+
+    A live region can redraw only the rows still on screen. Paragraph breaks are
+    safe commit points: once a blank line arrives, the preceding block cannot
+    need to be redrawn for ordinary streaming Markdown. Fence bodies are the
+    exception — blank lines inside them are content, not block boundaries.
+    """
+    in_fence = False
+    committed_at = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif not in_fence and not stripped:
+            committed_at = offset + len(line)
+        offset += len(line)
+    return text[:committed_at], text[committed_at:]
+
+
 class RichRenderer:
-    """Styled reply body on stdout: the markdown is re-rendered live, in
-    place, behind a left-edge gutter, token by token. Everything else — the
-    trace on stderr — is unchanged: delegated verbatim to an internal
-    ``PlainRenderer``, so restyling the reply never touches the watch
-    channel. See the module docstring for why the two channels stay split.
+    """A live Markdown reply plus a compact, glyph-based watch trace.
+
+    The reply remains on stdout and the trace stays on stderr, so piping and
+    logging preserve their documented split. ``tool_call`` closes any live
+    reply before the trace writes, giving the terminal back before a tool or
+    approval prompt can take time.
     """
 
-    def __init__(self, console: Console | None = None) -> None:
+    def __init__(
+        self, console: Console | None = None, trace_console: Console | None = None
+    ) -> None:
         self._console = console if console is not None else Console(file=sys.stdout)
-        self._plain = PlainRenderer()  # trace only — see class docstring
+        self._trace_console = (
+            trace_console if trace_console is not None else Console(file=sys.stderr)
+        )
         self._buffer = ""
         self._live: Live | None = None
+        self._reasoning_chars = 0
+        self._turn_reasoning = ""
 
-    # -- the watch channel (stderr) — delegated verbatim ---------------------
+    # -- the watch channel (stderr) -------------------------------------------
 
     def step(self, number: int) -> None:
-        self._plain.step(number)
+        if number == 1:
+            self._reasoning_chars = 0
+            self._turn_reasoning = ""
+        self._trace_console.print(f"[magenta]●[/magenta] [dim]thinking · step {number}[/dim]")
 
     def reasoning(self, text: str) -> None:
-        self._plain.reasoning(text)
+        self._reasoning_chars += len(text)
+        self._turn_reasoning += text
+        if config.reasoning == "full":
+            self._trace_console.print(f"  [magenta]⎿[/magenta] {escape(text)}", end="")
 
     def reasoning_end(self) -> None:
-        self._plain.reasoning_end()
+        if self._reasoning_chars and config.reasoning == "collapsed":
+            self._trace_console.print(
+                f"[magenta]●[/magenta] [dim]thinking · {self._reasoning_chars:,} chars · /reason[/dim]"
+            )
+        if self._reasoning_chars and config.reasoning == "full":
+            self._trace_console.print()
+        if self._reasoning_chars:
+            self._reasoning_chars = 0
 
     def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
-        self._plain.tool_result(name, arguments, content, is_error)
+        colour = "red" if is_error else "cyan"
+        self._trace_console.print(f"  [{colour}]⎿[/{colour}] {_tool_summary(content)}")
 
     def note(self, text: str) -> None:
-        self._plain.note(text)
+        self._trace_console.print(f"[yellow]●[/yellow] [yellow]{escape(text)}[/yellow]")
 
     def tool_call(self, name: str, arguments: dict) -> None:
         """A tool is about to run — or a human is about to answer an approval
@@ -255,6 +324,9 @@ class RichRenderer:
         screen back before that wait begins. Finalise whatever's live so far;
         a later ``reply_delta`` opens a fresh region."""
         self._finish_live()
+        self._trace_console.print(
+            f"[cyan]●[/cyan] [cyan]{escape(name)}[/cyan]({escape(_tool_arguments(arguments))})"
+        )
 
     # -- the answer channel (stdout) -----------------------------------------
 
@@ -262,6 +334,28 @@ class RichRenderer:
         if not text:
             return
         self._buffer += text
+        committed, trailing = _split_completed_markdown(self._buffer)
+        if committed:
+            self._commit(completed=committed)
+            self._buffer = trailing
+        if self._buffer:
+            self._refresh_live()
+
+    def _commit(self, *, completed: str) -> None:
+        """Make completed blocks permanent and leave only the tail live."""
+        if self._live is None:
+            self._console.print(self._panel(completed))
+            return
+
+        # Rewrite the live region to contain only the completed prefix before
+        # stopping it. Live then makes that prefix static; keeping the trailing
+        # text out of this last frame avoids printing it twice when a new live
+        # region opens below it.
+        self._buffer = completed
+        self._live.update(self._panel(), refresh=True)
+        self._finish_live()
+
+    def _refresh_live(self) -> None:
         if self._live is None:
             self._live = Live(
                 console=self._console,
@@ -316,8 +410,12 @@ class RichRenderer:
         self._live = None
         self._buffer = ""
 
-    def _panel(self) -> Panel:
-        return Panel(Markdown(self._buffer), box=_GUTTER_BOX, border_style="magenta")
+    def _panel(self, text: str | None = None) -> Panel:
+        return Panel(
+            Markdown(self._buffer if text is None else text),
+            box=_GUTTER_BOX,
+            border_style="magenta",
+        )
 
     def _finish_live(self) -> None:
         if self._live is not None:
@@ -339,8 +437,13 @@ class RichRenderer:
         self._live = None
         self._buffer = ""
 
+    @property
+    def last_reasoning(self) -> str:
+        return self._turn_reasoning
+
 
 UI_MODES = ("auto", "rich", "plain")
+REASONING_MODES = ("collapsed", "full")
 
 
 def pick(cfg: Config = config) -> Renderer:
@@ -370,6 +473,11 @@ def pick(cfg: Config = config) -> Renderer:
     if cfg.ui not in UI_MODES:
         raise ValueError(
             f"Unknown VEGAPUNK_UI {cfg.ui!r} — expected one of: {', '.join(UI_MODES)}."
+        )
+    if cfg.reasoning not in REASONING_MODES:
+        raise ValueError(
+            "Unknown VEGAPUNK_REASONING "
+            f"{cfg.reasoning!r} — expected one of: {', '.join(REASONING_MODES)}."
         )
     if cfg.ui == "rich" or (
         cfg.ui == "auto" and sys.stdout.isatty() and style.enabled(sys.stdout)

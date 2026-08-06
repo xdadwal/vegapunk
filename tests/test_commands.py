@@ -15,6 +15,7 @@ from tests.fake_provider import (
     assistant_turn,
     backend_for,
     conversation,
+    says,
     session_for,
     tool_turns,
     user_turn,
@@ -40,6 +41,14 @@ def test_unknown_command_points_to_help():
     res = dispatch("/frobnicate", _ctx())
     assert "Unknown command" in res.output
     assert res.exit is False
+
+
+def test_reason_shows_the_last_turns_reasoning():
+    ctx = _ctx(turns=says("answer", thinking="weighing options"))
+    for _ in ctx.session.send("why"):
+        pass
+
+    assert dispatch("/reason", ctx).output == "weighing options"
 
 
 def test_exit_sets_exit_flag():

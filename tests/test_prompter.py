@@ -143,7 +143,7 @@ def test_prompt_message_is_plain_off_a_tty():
     # Under pytest stdout isn't a TTY and the suite pins color mode "auto",
     # so the constructor must pick the plain string, not style tuples.
     prompter = PromptToolkitPrompter(history=InMemoryHistory())
-    assert prompter._session.message == "you> "
+    assert prompter._session.message == "❯ "
 
 
 def test_prompt_message_is_gold_when_color_forced(monkeypatch):
@@ -153,4 +153,4 @@ def test_prompt_message_is_gold_when_color_forced(monkeypatch):
 
     monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="always"))
     prompter = PromptToolkitPrompter(history=InMemoryHistory())
-    assert prompter._session.message == [("bold fg:ansiyellow", "you> ")]
+    assert prompter._session.message == [("bold fg:ansiyellow", "❯ ")]

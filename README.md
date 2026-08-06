@@ -95,6 +95,7 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 |---------|--------------|
 | `/help` | List the available commands |
 | `/history [n]` | Show the last `n` turns of this conversation (default 5) |
+| `/reason` | Show the display-only reasoning from the last completed turn, when the provider supplied it |
 | `/sessions [forget <name>]` | List the 5 most recently updated conversations (newest first, with turn counts and local timestamps), or delete one by name |
 | `/memory [list \| forget <id>]` | List remembered facts, or forget one by its short id |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
@@ -195,7 +196,8 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
 | `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
 | `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
-| `VEGAPUNK_UI` | How a turn is drawn. Currently always plain output regardless of this value; `auto` following the terminal, `rich`, and `NO_COLOR` forcing `plain` are the intended behaviour once a rich renderer exists | `auto` |
+| `VEGAPUNK_UI` | How a turn is drawn: `auto` uses rich output on a colour-capable terminal and plain output otherwise; `rich` forces rich output; `plain` forces plain output. `NO_COLOR` makes `auto` plain. | `auto` |
+| `VEGAPUNK_REASONING` | Rich-mode reasoning display: `collapsed` shows a compact summary and enables `/reason`; `full` streams it into the trace. Plain output retains its existing full trace. | `collapsed` |
 | `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
 | `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |

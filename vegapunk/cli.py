@@ -22,7 +22,7 @@ from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
-from .render import Renderer
+from .render import Renderer, RichRenderer
 from .session import Session
 from .tools import ALL_TOOLS
 
@@ -39,6 +39,11 @@ def _context_gauge(used: int | None, window: int) -> str:
         pct = round(100 * used / window)
         return f"{used:,}/{window:,} tok ({pct}%) "
     return f"{used:,} tok "
+
+
+def _is_rich_session(session: Session) -> bool:
+    """Keep lightweight session doubles usable in CLI wiring tests."""
+    return isinstance(getattr(session, "renderer", None), RichRenderer)
 
 
 def _status_line(ctx: CommandContext) -> str:
@@ -101,14 +106,24 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
     ctx = CommandContext(session=session)
     if prompter is None:
         prompter = PromptToolkitPrompter(status=lambda: _status_line(ctx))
-    print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
-    print(
-        style.paint(
-            f"model {session.model_label} · workspace {config.workspace_root}",
-            style.DIM,
-            sys.stdout,
+    if _is_rich_session(session):
+        print(style.paint("── Vegapunk · /help for commands · /exit to quit", style.DIM, sys.stdout))
+        print(
+            style.paint(
+                f"   model {session.model_label} · workspace {config.workspace_root}",
+                style.DIM,
+                sys.stdout,
+            )
         )
-    )
+    else:
+        print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
+        print(
+            style.paint(
+                f"model {session.model_label} · workspace {config.workspace_root}",
+                style.DIM,
+                sys.stdout,
+            )
+        )
 
     # Scheduled tasks run in their own process, not a thread here: nothing to
     # serialize against your turns, and its trace goes to its own log instead of
@@ -195,9 +210,14 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
                 # "run `claude /login`" hint — and keep the session (approvals,
                 # /model, staged skills) alive for the user to recover.
                 session.renderer.reply_abort()  # see reply_abort's docstring
-                print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
+                if _is_rich_session(session):
+                    print("\n" + style.paint(f"✕ error · {exc}", style.RED, sys.stdout))
+                else:
+                    print("\n" + style.paint(f"[error] {exc}", style.RED, sys.stdout))
                 continue
             _autosave_turn(ctx)
+            if _is_rich_session(session):
+                print(style.paint("──", style.DIM, sys.stdout))
     finally:
         # Every exit path (/exit, Ctrl-D, or an error escaping the loop). The
         # worker also watches for us dying, but that is the kill -9 backstop —

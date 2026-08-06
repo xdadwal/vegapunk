@@ -19,7 +19,7 @@ from test_loop import _force_color  # sibling test modules (tests/ is on sys.pat
 from vegapunk import db, style
 from vegapunk.cli import main
 from vegapunk.prompter import ScriptedPrompter
-from vegapunk.render import PlainRenderer
+from vegapunk.render import PlainRenderer, RichRenderer
 from tests.fake_provider import backend_for, says, session_for
 
 
@@ -295,6 +295,15 @@ def test_banner_shows_model_and_workspace(capsys):
     main(prompter=ScriptedPrompter(["/exit"]), session=_session([]))
     out = capsys.readouterr().out
     assert "model " in out and "workspace " in out  # plain under capsys (not a TTY)
+
+
+def test_rich_banner_uses_the_compact_terminal_chrome(capsys):
+    session = _session([])
+    session._renderer = RichRenderer()  # exercise the renderer-selected presentation only
+
+    main(prompter=ScriptedPrompter(["/exit"]), session=session)
+
+    assert "── Vegapunk" in capsys.readouterr().out
 
 
 def test_vega_prefix_is_bold_magenta_when_forced(monkeypatch, capsys):

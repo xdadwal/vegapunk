@@ -25,6 +25,7 @@ from __future__ import annotations
 import itertools
 import sys
 import threading
+import time
 from collections.abc import Generator
 
 from logpose import (
@@ -116,6 +117,7 @@ def trace(
             # Spin only while waiting on the model — the one stretch of true
             # silence a step has.
             if not turn_open and not in_tool_phase:
+                spinner.set_status(_spinner_status(step + 1, context_tokens))
                 spinner.start()
             try:
                 event = next(stream)
@@ -204,6 +206,12 @@ def _footprint(usage) -> int:
     )
 
 
+def _spinner_status(step: int, context_tokens: int | None) -> str:
+    """The live wait label: stable facts from the last completed model step."""
+    context = f" · {context_tokens:,} tok" if context_tokens is not None else ""
+    return f"thinking… · step {step}{context}"
+
+
 class _Spinner:
     """A '⠋ thinking…' line animated on stderr while the model hasn't produced
     its first event of a step.
@@ -220,11 +228,18 @@ class _Spinner:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._status = "thinking…"
+        self._started_at = 0.0
+
+    def set_status(self, status: str) -> None:
+        """Update the next wait's label before its drawing thread starts."""
+        self._status = status
 
     def start(self) -> None:
         if not sys.stderr.isatty() or self._thread is not None:
             return
         self._stop.clear()
+        self._started_at = time.monotonic()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
@@ -232,7 +247,13 @@ class _Spinner:
         for frame in itertools.cycle(self._FRAMES):
             # Draw before waiting, so even an instant stop() has one frame to
             # erase — which also makes the behavior deterministic to test.
-            print(f"\r  {frame} thinking…", end="", file=sys.stderr, flush=True)
+            elapsed = int(time.monotonic() - self._started_at)
+            print(
+                f"\r  {frame} {self._status} · {elapsed}s",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
             if self._stop.wait(0.1):
                 return
 
