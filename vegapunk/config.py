@@ -62,9 +62,11 @@ class Config:
     # n_ctx`). Set 0 if unknown — the gauge then shows tokens without a %.
     context_window: int = int(os.getenv("VEGAPUNK_CONTEXT_WINDOW", "131072"))
 
-    # Which brain to start with: "local" (the DMR model above) or "claude"
-    # (subscription-billed Claude via the bundled Claude Code CLI). Switch live
-    # with /model; this only sets the default at launch.
+    # Which backend to start with. "local" (the DMR model above) and "claude"
+    # (a Claude Code subscription) are Vegapunk's own names; every other name in
+    # logpose's provider catalog also works — "anthropic" (an API key rather
+    # than the subscription), "codex", "openai", "openai-compat". Switch live
+    # with /model, which lists them; this only sets the default at launch.
     provider: str = os.getenv("VEGAPUNK_PROVIDER", "local")
 
     # Claude model override: a full model id (e.g. "claude-opus-5"), or the
@@ -81,6 +83,15 @@ class Config:
     # /effort. Validated in backend.py, not here, so a bad value arrives as a
     # message rather than an import-time crash.
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
+
+    # The same three settings for the Responses backends (codex, openai). Model
+    # empty means the provider's own default (gpt-5.5 on Codex, gpt-5.1 on
+    # OpenAI). The context window defaults to 0 — "unknown", which makes the
+    # toolbar show tokens without a percentage — rather than a guessed number
+    # that would quietly mis-report how full the window is.
+    codex_model: str = os.getenv("VEGAPUNK_CODEX_MODEL", "")
+    codex_context_window: int = int(os.getenv("VEGAPUNK_CODEX_CONTEXT_WINDOW", "0"))
+    codex_effort: str = os.getenv("VEGAPUNK_CODEX_EFFORT", "")
 
     # The scheduler worker's default brain, spelled "provider[:model]" — the same
     # syntax the /schedule --model flag takes (e.g. "local", "claude:opus"), so

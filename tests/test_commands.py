@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from vegapunk import db, session_store
-from vegapunk.backend import Backend, current_effort
+from vegapunk.backend import EFFORT_LEVELS, Backend, current_effort
 from vegapunk.commands import CommandContext, dispatch
 from tests.fake_provider import (
     assistant_turn,
@@ -473,7 +473,7 @@ def test_skill_staged_body_is_capped(skills_home, monkeypatch):
 
 def _claude_backend(label: str = "claude-opus-5") -> Backend:
     """A stand-in for what create_backend returns for the claude provider."""
-    return backend_for(model_label=label, context_window=200_000, supports_effort=True)
+    return backend_for(model_label=label, context_window=200_000, effort_key="output_config")
 
 
 def test_model_without_arg_shows_the_active_model_and_choices():
@@ -506,7 +506,8 @@ def test_model_with_unknown_provider_prints_usage(monkeypatch):
 
     res = dispatch("/model martian", ctx)
 
-    assert res.output == "Usage: /model [local|claude [model]]"
+    assert "Unknown provider 'martian'" in res.output
+    assert "claude" in res.output and "codex" in res.output  # names the real options
     assert ctx.session.model_label == original  # nothing swapped
     assert calls == []  # rejected before construction
 
@@ -522,7 +523,9 @@ def test_model_claude_with_a_name_overrides_the_configured_model(monkeypatch):
     res = dispatch("/model claude opus", _ctx())
 
     assert seen["provider"] == "claude"
-    assert seen["cfg"].claude_model == "opus"
+    # Expanded, not passed through: /model verifies the choice against what the
+    # backend serves, and stores the id it will actually request.
+    assert seen["cfg"].claude_model == "claude-opus-5"
     assert "claude:opus" in res.output
 
 
@@ -541,15 +544,16 @@ def test_model_claude_without_a_name_keeps_the_configured_default(monkeypatch):
     assert seen["cfg"] is commands_config  # untouched: VEGAPUNK_CLAUDE_MODEL still rules
 
 
-def test_model_rejects_a_model_name_for_local_and_extra_tokens(monkeypatch):
+def test_model_rejects_more_than_a_provider_and_a_model(monkeypatch):
     calls: list = []
     monkeypatch.setattr(
         "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
     )
     ctx = _ctx()
 
-    assert dispatch("/model local opus", ctx).output == "Usage: /model [local|claude [model]]"
-    assert dispatch("/model claude opus high", ctx).output == "Usage: /model [local|claude [model]]"
+    # Three tokens is still nonsense; two is now meaningful for *every* backend,
+    # since each one has a config field a model override can land in.
+    assert dispatch("/model claude opus high", ctx).output == "Usage: /model [provider [model]]"
     assert calls == []
 
 
@@ -567,7 +571,7 @@ def test_model_swap_carries_the_session_effort_choice(monkeypatch):
     monkeypatch.setattr(
         "vegapunk.commands.create_backend", lambda provider, cfg: _claude_backend("claude:opus")
     )
-    ctx = _ctx(model_label="claude", supports_effort=True)
+    ctx = _ctx(model_label="claude", effort_key="output_config")
     dispatch("/effort xhigh", ctx)
 
     dispatch("/model claude opus", ctx)
@@ -576,7 +580,7 @@ def test_model_swap_carries_the_session_effort_choice(monkeypatch):
 
 
 def _effort_ctx(effort: str | None = None) -> CommandContext:
-    ctx = _ctx(model_label="claude", supports_effort=True)
+    ctx = _ctx(model_label="claude", effort_key="output_config")
     if effort:
         dispatch(f"/effort {effort}", ctx)
     return ctx
@@ -626,3 +630,214 @@ def test_help_lists_effort():
 
 def test_help_lists_model():
     assert "/model" in dispatch("/help", _ctx()).output
+
+
+async def _fake_status():
+    """A scripted ``provider_status`` — the real one reads the Keychain."""
+    from logpose import ProviderStatus, provider_catalog
+
+    return [
+        ProviderStatus(
+            name=info.name,
+            ready=info.name != "anthropic",
+            detail="" if info.name != "anthropic" else "no key",
+            credential=None if info.name == "anthropic" else "oauth",
+        )
+        for info in provider_catalog()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# /model's listing — built from logpose's catalog, not a table here
+# ---------------------------------------------------------------------------
+
+
+def test_model_listing_names_every_backend_with_its_credential(monkeypatch):
+    # Readiness reads credential stores, so it's faked: this test is about what
+    # the listing says, and a real probe would make it machine-dependent.
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx(model_label="ai/qwen3")
+
+    out = dispatch("/model", ctx).output
+
+    assert "Active: ai/qwen3" in out
+    for name in ("docker", "claude-code", "codex", "anthropic", "openai"):
+        assert name in out
+    assert "docker|local" in out  # the alias is shown beside the real name
+    assert "claude-code|claude" in out
+
+
+def test_model_listing_marks_the_unofficial_and_the_unavailable(monkeypatch):
+    """The two facts you need when choosing, and neither is hardcoded here.
+
+    ``officially_supported`` comes from the catalog; readiness comes from a live
+    probe, so a missing credential is reported while you're choosing rather than
+    as an AuthError on your next message.
+    """
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+
+    out = dispatch("/model", _ctx()).output
+
+    # Each listing line is "[· ]name[|alias] (credential)[ [unofficial]][ — detail]".
+    lines = {
+        line.strip().lstrip("· ").split(" ")[0].split("|")[0]: line
+        for line in out.splitlines()
+        if "(" in line
+    }
+    assert "[unofficial]" in lines["claude-code"]  # subscription path, disclaimed
+    assert "[unofficial]" not in lines["anthropic"]  # BYOK is the supported one
+    assert "no key" in lines["anthropic"]  # the probe's own actionable detail
+    assert lines["anthropic"].lstrip().startswith("·")  # marked as not ready
+
+
+def test_models_lists_what_the_live_backend_serves_and_marks_the_active_one():
+    ctx = _ctx(model_label="claude-opus-5")
+    ctx.session.swap_backend(_claude_backend("claude-opus-5"))
+
+    out = dispatch("/models claude", ctx).output
+
+    assert "claude-code serves:" in out
+    assert "claude-sonnet-5" in out
+    assert "/model claude <name>" in out
+
+
+def test_models_reports_a_backend_that_will_not_answer(monkeypatch):
+    def _unreachable(name, cfg=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("vegapunk.commands.available_models", _unreachable)
+
+    out = dispatch("/models codex", _ctx()).output
+
+    assert "couldn't list its models" in out
+    assert "connection refused" in out
+
+
+def test_models_rejects_an_unknown_provider():
+    assert "Unknown provider 'martian'" in dispatch("/models martian", _ctx()).output
+
+
+def test_model_switch_refuses_an_id_the_backend_does_not_serve(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_backend", lambda provider, cfg: calls.append(provider)
+    )
+    ctx = _ctx()
+
+    res = dispatch("/model codex gpt-4o", ctx)
+
+    assert "doesn't serve 'gpt-4o'" in res.output
+    assert calls == []  # rejected before anything was built or swapped
+
+
+# ---------------------------------------------------------------------------
+# the inline pickers — what /model, /models, /load and /effort do on a terminal
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def on_a_terminal(monkeypatch):
+    """Pretend there's a TTY, and script the picker instead of drawing one.
+
+    Returns a recorder: set ``.answer`` to what the user "picks" (None = backed
+    out), and read ``.options`` afterwards to assert what they were shown.
+    """
+
+    class Recorder:
+        answer: str | None = None
+        title: str = ""
+        options: list = []
+
+        def choose(self, title, options, **kwargs):
+            self.title, self.options = title, list(options)
+            return self.answer
+
+    recorder = Recorder()
+    monkeypatch.setattr("vegapunk.commands._interactive", lambda: True)
+    monkeypatch.setattr("vegapunk.commands.menu.choose", recorder.choose)
+    return recorder
+
+
+def test_bare_model_opens_a_backend_picker_marking_the_live_one(on_a_terminal, monkeypatch):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx()
+    on_a_terminal.answer = None  # back out
+
+    res = dispatch("/model", ctx)
+
+    labels = [o.label for o in on_a_terminal.options]
+    assert "claude-code" in labels and "codex" in labels
+    # The alias and the credential ride along as detail, so you can choose
+    # without having memorised either.
+    detail = next(o.detail for o in on_a_terminal.options if o.label == "claude-code")
+    assert "claude" in detail and "subscription" in detail and "unofficial" in detail
+    assert res.output == "(unchanged)"
+
+
+def test_backing_out_of_the_backend_picker_changes_nothing(on_a_terminal, monkeypatch):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    ctx = _ctx()
+    before = ctx.session.model_label
+    on_a_terminal.answer = None
+
+    assert dispatch("/model", ctx).output == "(unchanged)"
+    assert ctx.session.model_label == before
+
+
+def test_bare_models_picks_a_model_on_the_live_backend(on_a_terminal, monkeypatch):
+    swapped: list = []
+    monkeypatch.setattr(
+        "vegapunk.commands.create_backend",
+        lambda provider, cfg: swapped.append((provider, cfg.claude_model)) or _claude_backend("x"),
+    )
+    ctx = _ctx()
+    ctx.session.swap_backend(_claude_backend("claude-opus-5"))
+    on_a_terminal.answer = "claude-sonnet-5"
+
+    dispatch("/models claude", ctx)
+
+    assert [o.label for o in on_a_terminal.options] == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+    ]
+    assert [o.active for o in on_a_terminal.options] == [True, False, False]  # the live one
+    assert swapped == [("claude", "claude-sonnet-5")]
+
+
+def test_bare_load_picks_a_saved_session(on_a_terminal):
+    ctx = _ctx()
+    ctx.session.restore([user_turn("hi"), assistant_turn("yo")])
+    dispatch("/save demo", ctx)
+    on_a_terminal.answer = "demo"
+
+    res = dispatch("/load", _ctx())
+
+    assert "Resumed 'demo'" in res.output
+    assert on_a_terminal.options[0].detail.startswith("1 turns")
+
+
+def test_bare_load_with_no_saved_sessions_says_so(on_a_terminal):
+    assert dispatch("/load", _ctx()).output == "(no saved sessions)"
+
+
+def test_bare_effort_picks_a_level(on_a_terminal):
+    ctx = _ctx(model_label="claude", effort_key="output_config")
+    on_a_terminal.answer = "high"
+
+    res = dispatch("/effort", ctx)
+
+    assert [o.label for o in on_a_terminal.options] == list(EFFORT_LEVELS)
+    assert "effort set to high" in res.output
+    assert current_effort(ctx.session.backend) == "high"
+
+
+def test_the_pickers_stay_out_of_the_way_without_a_terminal(monkeypatch):
+    """Every non-interactive path — tests, pipes, the scheduler — keeps the
+    plain-text behaviour it had before the pickers existed."""
+    monkeypatch.setattr("vegapunk.commands._interactive", lambda: False)
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+
+    assert "Available:" in dispatch("/model", _ctx()).output
+    assert dispatch("/load", _ctx()).output == "Usage: /load <name>"
+    assert "Effort:" in dispatch("/effort", _ctx(effort_key="output_config")).output

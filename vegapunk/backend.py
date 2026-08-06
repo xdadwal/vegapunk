@@ -7,6 +7,13 @@ an effort setting. ``create_backend`` is the single selection point — the CLI'
 startup default, the ``/model`` command, and the scheduler worker all come
 through here.
 
+The list of backends is logpose's, not ours. ``provider_catalog()`` is the
+source of truth for which names exist, what each one authenticates with, and
+whether it is an officially supported integration; Vegapunk adds only what
+logpose has no opinion about — a context window per provider, two legacy
+aliases, and the Claude model quirks below. That is deliberate: a provider added
+to logpose shows up in ``/model`` here without a code change.
+
 Providers are resolved by name and import their SDK lazily, so building one never
 touches the network or reads a credential; a local-only setup never pays for the
 Anthropic path.
@@ -14,18 +21,51 @@ Anthropic path.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from difflib import get_close_matches
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from logpose import Provider, resolve
+from logpose import (
+    LogposeError,
+    Provider,
+    ProviderInfo,
+    provider_catalog,
+    provider_info,
+    resolve,
+)
 
 from .config import Config, config
 
-# Anthropic's effort levels, in order. These are the API's own values for
-# ``output_config.effort`` — /effort passes the user's word straight through, so
-# there is no mapping to keep in sync, only this list to validate against.
+# Effort levels, in order. Both wire APIs that take an effort setting use these
+# same five words (Anthropic's ``output_config.effort`` and the Responses API's
+# ``reasoning.effort``), so /effort passes the user's word straight through and
+# there is no mapping to keep in sync — only this list to validate against.
 EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+# Vegapunk's own names for two logpose providers, kept because they predate the
+# catalog: `local` is what the docs, VEGAPUNK_PROVIDER, and every saved
+# `/schedule --model local` spec already say, and `claude` meant the
+# subscription path before logpose split it into a provider per credential.
+# Every other name is logpose's own, so this table does not grow.
+ALIASES = {
+    "local": "docker",
+    "claude": "claude-code",
+}
+
+# Context window per provider, for the toolbar's fullness gauge. logpose doesn't
+# carry this — it's a property of the model, not the wire API, and no backend
+# reports it. 0 means unknown, and the gauge then shows tokens without a
+# percentage rather than a made-up one. The two `cfg` entries are resolved per
+# call so the existing VEGAPUNK_*_CONTEXT_WINDOW overrides keep working.
+_CONTEXT_WINDOWS: dict[str, str] = {
+    "docker": "context_window",
+    "claude-code": "claude_context_window",
+    "anthropic": "claude_context_window",
+    "codex": "codex_context_window",
+    "openai": "codex_context_window",
+}
 
 # Short model names the Claude Code CLI accepted, which the raw Messages API
 # does not. Kept so an existing VEGAPUNK_CLAUDE_MODEL=sonnet (or `/model claude
@@ -84,6 +124,66 @@ def supports_effort(model: str) -> bool:
     return not model.startswith(_NO_EFFORT)
 
 
+def canonical_name(name: str) -> str:
+    """Vegapunk's name for a backend -> logpose's, expanding the two aliases."""
+    return ALIASES.get(name.lower(), name.lower())
+
+
+def backend_names() -> list[str]:
+    """Every name /model accepts: Vegapunk's aliases first, then logpose's.
+
+    Reads the catalog rather than a list here, so a provider added to logpose is
+    selectable as soon as the pin moves. logpose's *own* aliases are included
+    too (``docker-models`` for ``docker``) — resolve accepts them, so refusing
+    them here would be Vegapunk inventing a restriction of its own.
+    """
+    catalog = sorted(
+        name for info in provider_catalog() for name in (info.name, *info.aliases)
+    )
+    return sorted(ALIASES) + catalog
+
+
+def describe(name: str) -> ProviderInfo:
+    """The catalog entry for a backend name, or ``ValueError`` if there is none.
+
+    The message names every valid spelling, because both callers (/model and the
+    scheduler's ``provider[:model]`` spec) surface it straight to the user.
+    """
+    try:
+        return provider_info(canonical_name(name))
+    except LogposeError as exc:
+        # Re-raised as ValueError because that is the channel /model, /schedule,
+        # and the worker already surface as plain text rather than a traceback.
+        raise ValueError(
+            f"Unknown provider {name!r} — expected one of: {', '.join(backend_names())}."
+        ) from exc
+
+
+# Which config field carries a model override, per wire API. Keyed by API
+# rather than provider name so `anthropic` and `claude-code` share one setting
+# (they are the same models behind different credentials), as do the two
+# Responses backends.
+_MODEL_FIELDS = {
+    "messages": "claude_model",
+    "responses": "codex_model",
+    "chat-completions": "model",
+}
+
+
+def with_model(cfg: Config, name: str, model: str) -> Config:
+    """``cfg`` with ``model`` applied to whichever field that backend reads.
+
+    So ``/model codex gpt-5.1`` and ``/model claude opus`` are the same gesture,
+    and the scheduler's ``codex:gpt-5.1`` spec means what it says instead of
+    silently landing in the Claude setting. An empty ``model`` is a no-op.
+    Raises ``ValueError`` for an unknown backend name.
+    """
+    api = describe(name).api
+    if not model:
+        return cfg
+    return replace(cfg, **{_MODEL_FIELDS[api]: model})
+
+
 @dataclass(frozen=True)
 class Backend:
     """A model Vegapunk can run on, ready to hand to a logpose ``Agent``.
@@ -93,23 +193,34 @@ class Backend:
         model_label: What to call it in the toolbar and in /model's output.
         context_window: Its context window in tokens, for the fullness gauge.
             0 means unknown — the gauge then shows tokens without a percentage.
-        supports_effort: Whether this backend takes an effort level at all.
-            False for local, so /effort can say so rather than silently sending
-            an Anthropic-only parameter to a local server.
         extra: Provider-specific request parameters merged into every turn.
-            Carries the effort setting for the Claude backend; empty for local.
+            Carries the effort setting; empty when there is none to send.
         spawn_provider: Builds a *second*, independent provider for the same
             model. Needed because a provider's HTTP client binds itself to the
             event loop that first uses it, so two agents (the conversation and
             the throwaway one that titles it) cannot share one.
+        effort_key: The request field this backend's effort rides in — empty
+            when it has none, which is also what ``supports_effort`` reads. One
+            field rather than two: a backend that claimed to support effort but
+            had nowhere to put it would accept ``/effort high`` and silently
+            send nothing.
     """
 
     provider: Provider
     model_label: str
     context_window: int
-    supports_effort: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
     spawn_provider: Callable[[], Provider] = field(default=lambda: _no_spawn())
+    effort_key: str = ""
+
+    @property
+    def supports_effort(self) -> bool:
+        """Whether this backend takes an effort level at all.
+
+        False for the local model and for the older Claude models, so /effort
+        can say so rather than sending a parameter that comes back a 400.
+        """
+        return bool(self.effort_key)
 
 
 def _no_spawn() -> Provider:
@@ -130,74 +241,176 @@ def validate_effort(level: str) -> str:
     return level
 
 
-def _effort_extra(level: str) -> dict[str, Any]:
+def _effort_key(api: str) -> str:
+    """The request field an effort level rides in on this wire API, "" if none.
+
+    Derived from the API rather than the provider name: every Messages backend
+    spells it one way and every Responses backend the other, so a new provider
+    on either API gets /effort with no change here. Chat Completions (the local
+    model runner) has no such field at all.
+    """
+    return {"messages": "output_config", "responses": "reasoning"}.get(api, "")
+
+
+def _effort_extra(key: str, level: str) -> dict[str, Any]:
     """The wire shape for an effort level, or nothing when it's unset.
 
     Empty means "don't send the parameter", which leaves the API on its own
     default — not the same as pinning that default here, which would start
     lying the moment the API's default moved.
+
+    The Responses shape carries ``summary`` as well as ``effort``. logpose
+    applies ``extra`` with a shallow ``dict.update``, so a ``reasoning`` block
+    holding only the effort would replace the provider's own and drop the
+    summary channel — silently costing every ``ThinkingDelta`` the trace shows.
     """
-    if not level:
+    if not key or not level:
         return {}
-    return {"output_config": {"effort": validate_effort(level)}}
+    validate_effort(level)
+    if key == "reasoning":
+        return {"reasoning": {"effort": level, "summary": "auto"}}
+    return {"output_config": {"effort": level}}
+
+
+def _context_window(name: str, cfg: Config) -> int:
+    """The configured context window for a backend, or 0 when we don't know."""
+    attribute = _CONTEXT_WINDOWS.get(name)
+    return getattr(cfg, attribute) if attribute else 0
 
 
 def create_backend(name: str, cfg: Config = config) -> Backend:
-    """Build the backend for a provider name ("local" or "claude").
+    """Build the backend for a provider name.
 
-    Raises ``ValueError`` for an unknown name, and for a malformed effort level
-    — /model surfaces both as plain text rather than a traceback.
+    Accepts any name in the logpose catalog plus Vegapunk's ``local`` and
+    ``claude`` aliases. Raises ``ValueError`` for an unknown name, and for a
+    malformed effort level — /model surfaces both as plain text rather than a
+    traceback.
     """
-    if name == "local":
-        # Docker Model Runner speaks OpenAI-compatible HTTP and needs no
-        # credential, so there's nothing to pass but where it lives and how much
-        # it may generate.
-        def spawn_local() -> Provider:
-            return resolve(
-                "docker",
-                base_url=cfg.base_url,
-                model=cfg.model,
-                max_tokens=cfg.max_output_tokens,
-            )
+    info = describe(name)
+    kwargs: dict[str, Any] = {}
 
-        return Backend(
-            provider=spawn_local(),
-            model_label=cfg.model,
-            context_window=cfg.context_window,
-            spawn_provider=spawn_local,
-        )
-    if name == "claude":
-        # An empty claude_model means "whatever the provider defaults to": don't
-        # name a default here, ask the provider what its is, so the label can
-        # never drift from the model actually being requested.
+    # Only pass what the backend can actually use. The local runner needs to be
+    # told where it lives; the hosted ones are found by their own env vars.
+    if info.name in ("docker", "docker-models", "openai-compat"):
+        kwargs["base_url"] = cfg.base_url
+        model = cfg.model
+    elif info.api == "messages":
         model = _resolve_model(cfg.claude_model)
-        kwargs: dict[str, Any] = {"max_tokens": cfg.max_output_tokens}
-        if model:
-            kwargs["model_default"] = model
-        # logpose asks for adaptive thinking by default; models that predate it
-        # 400 on the parameter, so those get none at all.
-        if not supports_adaptive_thinking(model):
-            kwargs["thinking"] = None
+    else:
+        model = cfg.codex_model
 
-        def spawn_claude() -> Provider:
-            return resolve("anthropic", **kwargs)
+    if model:
+        # The Messages backends spell it `model_default`; the Responses and
+        # Chat Completions ones spell it `model`.
+        kwargs["model_default" if info.api == "messages" else "model"] = model
+    # The providers' own ceilings are low enough to cut a long answer off
+    # mid-sentence. The Codex subscription endpoint rejects the field outright,
+    # and logpose already omits it there, so passing it is safe everywhere.
+    kwargs["max_tokens"] = cfg.max_output_tokens
+    # logpose asks Anthropic for adaptive thinking by default; models that
+    # predate it 400 on the parameter, so those get none at all.
+    if info.api == "messages" and not supports_adaptive_thinking(model):
+        kwargs["thinking"] = None
 
-        provider = spawn_claude()
-        # A configured effort is validated whatever the model (a typo in
-        # VEGAPUNK_CLAUDE_EFFORT should be named as such), then dropped when the
-        # model can't take it — /model haiku shouldn't fail because an env var
-        # from an earlier model is still set.
-        effort = validate_effort(cfg.claude_effort) if cfg.claude_effort else ""
-        takes_effort = supports_effort(model)
-        return Backend(
-            provider=provider,
-            model_label=provider.model_default,
-            context_window=cfg.claude_context_window,
-            supports_effort=takes_effort,
-            extra=_effort_extra(effort) if takes_effort else {},
-            spawn_provider=spawn_claude,
-        )
-    raise ValueError(f"Unknown provider {name!r} — expected 'local' or 'claude'.")
+    def spawn() -> Provider:
+        return resolve(info.name, **kwargs)
+
+    provider = spawn()
+    # Label from the provider, not from `model`: an empty override means "use
+    # the provider's default", and asking it keeps the toolbar from drifting
+    # from the model actually being requested.
+    label = provider.model_default or model or info.name
+
+    key = _effort_key(info.api)
+    # A configured effort is validated whatever the model (a typo in
+    # VEGAPUNK_CLAUDE_EFFORT should be named as such), then dropped when the
+    # model can't take it — /model claude haiku shouldn't fail because an env
+    # var from an earlier model is still set.
+    configured = cfg.claude_effort if info.api == "messages" else cfg.codex_effort
+    effort = validate_effort(configured) if configured else ""
+    takes_effort = bool(key) and (info.api != "messages" or supports_effort(label))
+    key = key if takes_effort else ""
+    return Backend(
+        provider=provider,
+        model_label=label,
+        context_window=_context_window(info.name, cfg),
+        extra=_effort_extra(key, effort),
+        spawn_provider=spawn,
+        effort_key=key,
+    )
+
+
+# Model lists, keyed by logpose provider name. Cached for the life of the
+# process: the list is a network round trip, it changes on Anthropic's and
+# OpenAI's release cadence rather than during a session, and /model would
+# otherwise pay for it on every switch.
+_MODEL_CACHE: dict[str, list[str]] = {}
+
+
+def available_models(name: str, cfg: Config = config) -> list[str]:
+    """The model ids this backend actually serves, newest first.
+
+    Asked of the backend rather than kept in a table here, so the answer is
+    right for *your* account — which models an Anthropic or OpenAI subscription
+    exposes differs between them, and a hardcoded list would go stale silently.
+
+    Costs one network round trip the first time per provider, then nothing.
+    Raises whatever the provider raises (no credential, no endpoint, no
+    network); callers decide whether that is fatal or merely unhelpful.
+    """
+    info = describe(name)
+    if info.name not in _MODEL_CACHE:
+        # A throwaway provider on its own event loop: the session's provider is
+        # bound to the loop its agent runs on, and asyncio.run here would be a
+        # different one.
+        provider = create_backend(name, cfg).spawn_provider()
+        _MODEL_CACHE[info.name] = list(asyncio.run(provider.list_models()))
+    return _MODEL_CACHE[info.name]
+
+
+def cached_models(name: str) -> list[str]:
+    """Model ids already fetched for this backend, or ``[]``.
+
+    Never makes a request. Tab completion calls this on every keystroke, and a
+    completer that blocks on the network would freeze the line you are typing —
+    far worse than offering nothing until ``/models`` has been run once.
+    """
+    try:
+        return list(_MODEL_CACHE.get(canonical_name(name), []))
+    except (KeyError, ValueError):
+        return []
+
+
+def resolve_model_choice(name: str, model: str, cfg: Config = config) -> str:
+    """Check ``model`` against what the backend serves; return what to request.
+
+    Expands Vegapunk's short Claude names first, so ``opus`` is checked as
+    ``claude-opus-5``. An id the backend doesn't list raises ``ValueError``
+    naming the closest matches — the alternative is a switch that looks like it
+    worked and then 404s on your next message, which is where this used to fail.
+
+    Discovery failing is *not* fatal: an unreachable local runner or a provider
+    that won't answer shouldn't stop you selecting a model you know is right, so
+    the choice is passed through unchecked.
+    """
+    wanted = _resolve_model(model) if describe(name).api == "messages" else model
+    if not wanted:
+        return wanted
+    try:
+        served = available_models(name, cfg)
+    except Exception:  # noqa: BLE001 — discovery is a convenience, not a gate
+        return wanted
+    # Exact, or the undated base of a dated snapshot: Anthropic lists
+    # `claude-haiku-4-5-20251001` but answers to `claude-haiku-4-5` too, and
+    # rejecting the alias the API itself accepts would be Vegapunk being stricter
+    # than the service it is talking to.
+    if any(candidate == wanted or candidate.startswith(f"{wanted}-") for candidate in served):
+        return wanted
+    close = get_close_matches(wanted, served, n=3, cutoff=0.4) or served[:3]
+    raise ValueError(
+        f"{describe(name).name} doesn't serve {wanted!r}. Closest: {', '.join(close)}. "
+        f"See /models {name} for the full list."
+    )
 
 
 def with_effort(backend: Backend, level: str) -> Backend:
@@ -207,14 +420,14 @@ def with_effort(backend: Backend, level: str) -> Backend:
     switching effort doesn't drop the HTTP connection pool underneath it.
     Raises ``ValueError`` on a backend that has no effort setting: ``extra`` is
     merged into the request body verbatim, so quietly accepting the level would
-    ship an Anthropic-only parameter to a local server.
+    ship a parameter the server doesn't understand.
     """
     if not backend.supports_effort:
         raise ValueError(
             f"{backend.model_label} has no effort setting — "
             "switch to a model that has one, e.g. /model claude opus."
         )
-    return replace(backend, extra=_effort_extra(level))
+    return replace(backend, extra=_effort_extra(backend.effort_key, level))
 
 
 def current_effort(backend: Backend) -> str:
@@ -224,8 +437,8 @@ def current_effort(backend: Backend) -> str:
     can't disagree. "" on an effort-capable backend means the API's own default;
     check ``supports_effort`` to tell that from "this model has no such setting".
     """
-    output_config = backend.extra.get("output_config")
-    if not isinstance(output_config, dict):
+    block = backend.extra.get(backend.effort_key) if backend.effort_key else None
+    if not isinstance(block, dict):
         return ""
-    effort = output_config.get("effort")
+    effort = block.get("effort")
     return effort if isinstance(effort, str) else ""

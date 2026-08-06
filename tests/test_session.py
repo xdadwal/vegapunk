@@ -51,7 +51,7 @@ def _backend(turns, *, repeat_last: bool = False, title="a scripted title", **kw
 
 
 def _session(turns, *, tools=(), repeat_last: bool = False, title=None, **kwargs) -> Session:
-    backend_kwargs = {key: kwargs.pop(key) for key in ("supports_effort",) if key in kwargs}
+    backend_kwargs = {key: kwargs.pop(key) for key in ("effort_key",) if key in kwargs}
     if title is not None:
         backend_kwargs["title"] = title
     backend, _provider = _backend(turns, repeat_last=repeat_last, **backend_kwargs)
@@ -369,7 +369,7 @@ def test_setting_effort_keeps_the_conversation_running():
     # Regression: /effort used to rebuild the agent, which handed the shared
     # provider's HTTP client to a new event loop and closed the old one — every
     # later turn then died with "Event loop is closed".
-    session = _session([says("first"), says("second")], supports_effort=True)
+    session = _session([says("first"), says("second")], effort_key="output_config")
     _reply(session.send("hello"))
     agent_before = session._agent
 

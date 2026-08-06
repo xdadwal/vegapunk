@@ -22,7 +22,7 @@ from tests.fake_provider import backend_for
 
 def _claude_backend():
     """What create_backend returns for claude: a backend that takes effort."""
-    return backend_for(model_label="fake-claude", supports_effort=True)
+    return backend_for(model_label="fake-claude", effort_key="output_config")
 
 
 def _local_backend():

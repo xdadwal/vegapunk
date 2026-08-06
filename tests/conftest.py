@@ -57,6 +57,39 @@ class _NeverStartedPopen:
         pass
 
 
+# Model ids the fake backends "serve". Deliberately includes a dated Anthropic
+# snapshot, because that is what makes `/model claude haiku` a prefix match
+# rather than an exact one.
+_SERVED_MODELS = {
+    "docker": ["ai/qwen3", "docker.io/gemma4:latest"],
+    "claude-code": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    "codex": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+    "openai": ["gpt-5.1"],
+    "openai-compat": [],
+}
+
+
+@pytest.fixture(autouse=True)
+def _offline_model_discovery(monkeypatch):
+    """No test may reach a provider's /models endpoint.
+
+    Discovery is a live network round trip, so left real it would make the suite
+    slow, flaky, and dependent on whose credentials are on the machine. Patched
+    in both modules that name it, since each imported the function directly.
+    """
+    from vegapunk.backend import canonical_name
+
+    def _served(name, cfg=None):
+        from vegapunk.backend import describe
+
+        describe(name)  # faithful to the real one: unknown name -> ValueError
+        return list(_SERVED_MODELS[canonical_name(name)])
+
+    for module in ("vegapunk.backend", "vegapunk.commands"):
+        monkeypatch.setattr(f"{module}.available_models", _served)
+
+
 @pytest.fixture(autouse=True)
 def _no_real_scheduler_worker(monkeypatch):
     monkeypatch.setattr("vegapunk.worker.Popen", _NeverStartedPopen)

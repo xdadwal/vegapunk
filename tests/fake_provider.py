@@ -195,7 +195,7 @@ def backend_for(
     *,
     model_label: str = "unknown-model",
     context_window: int = 0,
-    supports_effort: bool = False,
+    effort_key: str = "",
     repeat_last: bool = False,
     title: str = "scripted title",
 ):
@@ -204,6 +204,12 @@ def backend_for(
     ``title`` scripts the *titling* agent separately, because it runs on its own
     provider — two agents can't share one provider's event loop, so a session's
     conversation script and its auto-name script are genuinely independent.
+
+    ``effort_key`` names the request field an effort level would ride in, which
+    is also what makes ``supports_effort`` true: "output_config" for a Messages
+    backend, "reasoning" for a Responses one, "" for a backend with no such
+    setting. Naming the field rather than passing a bare flag is what stops a
+    test from pinning a state the real code cannot produce.
     """
     from vegapunk.backend import Backend
 
@@ -211,7 +217,7 @@ def backend_for(
         provider=FakeProvider(turns, repeat_last=repeat_last),
         model_label=model_label,
         context_window=context_window,
-        supports_effort=supports_effort,
+        effort_key=effort_key,
         spawn_provider=lambda: FakeProvider(says(title), repeat_last=True),
     )
 
@@ -227,7 +233,7 @@ def session_for(turns: Sequence[Turn] | Turn = (), **kwargs: Any):
     tools = kwargs.pop("tools", [])
     backend_kwargs = {
         key: kwargs.pop(key)
-        for key in ("model_label", "context_window", "supports_effort", "repeat_last", "title")
+        for key in ("model_label", "context_window", "effort_key", "repeat_last", "title")
         if key in kwargs
     }
     kwargs.setdefault("system_prompt", "SYS")

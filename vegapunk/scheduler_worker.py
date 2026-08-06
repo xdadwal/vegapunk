@@ -26,12 +26,11 @@ import os
 import signal
 import sys
 import threading
-from dataclasses import replace
 
 from logpose import Agent
 
 from . import db
-from .backend import Backend, create_backend, with_effort
+from .backend import Backend, create_backend, describe, with_effort, with_model
 from .config import config
 from .gate import make_gate
 from .scheduler import Scheduler
@@ -51,8 +50,7 @@ def parse_model_spec(spec: str) -> tuple[str, str]:
     """
     provider, _, model = spec.partition(":")
     provider = provider.strip().lower()
-    if provider not in ("local", "claude"):
-        raise ValueError(f"Unknown provider {provider!r} — expected 'local' or 'claude'.")
+    describe(provider)  # raises ValueError naming every valid spelling
     return provider, model.strip()
 
 
@@ -75,7 +73,7 @@ def build_backend() -> Backend:
         provider, model = parse_model_spec(config.scheduler_model)
     else:
         provider, model = config.provider, config.claude_model
-    backend = create_backend(provider, replace(config, claude_model=model) if model else config)
+    backend = create_backend(provider, with_model(config, provider, model))
     effort = config.scheduler_effort or config.claude_effort
     if effort:
         # Asking for an effort level on a backend that has none is a config

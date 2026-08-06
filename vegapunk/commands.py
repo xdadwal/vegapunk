@@ -9,14 +9,31 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
-from . import db, memory, scheduler, session_store, skills, transcript
-from .backend import create_backend, current_effort, with_effort
+from logpose import provider_catalog, provider_status
+
+from . import db, memory, menu, scheduler, session_store, skills, transcript
+from .backend import (
+    ALIASES,
+    EFFORT_LEVELS,
+    available_models,
+    create_backend,
+    current_effort,
+    describe,
+    resolve_model_choice,
+    with_effort,
+    with_model,
+)
 from .config import config
 from .session import Session
+
+# Sorted once: /model's listing shows each provider's Vegapunk alias beside it.
+_ALIAS_ITEMS = sorted(ALIASES.items())
 
 # A handler takes the live context and the text after the command name.
 Handler = Callable[["CommandContext", str], "CommandResult"]
@@ -119,24 +136,110 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="(new conversation)")
 
 
-@command("model", "Show or switch the model: /model [local|claude [model]]")
+def _interactive() -> bool:
+    """Whether there's a terminal to open a picker on.
+
+    Gated on stdin specifically: a piped or scripted session (tests, CI, `echo
+    /model | vegapunk`) has no one to arrow around a menu, and every command
+    below keeps its plain-text behaviour there. That is also what keeps the
+    non-interactive paths — which the scheduler and the test suite rely on —
+    exactly as they were.
+    """
+    return sys.stdin.isatty()
+
+
+def _pick(title: str, options: list[menu.Option]) -> str | None:
+    """Open the picker, or return ``None`` when there is nothing to pick."""
+    return menu.choose(title, options) if options else None
+
+
+def _catalog_listing() -> str:
+    """One line per selectable backend: name, what it authenticates with, and
+    whether it can actually run right now.
+
+    Readiness is asked of logpose rather than guessed, so a missing credential
+    is reported here — at the moment you are choosing — instead of as an
+    ``AuthError`` on your next message. It reads credential stores (including a
+    Keychain subprocess on macOS), which is why /model pays for it only when
+    called with no argument.
+    """
+    status = {s.name: s for s in asyncio.run(provider_status())}
+    lines = []
+    for info in sorted(provider_catalog(), key=lambda i: i.name):
+        names = "|".join([info.name, *(a for a, t in _ALIAS_ITEMS if t == info.name)])
+        ready = status.get(info.name)
+        mark = "  " if ready is None or ready.ready else "· "
+        note = "" if ready is None or ready.ready else f" — {ready.detail}"
+        unsupported = "" if info.officially_supported else " [unofficial]"
+        lines.append(f"  {mark}{names} ({info.credential}){unsupported}{note}")
+    return "\n".join(lines)
+
+
+@command("model", "Show or switch the model: /model [provider [model]]")
 def _model(ctx: CommandContext, arg: str) -> CommandResult:
+    if not arg and _interactive():
+        return _pick_backend(ctx)
     if not arg:
         return CommandResult(
-            output=f"Active: {ctx.session.model_label}\n"
-            "Available: local (Docker Model Runner), claude [model] (Claude subscription)"
+            output=f"Active: {ctx.session.model_label}\nAvailable:\n{_catalog_listing()}"
         )
     tokens = arg.split()
     provider = tokens[0].lower()
     model = tokens[1] if len(tokens) == 2 else ""
-    # Provider is validated here, not via create_backend's ValueError — that
-    # channel must stay free for real construction errors (e.g. a junk
-    # VEGAPUNK_CLAUDE_EFFORT), which deserve their own message, not "Usage:".
-    if len(tokens) > 2 or provider not in ("local", "claude") or (model and provider != "claude"):
-        return CommandResult(output="Usage: /model [local|claude [model]]")
-    cfg = replace(config, claude_model=model) if model else config
+    if len(tokens) > 2:
+        return CommandResult(output="Usage: /model [provider [model]]")
+    # The choice is checked against what the backend serves, so a typo is caught
+    # here rather than as a 404 on your next message.
+    return _switch(ctx, provider, model)
+
+
+
+def _pick_backend(ctx: CommandContext) -> CommandResult:
+    """Choose a backend from a menu, marking the live one and what can't run."""
+    status = {s.name: s for s in asyncio.run(provider_status())}
+    live = _live_backend_name(ctx)
+    options = []
+    for info in sorted(provider_catalog(), key=lambda i: i.name):
+        alias = next((a for a, t in _ALIAS_ITEMS if t == info.name), "")
+        ready = status.get(info.name)
+        detail = [info.credential if alias == "" else f"{alias} · {info.credential}"]
+        if not info.officially_supported:
+            detail.append("unofficial")
+        if ready is not None and not ready.ready:
+            detail.append(ready.detail)
+        options.append(
+            menu.Option(
+                value=info.name,
+                label=info.name,
+                detail=" · ".join(detail),
+                active=info.name == live,
+            )
+        )
+    chosen = _pick("choose a backend", options)
+    if chosen is None:
+        return CommandResult(output="(unchanged)")
+    return _switch(ctx, chosen, "")
+
+
+def _pick_model(ctx: CommandContext, provider: str, served: list[str]) -> CommandResult:
+    """Choose a model on ``provider`` from a menu, marking the live one."""
+    live = ctx.session.model_label
+    options = [menu.Option(value=name, label=name, active=name == live) for name in served]
+    chosen = _pick(f"choose a model on {provider}", options)
+    if chosen is None:
+        return CommandResult(output="(unchanged)")
+    return _switch(ctx, provider, chosen)
+
+
+def _switch(ctx: CommandContext, provider: str, model: str) -> CommandResult:
+    """Build and install a backend, carrying the session's effort choice over.
+
+    The one place /model, the two pickers, and /models all end up, so a switch
+    means the same thing however it was asked for.
+    """
     try:
-        backend = create_backend(provider, cfg)
+        chosen = resolve_model_choice(provider, model)
+        backend = create_backend(provider, with_model(config, provider, chosen))
         # Carry a /effort choice across claude→claude swaps (a claude→local→claude
         # round trip loses it — the local backend has nowhere to hold it).
         effort = current_effort(ctx.session.backend)
@@ -150,7 +253,85 @@ def _model(ctx: CommandContext, arg: str) -> CommandResult:
     )
 
 
-@command("effort", "Show or set Claude's effort: /effort [low|medium|high|xhigh|max]")
+def _live_backend_name(ctx: CommandContext) -> str:
+    """logpose's name for the backend this session is running on."""
+    return ctx.session.backend.provider.name
+
+
+@command("models", "List the models a backend serves: /models [provider]")
+def _models(ctx: CommandContext, arg: str) -> CommandResult:
+    """What this backend will actually answer to, asked of the backend itself.
+
+    Defaults to the live one, so `/models` answers "what else could I switch
+    to right now" without naming anything. The list is one network round trip,
+    cached for the session.
+    """
+    provider = arg.split()[0].lower() if arg else _live_backend_name(ctx)
+    try:
+        # Validated first and separately, so an unknown name is reported as
+        # such rather than folded into "couldn't list its models" below.
+        known = describe(provider).name
+    except ValueError as exc:
+        return CommandResult(output=str(exc))
+    try:
+        served = available_models(provider)
+    except Exception as exc:  # noqa: BLE001 — a backend that won't answer isn't fatal
+        return CommandResult(output=f"({provider} couldn't list its models: {exc})")
+    if not served:
+        return CommandResult(output=f"({provider} reported no models)")
+    if _interactive():
+        return _pick_model(ctx, provider, served)
+    live = ctx.session.model_label
+    lines = [f"  {'*' if name == live else ' '} {name}" for name in served]
+    return CommandResult(
+        output=f"{known} serves:\n" + "\n".join(lines) +
+        f"\nSwitch with /model {provider} <name>."
+    )
+
+
+
+def _pick_session(ctx: CommandContext) -> CommandResult:
+    """Choose a saved conversation to resume, newest first."""
+    rows = session_store.list_sessions()
+    if not rows:
+        return CommandResult(output="(no saved sessions)")
+    options = [
+        menu.Option(
+            value=name,
+            label=name,
+            detail=f"{turns} turns · {_local_stamp(updated_at)}",
+            active=name == ctx.current_name,
+        )
+        for name, turns, updated_at in rows
+    ]
+    chosen = _pick("resume which conversation?", options)
+    if chosen is None:
+        return CommandResult(output="(nothing loaded)")
+    return _load(ctx, chosen)
+
+
+def _pick_skill() -> str | None:
+    """Choose a skill to stage, showing each one's summary as its detail."""
+    available = skills.list_skills()
+    if not available:
+        return None
+    options = [menu.Option(value=s.name, label=s.name, detail=s.description) for s in available]
+    return _pick("stage which skill?", options)
+
+
+def _pick_effort(ctx: CommandContext) -> CommandResult:
+    """Choose a reasoning-effort level, marking the one in force."""
+    live = current_effort(ctx.session.backend)
+    options = [
+        menu.Option(value=level, label=level, active=level == live) for level in EFFORT_LEVELS
+    ]
+    chosen = _pick(f"effort for {ctx.session.model_label}", options)
+    if chosen is None:
+        return CommandResult(output="(unchanged)")
+    return _effort(ctx, chosen)
+
+
+@command("effort", "Show or set reasoning effort: /effort [low|medium|high|xhigh|max]")
 def _effort(ctx: CommandContext, arg: str) -> CommandResult:
     backend = ctx.session.backend
     # Asked of the backend rather than duck-typed: a backend that takes no
@@ -163,6 +344,8 @@ def _effort(ctx: CommandContext, arg: str) -> CommandResult:
             output=f"({backend.model_label} has no effort setting — "
             "switch to a model that has one, e.g. /model claude opus)"
         )
+    if not arg and _interactive():
+        return _pick_effort(ctx)
     if not arg:
         # Unset means we send no effort parameter at all, leaving the API on its
         # own default rather than one we picked.
@@ -197,6 +380,8 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
 def _load(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
     if not name:
+        if _interactive():
+            return _pick_session(ctx)
         return CommandResult(output="Usage: /load <name>")
     try:
         messages = session_store.load_session(name)
@@ -326,6 +511,11 @@ def _skill(ctx: CommandContext, arg: str) -> CommandResult:
     body rides the next message instead of a use_skill round-trip."""
     if not arg:
         names = ", ".join(s.name for s in skills.list_skills()) or "(none installed)"
+        if _interactive():
+            picked = _pick_skill()
+            if picked is not None:
+                return _skill(ctx, picked)
+            return CommandResult(output="(nothing staged)")
         return CommandResult(output=f"Usage: /skill <name>. Available: {names}")
     try:
         skill, body = skills.load_skill(arg)

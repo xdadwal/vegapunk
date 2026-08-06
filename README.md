@@ -12,9 +12,10 @@ The model is served locally over an OpenAI-compatible API — by default
 [Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) at
 `http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. With this default `local`
 provider, the model and your files stay local; the only outbound traffic is the `fetch_url` /
-`search_web` tools, when the agent uses them. The optional `claude` provider trades that away
-deliberately: it sends the conversation (including tool results) to Anthropic, billed to your
-Claude subscription — see [The `claude` provider](#the-claude-provider).
+`search_web` tools, when the agent uses them. The hosted backends trade that away deliberately:
+`claude`/`anthropic` send the conversation (including tool results) to Anthropic, and
+`codex`/`openai` send it to OpenAI — billed to a subscription or an API key depending on which
+you pick. See [Choosing a backend](#choosing-a-backend).
 
 ## Requirements
 
@@ -60,6 +61,16 @@ This starts an interactive REPL (it needs the model endpoint to be reachable). T
   task never delays your typing and its tool trace goes to `scheduler.log` beside the database
   rather than onto your prompt. See [Scheduled tasks](#scheduled-tasks).
 - **Slash commands** (see below) — anything else you type goes to the model.
+- **Inline pickers.** Run `/model`, `/models`, `/load`, `/skill` or `/effort` with no argument
+  on a terminal and you get an arrow-key menu instead of a usage line — backends with their
+  credential and whether they can run, a backend's real model ids, saved conversations with
+  turn counts, skills with their summaries, effort levels. The current value is marked and the
+  cursor starts on it; `Esc` backs out and changes nothing. The menu is inline and erases
+  itself, so scrollback keeps only what you did. Piped or scripted sessions keep the plain
+  text behaviour, so nothing here changes what a script sees.
+- **Tab completion** for slash commands *and* their arguments — providers, model ids, saved
+  session names, skills, effort levels, sub-commands. Model ids come from what `/models` has
+  already fetched, so a keystroke never waits on the network.
 - **Auto-suggestions** from history — accept with → or `End`.
 - **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
 - **Streaming output** — replies print token by token as the model generates them, instead of
@@ -92,8 +103,9 @@ Lines starting with `/` are handled locally instead of being sent to the model:
 | `/skill <name>` | Stage a skill's instructions to ride along with your next message |
 | `/save <name>` | Rename the current conversation |
 | `/load <name>` | Resume a saved conversation |
-| `/model [local\|claude [name]]` | Show or switch the model mid-conversation (e.g. `/model claude opus`) |
-| `/effort [low\|medium\|high\|xhigh\|max]` | Show or set Claude's effort level mid-session |
+| `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
+| `/models [provider]` | Pick from the models a backend actually serves (live, cached per session); lists them when piped |
+| `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
 | `/new` | Start a fresh conversation (aliases: `/reset`, `/clear`) |
 | `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
 
@@ -187,13 +199,16 @@ All settings have defaults in `vegapunk/config.py` and can be overridden with en
 | `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
 | `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
 | `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
-| `VEGAPUNK_PROVIDER` | Model at launch: `local` (Docker Model Runner) or `claude` (Anthropic API); switch live with `/model` | `local` |
+| `VEGAPUNK_PROVIDER` | Backend at launch: `local`, `claude`, or any logpose provider name (`anthropic`, `codex`, `openai`, `openai-compat`); `/model` lists them | `local` |
 | `VEGAPUNK_MAX_OUTPUT_TOKENS` | Ceiling on what the model may generate in one turn (thinking included) | `16000` |
 | `VEGAPUNK_CLAUDE_MODEL` | Claude model: a full id, or the short `opus`/`sonnet`/`fable`/`mythos`/`haiku`; empty = the provider's default | (empty) |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
 | `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = send none and let the API decide; ignored on models without the setting; adjust live with `/effort` | (empty) |
 | `VEGAPUNK_SCHEDULER_MODEL` | Model for [scheduled tasks](#scheduled-tasks), as `provider[:model]` (e.g. `local`, `claude:opus`); empty = inherit `VEGAPUNK_PROVIDER`/`VEGAPUNK_CLAUDE_MODEL`. A live `/model` swap never reaches the worker | (empty) |
-| `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's Claude turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
+| `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
+| `VEGAPUNK_CODEX_MODEL` | Model for the Responses backends (`codex`, `openai`); empty = the provider's default | (empty) |
+| `VEGAPUNK_CODEX_CONTEXT_WINDOW` | Their context window (tokens) for the toolbar gauge; `0` = unknown, so the gauge shows tokens without a percentage | `0` |
+| `VEGAPUNK_CODEX_EFFORT` | Their effort level at launch; empty = send none and let the API decide | (empty) |
 
 ### Data & backups
 
@@ -239,22 +254,64 @@ starts at launch and stops when you quit — you never run it yourself.
 If the worker can't start (a bad model spec, or another one already running), the REPL says so once
 and points at the log rather than leaving scheduled tasks silently not happening.
 
-### The `claude` provider
+### Choosing a backend
 
-`/model claude` (or `VEGAPUNK_PROVIDER=claude`) runs turns on Claude through the
-Anthropic API, with native tool calling and the same approval gate as the local model.
+`/model` with no argument lists every backend, what it authenticates with, and whether
+it can run right now — read from logpose's provider catalog rather than a table here,
+so a backend added to logpose appears without a change in Vegapunk:
 
-Credentials are resolved in this order: `CLAUDE_CODE_OAUTH_TOKEN`, then
-`ANTHROPIC_API_KEY`, then Claude Code's own credential store (so `claude /login` on
-the machine is enough). **The first and third are subscription tokens against the raw
-API, which is not an officially supported integration** — it relies on undocumented
-details and is at your own risk, including to your account. Set `ANTHROPIC_API_KEY` to
-use the supported path, which bills per token.
+```
+  · anthropic (api_key) — No Anthropic API key found. Export ANTHROPIC_API_KEY…
+    claude-code|claude (subscription) [unofficial]
+    codex (subscription) [unofficial]
+    docker|local (none)
+  · openai (api_key) — No OpenAI API key found. Export OPENAI_API_KEY…
+  · openai-compat (optional) — No endpoint configured…
+```
 
-Pick a model per switch (`/model claude opus` — `opus`/`sonnet`/`fable`/`mythos`/`haiku`
-expand to full ids) and trade speed for reasoning depth with `/effort`
-(`low`|`medium`|`high`|`xhigh`|`max`, the API's own levels); both persist for the
-session, and a model switch keeps your effort choice.
+A leading `·` means the credential is missing, said while you're choosing rather than
+as an error on your next message. `local` and `claude` are Vegapunk's own names for
+`docker` and `claude-code`, kept so existing configs and saved schedules keep working.
+
+**One provider per credential.** `claude-code` and `codex` ride a subscription
+(`claude /login`, `codex login`); `anthropic` and `openai` take an API key. They are
+separate backends on purpose — a credential of the wrong kind can't shadow a usable
+one, so nobody gets silently billed per token by a stray `ANTHROPIC_API_KEY`.
+
+> **The subscription backends are not an officially supported integration.** They rely
+> on undocumented details and are at your own risk, including to your account. The
+> API-key backends (`anthropic`, `openai`) are the supported path and bill per token.
+
+### Models and effort
+
+`/models [provider]` lists what a backend actually serves — asked of the backend, so
+the answer is right for *your* account rather than a table that goes stale:
+
+```
+claude-code serves:
+  * claude-opus-5
+    claude-sonnet-5
+    claude-fable-5
+    …
+```
+
+Pick one with `/model <provider> <name>` (`opus`/`sonnet`/`fable`/`haiku` expand to full
+ids; `/model codex gpt-5.4` and `/model local ai/qwen3` work the same way). The choice is
+checked against that list before the switch, so a typo is caught while you're typing
+rather than as a 404 on your next message:
+
+```
+> /model codex gpt-4o
+codex doesn't serve 'gpt-4o'. Closest: gpt-5.4, gpt-5.5, gpt-5.4-mini. See /models codex.
+```
+
+A backend that won't answer never blocks the switch — discovery is a convenience, not a
+gate. Trade speed for reasoning depth with `/effort`
+(`low`|`medium`|`high`|`xhigh`|`max`, the APIs' own levels); both persist for the
+session, and a model switch keeps your effort choice. The two wire APIs spell effort
+differently — Anthropic's `output_config.effort`, the Responses API's `reasoning.effort`
+— and Vegapunk derives which from the backend, so `/effort high` means the same thing
+on `claude` and on `codex`. The local model has no such setting and says so.
 
 Effort is a per-model capability, not a Claude-wide one: the older families
 (`haiku`, `sonnet-4-5`, `opus-4-1`) reject the parameter, so `/effort` reports it as
@@ -285,6 +342,7 @@ vegapunk/
   db.py          # the embedded Turso database: connection, schema, lock, backups
   session_store.py # save/list/resume conversations in the database
   loop.py        # the live trace: logpose's event stream → what you watch on stderr
+  menu.py        # the inline arrow-key picker every selection prompt runs on
   session.py     # conversation state across turns
   backend.py     # which model to talk to: name → logpose provider, label, context window
   gate.py        # the approval gate logpose consults before running each tool
