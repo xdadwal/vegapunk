@@ -7,12 +7,14 @@ up here as well as in the display tests that consume it.
 
 from __future__ import annotations
 
+import io
 from dataclasses import replace
 
 import pytest
+from rich.console import Console
 
 from vegapunk import style
-from vegapunk.render import UI_MODES, PlainRenderer
+from vegapunk.render import UI_MODES, PlainRenderer, RichRenderer
 
 
 @pytest.fixture
@@ -163,15 +165,25 @@ def test_pick_returns_a_renderer_satisfying_the_protocol():
     assert isinstance(chosen, Renderer)  # runtime_checkable
 
 
-@pytest.mark.parametrize("mode", UI_MODES)
-def test_pick_returns_plain_for_every_known_mode_today(mode):
-    """pick's actual contract, today: every known VEGAPUNK_UI value yields
-    PlainRenderer — there's no other implementation yet (see pick's docstring).
-    This is the thing that changes, and this test breaks, the day a rich
-    renderer lands and 'auto'/'rich' start returning something else."""
+@pytest.mark.parametrize("mode", ["auto", "plain"])
+def test_pick_returns_plain_when_stdout_is_not_a_terminal(mode):
+    """Under pytest, sys.stdout is never a real terminal (capture redirects
+    it), so 'auto' — which follows the terminal — lands on plain right beside
+    'plain' itself. This is the guarantee the task cared about: a rich
+    renderer existing must not change what the existing (non-TTY) test suite
+    sees."""
     from vegapunk.render import pick
 
     assert isinstance(pick(replace(style.config, ui=mode)), PlainRenderer)
+
+
+def test_pick_returns_rich_for_explicit_rich_mode_even_off_a_terminal():
+    """'rich' is an explicit request, not a terminal-detection outcome — it
+    wins the same way VEGAPUNK_COLOR=always beats a non-TTY stream for
+    style.enabled. Forcing it is the whole point of the mode existing."""
+    from vegapunk.render import RichRenderer, pick
+
+    assert isinstance(pick(replace(style.config, ui="rich")), RichRenderer)
 
 
 def test_an_unknown_ui_mode_is_refused_by_name():
@@ -191,3 +203,183 @@ def test_the_plain_renderer_prints_nothing_when_a_tool_is_requested(plain, capsy
 
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
+
+
+# ---------------------------------------------------------------------------
+# RichRenderer — the reply body only; trace behaviour is PlainRenderer's,
+# delegated verbatim. No real terminal: a Console over an io.StringIO with
+# force_terminal=True still emits real ANSI/box-drawing output, deterministically.
+# ---------------------------------------------------------------------------
+
+
+def _rich_console(*, force_terminal: bool = True) -> Console:
+    """``force_terminal=False`` simulates a pipe or redirect: an io.StringIO
+    has no real tty either way, but leaving ``force_terminal`` at its default
+    ``None`` would auto-detect off whatever ``isatty()`` says, which isn't
+    deterministic across environments — pinning it explicitly is what makes
+    the non-terminal tests below actually exercise the non-terminal path."""
+    return Console(file=io.StringIO(), force_terminal=force_terminal, width=60)
+
+
+def test_rich_reply_renders_markdown_instead_of_literal_syntax():
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("**bold** and `code`")
+    rich.reply_end()
+
+    out = console.file.getvalue()
+    assert "**bold**" not in out
+    assert "`code`" not in out
+    assert "bold" in out and "code" in out
+
+
+def test_rich_reply_is_bounded_by_a_left_gutter_bar():
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("hello")
+    rich.reply_end()
+
+    assert "┃" in console.file.getvalue()
+
+
+def test_rich_reply_end_ends_with_exactly_one_newline_off_a_terminal():
+    """Regression: rich.live_render.LiveRender never emits a trailing newline
+    after a live region's last row — Live.stop() is what closes that line,
+    and it only does so when the console *is* a real terminal. Off one (a
+    pipe, a log redirect — what force_terminal=False simulates here), the
+    cursor was left mid-row, so whatever printed next landed glued onto the
+    reply's last (blank, gutter-bottom) line instead of starting its own. A
+    test that only checked the markdown body would have missed this
+    entirely: it needs a non-terminal console to surface at all — the
+    default helper here (force_terminal=True) never hit this path."""
+    console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("- one\n- two\n")
+    rich.reply_end()
+
+    out = console.file.getvalue()
+    assert out.endswith("\n")
+    assert not out.endswith("\n\n")  # exactly one newline, not a blank line too
+
+    # Simulate "whatever the CLI prints next" landing on the same stream.
+    console.file.write("(saved as 'x')\n")
+    assert console.file.getvalue().splitlines()[-1] == "(saved as 'x')"
+
+
+def test_rich_reply_end_does_not_double_the_newline_on_a_real_terminal():
+    """The other side of the same guarantee: Live.stop() already closes the
+    line itself when the console is a real terminal, so the fix must not add
+    a second one on top and leave a blank line behind."""
+    console = _rich_console()  # force_terminal=True — the interactive path
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("hello")
+    rich.reply_end()
+
+    assert not console.file.getvalue().endswith("\n\n")
+
+
+def test_rich_tool_call_also_ends_with_exactly_one_newline_off_a_terminal():
+    """Same guarantee, mid-turn: tool_call finalises the live region before a
+    tool runs, and the trace line that follows it — on stderr, but sharing
+    the same terminal screen as stdout — must not land on the reply's tail
+    either."""
+    console = _rich_console(force_terminal=False)
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("partial reasoning before a tool call")
+    rich.tool_call("echo", {"text": "hi"})
+
+    out = console.file.getvalue()
+    assert out.endswith("\n")
+    assert not out.endswith("\n\n")
+
+    console.file.write("  [tool] echo({'text': 'hi'}) -> hi\n")
+    assert console.file.getvalue().splitlines()[-1] == "  [tool] echo({'text': 'hi'}) -> hi"
+
+
+def test_rich_tool_call_closes_the_live_region_so_the_next_reply_starts_fresh():
+    """tool_call's whole reason to exist: hand the screen back before a tool
+    runs. Proven behaviourally, through the public interface, rather than by
+    reaching into the renderer's state: if the region weren't closed and the
+    buffer weren't reset, the next reply would render as the concatenation of
+    both fragments instead of as its own fresh panel."""
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("first")
+    rich.tool_call("echo", {"text": "hi"})
+    rich.reply_delta("second")
+    rich.reply_end()
+
+    out = console.file.getvalue()
+    assert "first" in out
+    assert "second" in out
+    assert "firstsecond" not in out
+
+
+def test_rich_reply_abort_emits_nothing(monkeypatch):
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("partial reply that never finishes")
+    before = console.file.getvalue()
+    assert before  # sanity: the in-progress reply did draw something
+
+    rich.reply_abort()
+
+    assert console.file.getvalue() == before  # abort added not one byte
+
+
+def test_rich_reply_abort_with_no_reply_in_progress_emits_nothing():
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_abort()
+
+    assert console.file.getvalue() == ""
+
+
+def test_rich_reply_abort_then_a_new_reply_still_renders_cleanly():
+    """Regression for the abort path leaving the console's live-region
+    bookkeeping unbalanced: a turn after an aborted one must still be able to
+    open its own live region and render normally."""
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.reply_delta("first, aborted")
+    rich.reply_abort()
+
+    rich.reply_delta("**second**")
+    rich.reply_end()
+
+    out = console.file.getvalue()
+    assert "**second**" not in out
+    assert "second" in out
+
+
+def test_rich_trace_methods_still_produce_the_plain_bytes_on_stderr(capsys, monkeypatch):
+    """Restyling the reply must not touch the watch channel: trace output is
+    delegated to PlainRenderer verbatim, so it pins the same bytes as
+    PlainRenderer's own tests, on the same stream."""
+    monkeypatch.setattr("vegapunk.style.config", replace(style.config, color="never"))
+    console = _rich_console()
+    rich = RichRenderer(console=console)
+
+    rich.step(2)
+    rich.reasoning("think")
+    rich.reasoning("ing")
+    rich.reasoning_end()
+    rich.tool_result("echo", {"text": "hi"}, "hi", is_error=False)
+    rich.note("the model ran out of tokens; this turn is cut off")
+
+    assert capsys.readouterr().err == (
+        "  [think] step 2\n"
+        "  [reason] thinking\n"
+        "  [tool] echo({'text': 'hi'}) -> hi\n"
+        "  [note] the model ran out of tokens; this turn is cut off\n"
+    )
+    assert console.file.getvalue() == ""  # trace never lands on the reply channel

@@ -23,3 +23,7 @@ prompt_toolkit>=3.0.52
 pyturso>=0.7.1
 requests>=2.31
 beautifulsoup4>=4.12
+# RichRenderer's markdown-in-terminal + in-place redraw (render.py): it's the
+# de-facto library for this, and hand-rolling both a markdown parser and a
+# redraw engine isn't worth it for what's a display-only concern.
+rich>=13.0

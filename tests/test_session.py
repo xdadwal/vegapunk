@@ -18,7 +18,15 @@ from vegapunk.backend import Backend
 from vegapunk.config import config
 from vegapunk.loop import run
 from vegapunk.session import Session
-from tests.fake_provider import FakeProvider, Turn, agent_for, call, says, wants
+from tests.fake_provider import (
+    FakeProvider,
+    Turn,
+    agent_for,
+    backend_for,
+    call,
+    says,
+    wants,
+)
 
 
 @tool
@@ -439,3 +447,36 @@ def test_closing_a_session_is_safe_to_call_twice():
 
     session.close()
     session.close()
+
+
+def test_swapping_backends_drops_the_previous_backend_reasoning_encoding():
+    """The bug this pins: a conversation that visited Codex and then switched to
+    Claude failed on *every* later turn, permanently, until /new.
+
+    The Responses backends encode reasoning as a ``RawBlock`` holding an opaque
+    ``encrypted_content`` blob — never a ``ThinkingBlock`` — so the swap's
+    thinking-block filter walked straight past it and handed Anthropic content
+    it never signed and cannot parse. A fresh conversation on the same model
+    worked, which is what made it read as a Claude fault rather than a swap one.
+    """
+    from logpose import Message, RawBlock, TextBlock
+
+    session = _session([says("first")])
+    session.restore(
+        [
+            Message.user("hi").model_dump(mode="json"),
+            Message(
+                role="assistant",
+                content=[
+                    RawBlock(data={"type": "reasoning", "encrypted_content": "opaque"}),
+                    TextBlock(text="hello"),
+                ],
+            ).model_dump(mode="json"),
+        ]
+    )
+
+    session.swap_backend(backend_for(says("second"), model_label="other-model"))
+
+    blocks = [block for message in session.messages for block in message["content"]]
+    assert not any(block.get("type") == "raw" for block in blocks)
+    assert any(block.get("type") == "text" for block in blocks)  # the answer survives

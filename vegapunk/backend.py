@@ -360,12 +360,31 @@ def available_models(name: str, cfg: Config = config) -> list[str]:
     """
     info = describe(name)
     if info.name not in _MODEL_CACHE:
-        # A throwaway provider on its own event loop: the session's provider is
-        # bound to the loop its agent runs on, and asyncio.run here would be a
-        # different one.
-        provider = create_backend(name, cfg).spawn_provider()
-        _MODEL_CACHE[info.name] = list(asyncio.run(provider.list_models()))
+        _MODEL_CACHE[info.name] = asyncio.run(_fetch_models(name, cfg))
     return _MODEL_CACHE[info.name]
+
+
+async def _fetch_models(name: str, cfg: Config) -> list[str]:
+    """Ask a throwaway provider what it serves, and close it before returning.
+
+    The provider must be built *and* closed inside this coroutine, so its HTTP
+    client is created and destroyed on the one loop ``asyncio.run`` owns. A
+    provider left open outlives that loop, and whatever closes it later — a
+    finalizer, interpreter shutdown — reaches a loop that is already gone and
+    raises "Event loop is closed" from deep inside httpx, far from here.
+
+    A throwaway rather than the session's own provider for the same reason in
+    reverse: the session's is bound to the loop its agent runs on, and this is
+    a different one.
+    """
+    # The backend's own provider, not a second one from ``spawn_provider``: the
+    # whole Backend is discarded here, so spawning again only built a provider
+    # nobody used and nobody closed.
+    provider = create_backend(name, cfg).provider
+    try:
+        return list(await provider.list_models())
+    finally:
+        await provider.aclose()
 
 
 def cached_models(name: str) -> list[str]:
