@@ -20,9 +20,12 @@ PR 2.
 ## Global Constraints
 
 - Run everything through the repo venv: `.venv/bin/python -m pytest -q`.
-- **No existing test may be modified in this PR.** The suite (643 tests) is the
-  regression check for "output is byte-identical". A test that needs changing
-  means the plain path drifted — fix the code, not the test.
+- **No assertion may be weakened or dropped without equivalent coverage
+  elsewhere.** The suite (643 tests) is the regression check for "output is
+  byte-identical": a *display* test that needs changing means the plain path
+  drifted — fix the code, not the test. Tests may move modules with the code
+  they cover; that is the only permitted edit. (Ruled at pre-flight: Task 3
+  deletes `loop._shorten`, which `tests/test_loop.py:562-573` imports.)
 - Never commit on a red build; never delete or weaken a test to get green.
 - Conventional Commits: `type(scope): summary`, imperative, ≤72 chars.
 - Branch: `feat/render-seam`, cut from `master`. Never commit to `master`.
@@ -532,6 +535,12 @@ from .render import Renderer
 Delete the `from . import style` import, the `_ReasoningLine` class, and the
 `_shorten` function — `render.py` owns both now.
 
+Then delete `test_shorten_leaves_short_results_alone` and
+`test_shorten_reports_how_much_it_hid` from `tests/test_loop.py` (lines
+562-573). They cover a helper that has moved; `tests/test_render.py`'s
+`test_a_long_tool_result_is_truncated_with_a_count` from Task 1 already covers
+the behaviour through its new home. This is the *only* permitted test edit.
+
 Change `run`:
 
 ```python
@@ -628,8 +637,8 @@ Expected: PASS
 - [ ] **Step 6: Run the whole suite — the output must be byte-identical**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: PASS, 656 tests. **Every pre-existing test passes unmodified.** If any
-display test fails, `PlainRenderer` differs from what `loop.py` used to print —
+Expected: PASS, 654 tests (656 minus the 2 moved `_shorten` tests). **Every
+pre-existing display test passes unmodified.** If any display test fails, `PlainRenderer` differs from what `loop.py` used to print —
 fix `render.py`, not the test.
 
 - [ ] **Step 7: Commit**
@@ -735,7 +744,7 @@ Expected: PASS
 - [ ] **Step 5: Run the whole suite**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: PASS, 657 tests, none modified.
+Expected: PASS, 655 tests.
 
 - [ ] **Step 6: Verify against the real app — the point of the PR is that nothing changed**
 
@@ -790,7 +799,7 @@ Insert after the `loop.py` line:
 - [ ] **Step 3: Run the whole suite one last time**
 
 Run: `.venv/bin/python -m pytest -q`
-Expected: PASS, 657 tests.
+Expected: PASS, 655 tests.
 
 - [ ] **Step 4: Commit and open the PR**
 
