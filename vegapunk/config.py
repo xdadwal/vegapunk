@@ -56,6 +56,12 @@ class Config:
     # cross-tool standard (https://no-color.org) also disables it.
     color: str = os.getenv("VEGAPUNK_COLOR", "auto")
 
+    # Which renderer draws a turn: "auto", "rich", or "plain". render.pick()
+    # currently always returns the plain renderer regardless of this value —
+    # "auto" following the terminal and NO_COLOR forcing plain (matching
+    # `color` above) land once a rich renderer exists to pick between.
+    ui: str = os.getenv("VEGAPUNK_UI", "auto")
+
     # The model's context window (tokens), for the toolbar's fullness gauge.
     # DMR doesn't expose it over the API, so it's declared here; the default
     # matches the local DMR setup (check yours: `docker model logs | grep

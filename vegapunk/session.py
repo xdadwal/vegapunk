@@ -27,12 +27,13 @@ from logpose import (
     stream_sync,
 )
 
-from . import style
+from . import render, style
 from .approval import Approver
 from .backend import Backend, with_effort
 from .config import config
 from .gate import make_gate
 from .loop import trace
+from .render import Renderer
 
 _TITLE_PROMPT = (
     "Reply with a short 3-5 word title for a conversation that begins "
@@ -79,6 +80,7 @@ class Session:
         system_prompt: str = config.system_prompt,
         max_steps: int = config.max_steps,
         approver: Approver | None = None,
+        renderer: Renderer | None = None,
     ) -> None:
         self._backend = backend
         self._tools = tools
@@ -89,6 +91,10 @@ class Session:
         self._approver = approver
         self._agent = self._build_agent()
         self._titler: Agent | None = None
+        # One renderer for both channels of a turn: the trace writes through it
+        # and so does the reply, so they can coordinate when one of them needs
+        # to own the cursor.
+        self._renderer = renderer or render.pick()
         # The conversation's current footprint in the model's context window
         # (server-reported tokens, from the latest completed turn). None until
         # the first turn — and again after reset/restore, when any old number
@@ -120,7 +126,8 @@ class Session:
             # the rollback below that undoes those appends. ``trace`` renders the
             # stream and closes it; it never sees the agent or the history.
             reply, context_tokens = yield from trace(
-                stream_sync(self._agent, user_input, conversation=self._conversation)
+                stream_sync(self._agent, user_input, conversation=self._conversation),
+                self._renderer,
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
@@ -141,6 +148,11 @@ class Session:
             # the loop an orphaned list is what makes the rollback final.
             self._conversation = Conversation(self._conversation.messages[:checkpoint])
             raise
+
+    @property
+    def renderer(self) -> Renderer:
+        """The renderer this session's turns print through."""
+        return self._renderer
 
     @property
     def model_label(self) -> str:
