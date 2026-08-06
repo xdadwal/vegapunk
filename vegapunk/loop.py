@@ -152,6 +152,10 @@ def trace(
                     spoke_this_turn = False
                     yield TextDelta("\n")
                 pending_args[event.id] = event.input
+                # Announced before the wait, not after it: what follows is the
+                # tool running — or a human at an approval prompt — and a
+                # renderer holding part of the screen has to release it first.
+                renderer.tool_call(event.name, event.input)
             elif isinstance(event, ToolResult):
                 arguments = pending_args.pop(event.id, {})
                 renderer.tool_result(event.name, arguments, event.content, event.is_error)
