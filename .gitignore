@@ -25,3 +25,4 @@ __pycache__/
 
 # --- autoloop scratch (standing prompt) ---
 PROMPT.md
+.superpowers/
