@@ -265,18 +265,35 @@ conversation. Deleted outright rather than rebound: a command that clears the
 screen is not something Vegapunk needs to own, and leaving the word bound to
 anything keeps the trap warm. `/new` and `/reset` are unchanged.
 
-### The singular/plural pairs merge
+### The plural commands are deprecated
 
 `/model` vs `/models` and `/skill` vs `/skills` are one letter apart and do
-different things. A picker is already a list you choose from, so the pairs stop
-earning their separation:
+different things. Once each singular has a picker, the plural has no job left —
+a picker is already a list you choose from.
 
-- `/models` becomes an alias that opens `/model`'s picker at the model step.
-  `/models` alone uses the live backend; `/models codex` uses that one, so the
-  argument it takes today keeps meaning what it meant.
-- `/skills` becomes an alias of `/skill`.
+The test applied was whether the singular does the *complete* job. Both pass:
 
-Both old names keep working, so no muscle memory and no saved workflow breaks.
+`/model` absorbs `/models` through the picker's drill-down:
+
+| Input | Does |
+|---|---|
+| `/model` | pick a backend, then pick a model on it, then switch |
+| `/model codex` | switch to codex on its default model |
+| `/model codex gpt-5.4` | switch directly |
+
+The middle step is the one `/models` existed for.
+
+`/skill` absorbs `/skills` because its picker lists every skill with its
+description and `Esc` stages nothing — so browsing is "open it and leave".
+
+Both plurals stay registered and keep working, printing a dim one-line notice
+naming the singular. They are removed in a later release, once the notice has
+been seen a few times. Nothing breaks today; the deprecation is the warning, not
+the removal.
+
+**`/sessions` is exempt.** There is no `/session`, and neither `/load` nor
+`/save` removes a saved conversation, so `/sessions remove` has no singular home.
+It is a plural, but not half of a pair, so the rule does not reach it.
 
 ### One verb for removal: `remove`
 
@@ -348,7 +365,9 @@ than replacing it.
   `tests/test_menu.py` does now.
 - Command changes are pinned by their existing tests plus: `/clear` is no longer
   a command; `forget` and `remove` reach the same handler; `/models` and
-  `/skills` reach their merged pickers; `/status` names every field it claims.
+  `/skills` still work and say they are deprecated; `/model`'s drill-down
+  reaches the model step, which is what makes `/models` redundant; `/status`
+  names every field it claims.
 
 ## Non-goals
 
@@ -375,6 +394,6 @@ Four sequential PRs, each green:
 3. Hiding reasoning, and the live status tail on the spinner.
 4. Chrome: startup header, error blocks, turn separators, input prompt, and the
    restyled selectors.
-5. Commands: remove `/clear`, merge the singular/plural pairs, unify removal on
-   `remove`, and add `/status`. Last because it is independent of the renderer
-   work and should not hold it up.
+5. Commands: remove `/clear`, deprecate `/models` and `/skills`, unify removal
+   on `remove`, and add `/status`. Last because it is independent of the
+   renderer work and should not hold it up.
