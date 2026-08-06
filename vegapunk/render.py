@@ -11,8 +11,15 @@ stderr, so watching the loop work never contaminates the answer.
 
 from __future__ import annotations
 
+import io
 import sys
 from typing import Protocol, runtime_checkable
+
+from rich.box import Box
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
 
 from . import style
 from .config import Config, config
@@ -167,17 +174,143 @@ class PlainRenderer:
         return style.paint("vega>", style.BOLD + style.MAGENTA, sys.stdout) + " "
 
 
+# A Box whose only visible edge is the left one. Panel draws its top and
+# bottom borders from the first/last lines below (all spaces, so those rows
+# come out blank) and its content rows from the "mid" line's left/right
+# chars — left is the bar, right is a blank padding column — so a reply reads
+# as a bounded block with a gutter down the left side instead of a full box.
+# The other lines (head/head_row/row/foot_row/foot) are never read by Panel's
+# renderer; they're filled in only because Box requires all eight.
+_GUTTER_BOX = Box(
+    "    \n"
+    "│   \n"
+    "    \n"
+    "│   \n"
+    "    \n"
+    "    \n"
+    "│   \n"
+    "    \n"
+)
+
+
+class RichRenderer:
+    """Styled reply body on stdout: the markdown is re-rendered live, in
+    place, behind a left-edge gutter, token by token. Everything else — the
+    trace on stderr — is unchanged: delegated verbatim to an internal
+    ``PlainRenderer``, so restyling the reply never touches the watch
+    channel. See the module docstring for why the two channels stay split.
+    """
+
+    def __init__(self, console: Console | None = None) -> None:
+        self._console = console if console is not None else Console(file=sys.stdout)
+        self._plain = PlainRenderer()  # trace only — see class docstring
+        self._buffer = ""
+        self._live: Live | None = None
+
+    # -- the watch channel (stderr) — delegated verbatim ---------------------
+
+    def step(self, number: int) -> None:
+        self._plain.step(number)
+
+    def reasoning(self, text: str) -> None:
+        self._plain.reasoning(text)
+
+    def reasoning_end(self) -> None:
+        self._plain.reasoning_end()
+
+    def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
+        self._plain.tool_result(name, arguments, content, is_error)
+
+    def note(self, text: str) -> None:
+        self._plain.note(text)
+
+    def tool_call(self, name: str, arguments: dict) -> None:
+        """A tool is about to run — or a human is about to answer an approval
+        prompt — so the region that's been redrawing in place has to give the
+        screen back before that wait begins. Finalise whatever's live so far;
+        a later ``reply_delta`` opens a fresh region."""
+        self._finish_live()
+
+    # -- the answer channel (stdout) -----------------------------------------
+
+    def reply_delta(self, text: str) -> None:
+        if not text:
+            return
+        self._buffer += text
+        if self._live is None:
+            self._live = Live(
+                console=self._console,
+                # A tight delta loop never yields to the background thread
+                # auto_refresh relies on to redraw, which makes Live look
+                # inert. Redraw explicitly on every delta instead.
+                auto_refresh=False,
+                # A live region can only redraw what's still on screen; once
+                # a long reply scrolls the top of the terminal, Live loses
+                # track of it. Crop instead of letting it scroll, so the
+                # prompt above can never be pushed out of reach.
+                vertical_overflow="crop",
+                transient=False,
+                # Nothing else writes to stdout/stderr while a reply is live
+                # (tool_call closes the region before a tool's own output can
+                # appear), so there's nothing for Live to intercept.
+                redirect_stdout=False,
+                redirect_stderr=False,
+            )
+            self._live.start()
+        self._live.update(self._panel(), refresh=True)
+
+    def reply_end(self) -> None:
+        self._finish_live()
+
+    def reply_abort(self) -> None:
+        """Reset without drawing anything: an interrupted turn must leave no
+        trace, but ``Live.stop()`` always performs one last refresh plus a
+        cursor-show, and there's no public flag to suppress that. Pointing
+        the console at a scratch buffer for the call (then restoring it) is
+        the only way to run its real teardown — so the console's live slot
+        and render-hook stack stay correctly balanced for the next turn —
+        without those bytes reaching the actual stream."""
+        if self._live is not None:
+            scratch, real_file = io.StringIO(), self._console.file
+            self._console.file = scratch
+            try:
+                self._live.stop()
+            finally:
+                self._console.file = real_file
+        self._live = None
+        self._buffer = ""
+
+    def _panel(self) -> Panel:
+        return Panel(Markdown(self._buffer), box=_GUTTER_BOX, border_style="magenta")
+
+    def _finish_live(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+        self._live = None
+        self._buffer = ""
+
+
 UI_MODES = ("auto", "rich", "plain")
 
 
 def pick(cfg: Config = config) -> Renderer:
     """The renderer for this process.
 
-    Always ``PlainRenderer`` for now — there's no other implementation yet.
-    Once ``RichRenderer`` exists, ``auto`` should follow the terminal (the
-    same rule ``style.enabled`` already applies to colour) and ``NO_COLOR``
-    should force plain; this is the only function that will need to change
-    to add that.
+    ``rich`` always chooses :class:`RichRenderer` — an explicit request, so it
+    wins even off a real terminal (piped to a file, say). ``auto`` follows the
+    terminal: ``RichRenderer`` only when stdout is an actual, unredirected
+    one, ``PlainRenderer`` otherwise — a pipe, a log redirect, or a test.
+    ``plain`` always chooses ``PlainRenderer``.
+
+    ``auto``'s check is ``stdout.isatty()`` *and* ``style.enabled(stdout)``,
+    not the latter alone, even though ``style.enabled`` already knows about
+    ``NO_COLOR`` and TTY detection and is reused here rather than
+    reimplemented: ``style.enabled`` alone says yes for ``VEGAPUNK_COLOR=
+    always`` regardless of ``isatty()``, which makes sense for colour codes
+    surviving a pipe into ``less -R`` but not for a live, cursor-addressed
+    redraw that needs a real terminal underneath it. The explicit ``isatty()``
+    is what keeps that case honest; ``style.enabled`` still supplies the
+    ``NO_COLOR``/``VEGAPUNK_COLOR=never`` opt-out on top of it.
 
     Raises:
         ValueError: If ``VEGAPUNK_UI`` is not a known mode. Said out loud rather
@@ -188,4 +321,8 @@ def pick(cfg: Config = config) -> Renderer:
         raise ValueError(
             f"Unknown VEGAPUNK_UI {cfg.ui!r} — expected one of: {', '.join(UI_MODES)}."
         )
+    if cfg.ui == "rich" or (
+        cfg.ui == "auto" and sys.stdout.isatty() and style.enabled(sys.stdout)
+    ):
+        return RichRenderer()
     return PlainRenderer()
