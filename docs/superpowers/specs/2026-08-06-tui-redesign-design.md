@@ -251,6 +251,67 @@ It is restyled to match: a title rule, a full-width highlight bar for the
 selected row, the `●` marker for the active value, and the existing hint line in
 the shared dim style.
 
+## Commands
+
+The command set was reviewed as a whole rather than one at a time, which is what
+surfaced these — each is a problem of the *set*, invisible when you look at any
+single command.
+
+### `/clear` is removed
+
+It was an alias for `/new`. In every shell `clear` means "clear the screen", so
+someone typing it to tidy their scrollback silently discarded their
+conversation. Deleted outright rather than rebound: a command that clears the
+screen is not something Vegapunk needs to own, and leaving the word bound to
+anything keeps the trap warm. `/new` and `/reset` are unchanged.
+
+### The singular/plural pairs merge
+
+`/model` vs `/models` and `/skill` vs `/skills` are one letter apart and do
+different things. A picker is already a list you choose from, so the pairs stop
+earning their separation:
+
+- `/models` becomes an alias that opens `/model`'s picker at the model step.
+  `/models` alone uses the live backend; `/models codex` uses that one, so the
+  argument it takes today keeps meaning what it meant.
+- `/skills` becomes an alias of `/skill`.
+
+Both old names keep working, so no muscle memory and no saved workflow breaks.
+
+### One verb for removal: `remove`
+
+`/sessions forget`, `/memory forget` and `/schedule remove` were three verbs for
+one idea. `remove` wins:
+
+| Was | Is |
+|---|---|
+| `/sessions forget <name>` | `/sessions remove <name>` |
+| `/memory forget <id>` | `/memory remove <id>` |
+| `/schedule remove <id>` | unchanged |
+
+`forget` stays accepted as an alias on the two that had it, so existing habits
+and anything scripted keep working.
+
+### New: `/status`
+
+One block answering "what am I actually running?": backend and whether its
+credential is live, model, effort, context fullness, session name, scheduler
+worker health, and workspace root. Every field already exists — spread between
+the toolbar, which has room for two, and nowhere.
+
+Every field is already computed somewhere, so `/status` assembles rather than
+calculates — with one cost worth naming: credential liveness comes from
+`provider_status()`, which reads credential stores including a Keychain
+subprocess on macOS. That is the same round trip `/model`'s listing already
+pays, and it is why `/status` is a command you ask for rather than something
+on the toolbar.
+
+### Considered and rejected: `/tools`
+
+Listing the tool registry with its approval markers was proposed and dropped. It
+duplicates the README table, and the information is not something you need
+mid-conversation — the approval prompt names the tool at the moment it matters.
+
 ## Configuration
 
 | Variable | Values | Default |
@@ -285,6 +346,9 @@ than replacing it.
   `VEGAPUNK_UI`, TTY-ness and `NO_COLOR`.
 - Selector tests keep driving the real widget through a prompt_toolkit pipe, as
   `tests/test_menu.py` does now.
+- Command changes are pinned by their existing tests plus: `/clear` is no longer
+  a command; `forget` and `remove` reach the same handler; `/models` and
+  `/skills` reach their merged pickers; `/status` names every field it claims.
 
 ## Non-goals
 
@@ -311,3 +375,6 @@ Four sequential PRs, each green:
 3. Hiding reasoning, and the live status tail on the spinner.
 4. Chrome: startup header, error blocks, turn separators, input prompt, and the
    restyled selectors.
+5. Commands: remove `/clear`, merge the singular/plural pairs, unify removal on
+   `remove`, and add `/status`. Last because it is independent of the renderer
+   work and should not hold it up.
