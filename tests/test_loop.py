@@ -20,6 +20,7 @@ takes an event stream and nothing else, so no agent is required to test it.
 from __future__ import annotations
 
 from dataclasses import replace
+from unittest import mock
 
 import pytest
 from logpose import (
@@ -98,11 +99,13 @@ def _guarded_names(monkeypatch):
     monkeypatch.setattr("vegapunk.gate.GUARDED", {"touch", "slow_touch"})
 
 
-def _drive(turns, **kwargs) -> tuple[list[TextDelta], str, int | None]:
+def _drive(turns, renderer=None, **kwargs) -> tuple[list[TextDelta], str, int | None]:
     """Run one request and split what it yielded from what it returned."""
     kwargs.setdefault("tools", TOOLS)
     agent, _provider = agent_for(turns, **kwargs)
-    generator = trace(stream_sync(agent, "go", conversation=Conversation()), PlainRenderer())
+    generator = trace(
+        stream_sync(agent, "go", conversation=Conversation()), renderer or PlainRenderer()
+    )
     deltas: list[TextDelta] = []
     while True:
         try:
@@ -135,12 +138,22 @@ def test_a_provider_that_did_not_stream_still_gets_its_answer_displayed():
 
 
 def test_speaking_before_a_tool_call_closes_the_spoken_line():
+    # A Mock wrapping a real PlainRenderer: calls still behave like the real
+    # renderer (so tool_call/tool_result etc. work as usual), but are also
+    # recorded, so the test can assert reply_break actually fired instead of
+    # only inferring it from a deltas list that no longer carries it.
+    renderer = mock.Mock(wraps=PlainRenderer())
     deltas, _reply, _ = _drive(
-        [wants(call("echo", {"text": "hi"}), text="Let me check."), says("done")]
+        [wants(call("echo", {"text": "hi"}), text="Let me check."), says("done")],
+        renderer=renderer,
     )
 
-    # The newline separates the spoken line from the tool trace that follows.
-    assert [d.text for d in deltas] == ["Let me check.", "\n", "done"]
+    # No synthetic "\n" delta: the line break is now told to the renderer
+    # directly (reply_break), not faked as if the model had said it.
+    assert [d.text for d in deltas] == ["Let me check.", "done"]
+    calls = [c[0] for c in renderer.method_calls]
+    assert "reply_break" in calls
+    assert calls.index("reply_break") < calls.index("tool_call")
 
 
 def test_a_tool_only_turn_yields_no_stray_newline():

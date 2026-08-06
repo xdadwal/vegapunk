@@ -73,6 +73,23 @@ class Renderer(Protocol):
     def reply_delta(self, text: str) -> None:
         """A fragment of the assistant's answer arrived."""
 
+    def reply_break(self) -> None:
+        """The model spoke and is about to call a tool in the same turn: the
+        spoken line needs to end before the tool trace starts.
+
+        This is layout, not content — it exists so ``loop.py`` never has to
+        fake it by yielding a synthetic ``"\\n"`` ``TextDelta``, which is what
+        it did before this method existed. That synthetic delta traveled up
+        indistinguishable from real model speech, so ``PlainRenderer`` (which
+        prints reply text as bytes) happened to do the right thing with it,
+        while ``RichRenderer`` (which re-renders the buffered text as
+        markdown) had a stray newline baked into the model's prose to force a
+        purely visual split. Same fix shape as ``tool_call`` existing
+        separately from ``tool_result``: tell the renderer what happened and
+        let it decide how to show it, rather than encoding the effect into
+        content every renderer has to reinterpret.
+        """
+
     def reply_end(self) -> None:
         """The answer is complete. NOT idempotent — a second call prints another
         prompt line, so callers must call it exactly once per turn that reaches
@@ -154,6 +171,14 @@ class PlainRenderer:
             self._spoke = True
         print(text, end="", flush=True)
         self._line_open = not text.endswith("\n")
+
+    def reply_break(self) -> None:
+        # Reproduces exactly what the synthetic "\n" delta this replaces used
+        # to print via reply_delta: an unconditional newline, leaving _spoke
+        # untouched (so a later reply_delta this turn skips the "vega> "
+        # prefix) and _line_open cleared (so reply_end doesn't add its own).
+        print(flush=True)
+        self._line_open = False
 
     def reply_end(self) -> None:
         if not self._spoke:
@@ -258,6 +283,17 @@ class RichRenderer:
             )
             self._live.start()
         self._live.update(self._panel(), refresh=True)
+
+    def reply_break(self) -> None:
+        """Nothing to draw: ``loop.py`` calls this immediately before
+        ``tool_call``, and ``tool_call`` already finalises the live region on
+        its way to giving the screen back for the tool trace. Finalising here
+        too would just be the same work twice — ``_finish_live`` is written
+        to tolerate that, but there's no reason to lean on it. What this
+        method replaces was letting a synthetic newline into ``self._buffer``,
+        which then got re-rendered as part of the model's markdown; not
+        touching the buffer at all is the fix.
+        """
 
     def reply_end(self) -> None:
         self._finish_live()

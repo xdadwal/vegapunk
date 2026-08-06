@@ -108,6 +108,37 @@ def test_a_reply_ending_in_a_newline_is_not_double_spaced(plain, capsys):
     assert capsys.readouterr().out == "vega> done\n"
 
 
+def test_reply_break_closes_the_spoken_line_like_the_synthetic_newline_it_replaces(
+    plain, capsys
+):
+    """loop.py used to fake this with ``reply_delta("\\n")``; reply_break()
+    replaces that call site. Byte-for-byte, the two must agree — this pins the
+    exact stdout a speak-then-tool turn produces so a future change to either
+    path shows up here."""
+    plain.reply_delta("Let me check.")
+    plain.reply_break()
+    plain.reply_delta("done")
+    plain.reply_end()
+
+    assert capsys.readouterr().out == "vega> Let me check.\ndone\n"
+
+
+def test_reply_break_leaves_spoke_set_so_a_later_delta_skips_the_prefix(plain, capsys):
+    plain.reply_delta("first")
+    plain.reply_break()
+    plain.reply_delta(" second")
+
+    assert capsys.readouterr().out == "vega> first\n second"
+
+
+def test_reply_break_then_reply_end_does_not_add_a_stray_blank_line(plain, capsys):
+    plain.reply_delta("done")
+    plain.reply_break()
+    plain.reply_end()
+
+    assert capsys.readouterr().out == "vega> done\n"  # not "vega> done\n\n"
+
+
 def test_reply_end_called_twice_prints_a_second_prompt_line(plain, capsys):
     """Pins the actual (non-idempotent) behaviour: reply_end prints a prompt
     line every time it's called, so a caller that calls it twice for one turn
@@ -160,7 +191,7 @@ def test_pick_returns_a_renderer_satisfying_the_protocol():
     chosen = pick()
 
     for method in ("step", "reasoning", "reasoning_end", "tool_result", "note",
-                   "reply_delta", "reply_end"):
+                   "reply_delta", "reply_break", "reply_end"):
         assert callable(getattr(chosen, method)), f"{method} missing"
     assert isinstance(chosen, Renderer)  # runtime_checkable
 
@@ -299,6 +330,27 @@ def test_rich_tool_call_also_ends_with_exactly_one_newline_off_a_terminal():
 
     console.file.write("  [tool] echo({'text': 'hi'}) -> hi\n")
     assert console.file.getvalue().splitlines()[-1] == "  [tool] echo({'text': 'hi'}) -> hi"
+
+
+def test_rich_reply_break_before_tool_call_matches_tool_call_alone():
+    """reply_break() has nothing to draw for Rich — tool_call (which loop.py
+    always calls right after) already finalises the live region. Proven by
+    comparing against a renderer that never received the reply_break call at
+    all: if reply_break did anything visible (like the synthetic "\\n" delta
+    it replaces, which used to leak into the markdown buffer), this would
+    diverge."""
+    with_break = _rich_console(force_terminal=False)
+    rich_with_break = RichRenderer(console=with_break)
+    rich_with_break.reply_delta("partial reasoning before a tool call")
+    rich_with_break.reply_break()
+    rich_with_break.tool_call("echo", {"text": "hi"})
+
+    without_break = _rich_console(force_terminal=False)
+    rich_without_break = RichRenderer(console=without_break)
+    rich_without_break.reply_delta("partial reasoning before a tool call")
+    rich_without_break.tool_call("echo", {"text": "hi"})
+
+    assert with_break.file.getvalue() == without_break.file.getvalue()
 
 
 def test_rich_tool_call_closes_the_live_region_so_the_next_reply_starts_fresh():
