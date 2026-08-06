@@ -19,6 +19,7 @@ from logpose import (
     Agent,
     Conversation,
     Message,
+    RawBlock,
     RedactedThinkingBlock,
     TextDelta,
     ThinkingBlock,
@@ -41,11 +42,26 @@ _TITLE_PROMPT = (
 )
 
 
-def _without_thinking(messages: list[Message]) -> list[Message]:
-    """The same history with every thinking block removed.
+def _portable(messages: list[Message]) -> list[Message]:
+    """The same history with every backend-specific block removed.
 
-    Thinking is the one part of the history that does *not* travel between
-    models. Anthropic signs its thinking blocks and rejects a turn whose blocks
+    Reasoning is the part of the history that does *not* travel between
+    models, and each backend encodes it differently — so both encodings go.
+
+    ``RawBlock`` is dropped for the same reason, and it is the one that bites
+    later rather than immediately: the Responses backends (``codex``,
+    ``openai``) round-trip reasoning as a ``RawBlock`` carrying an opaque
+    ``encrypted_content`` blob, never as a ``ThinkingBlock``. A conversation
+    that visited Codex and then switched to Claude therefore carried blocks
+    Anthropic never signed and cannot parse, and failed on *every* later turn
+    until /new — while a fresh conversation on the same model worked, which is
+    what makes it read as a Claude problem rather than a swap problem.
+
+    Dropping ``RawBlock`` costs a claude->claude swap the unmodelled Anthropic
+    blocks it preserves (server tool use, search results). That is the right
+    trade here: those matter for re-sending a *paused* turn within one backend,
+    and this function only runs when the conversation is leaving the backend
+    that produced them. Anthropic signs its thinking blocks and rejects a turn whose blocks
     were altered — but it equally rejects one carrying a block it never signed
     (``messages.N.content.0.thinking.signature: Field required``), which is
     exactly what a local reasoning model's thinking looks like. So a
@@ -63,7 +79,7 @@ def _without_thinking(messages: list[Message]) -> list[Message]:
         content = [
             block
             for block in message.content
-            if not isinstance(block, (ThinkingBlock, RedactedThinkingBlock))
+            if not isinstance(block, (ThinkingBlock, RedactedThinkingBlock, RawBlock))
         ]
         if len(content) == len(message.content):
             kept.append(message)
@@ -191,7 +207,7 @@ class Session:
             # A real model change: another model's thinking cannot be replayed
             # to this one, so it doesn't travel. ``send`` hands the conversation
             # to the agent per turn, so swapping it here is enough.
-            self._conversation = Conversation(_without_thinking(self._conversation.messages))
+            self._conversation = Conversation(_portable(self._conversation.messages))
             old = self._agent
             self._agent = self._build_agent()
             self._retire(old)
@@ -229,7 +245,7 @@ class Session:
         # conversation carries no record of which model produced it, so its
         # thinking blocks cannot be assumed replayable to whatever is live now.
         self._conversation = Conversation(
-            _without_thinking([Message.model_validate(m) for m in messages])
+            _portable([Message.model_validate(m) for m in messages])
         )
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
