@@ -118,7 +118,7 @@ class Prompter(ABC):
         ...
 
 
-def _build_key_bindings() -> KeyBindings:
+def _build_key_bindings(toggle_approval: Callable[[], str] | None = None) -> KeyBindings:
     kb = KeyBindings()
 
     # Insert a literal newline for deliberate multi-line composition; plain
@@ -135,6 +135,16 @@ def _build_key_bindings() -> KeyBindings:
     def _(event) -> None:
         event.current_buffer.insert_text("\n")
 
+    if toggle_approval is not None:
+
+        @kb.add(Keys.BackTab)
+        def _(event) -> None:
+            toggle_approval()
+            # The bottom toolbar is callable, so invalidating immediately
+            # replaces "manual" with "auto" (or back) without submitting the
+            # draft currently in the input buffer.
+            event.app.invalidate()
+
     return kb
 
 
@@ -147,6 +157,7 @@ class PromptToolkitPrompter(Prompter):
         input: Input | None = None,
         output: Output | None = None,
         status: Callable[[], str] | None = None,
+        toggle_approval: Callable[[], str] | None = None,
     ) -> None:
         if history is None:
             history = DbHistory()
@@ -157,7 +168,7 @@ class PromptToolkitPrompter(Prompter):
             message=message,
             history=history,
             multiline=False,  # Enter submits; Up/Down recall history
-            key_bindings=_build_key_bindings(),
+            key_bindings=_build_key_bindings(toggle_approval),
             enable_history_search=False,  # plain chronological recall, not prefix-search
             auto_suggest=AutoSuggestFromHistory(),  # grey ghost text, accept with Right/End
             # Completes the command name, then its arguments — providers,

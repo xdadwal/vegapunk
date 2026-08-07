@@ -640,9 +640,22 @@ def test_status_names_every_live_session_fact(monkeypatch):
 
     out = dispatch("/status", ctx).output
 
-    for label in ("Backend:", "Model:", "Effort:", "Context:", "Session:", "Scheduler:", "Workspace:"):
+    for label in (
+        "Backend:",
+        "Model:",
+        "Effort:",
+        "Approval:",
+        "Context:",
+        "Session:",
+        "Scheduler:",
+        "Workspace:",
+    ):
         assert label in out
+    assert "Approval: manual" in out
     assert "250/1,000 tok" in out and "demo" in out
+
+    ctx.approval_policy.toggle()
+    assert "Approval: auto · guarded tools run without prompts" in dispatch("/status", ctx).output
 
 
 # ---------------------------------------------------------------------------

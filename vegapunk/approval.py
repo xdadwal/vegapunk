@@ -32,6 +32,26 @@ _CHOICES = [
 ]
 
 
+@dataclass
+class ApprovalPolicy:
+    """The guarded-tool policy selected for this interactive session.
+
+    The same small mutable object is shared by the prompt toolbar and the
+    ``CLIApprover``. Shift-Tab can therefore change what the next tool call
+    does without rebuilding the Session or its logpose Agent.
+    """
+
+    auto: bool = False
+
+    @property
+    def mode(self) -> str:
+        return "auto" if self.auto else "manual"
+
+    def toggle(self) -> str:
+        self.auto = not self.auto
+        return self.mode
+
+
 @dataclass(frozen=True)
 class Decision:
     """The outcome of an approval prompt.
@@ -84,10 +104,13 @@ class CLIApprover(Approver):
     test harness) can't answer, so it auto-denies rather than blocking.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, policy: ApprovalPolicy | None = None) -> None:
+        self.policy = policy or ApprovalPolicy()
         self._always_allowed: set[str] = set()
 
     def approve(self, tool_name: str, arguments: dict) -> Decision:
+        if self.policy.auto:
+            return Decision(allow=True)
         if tool_name in self._always_allowed:
             return Decision(allow=True)
 
