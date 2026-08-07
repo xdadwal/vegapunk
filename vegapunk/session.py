@@ -35,6 +35,7 @@ from .config import config
 from .gate import make_gate
 from .loop import trace
 from .render import Renderer
+from .runtime import agent_runtime_options
 
 _TITLE_PROMPT = (
     "Reply with a short 3-5 word title for a conversation that begins "
@@ -127,6 +128,7 @@ class Session:
             max_iterations=self._max_steps,
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),
+            **agent_runtime_options(config, "interactive"),
         )
 
     def send(self, user_input: str) -> Generator[TextDelta, None, str]:
@@ -283,6 +285,7 @@ class Session:
                     self._backend.spawn_provider(),
                     system=_TITLE_PROMPT,
                     extra=self._backend.extra,
+                    **agent_runtime_options(config, "interactive"),
                 )
             return run_sync(self._titler, first).text.strip()
         except Exception as exc:  # noqa: BLE001 — titling is optional; never crash the turn

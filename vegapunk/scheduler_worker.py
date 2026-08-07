@@ -33,6 +33,7 @@ from . import db
 from .backend import Backend, create_backend, describe, with_effort, with_model
 from .config import config
 from .gate import make_gate
+from .runtime import agent_runtime_options
 from .scheduler import Scheduler
 from .tools import ALL_TOOLS
 
@@ -101,6 +102,7 @@ def build_agent(backend: Backend) -> Agent:
         max_iterations=config.max_steps,
         extra=backend.extra,
         on_tool_call=make_gate(None),
+        **agent_runtime_options(config, "scheduler"),
     )
 
 
