@@ -31,8 +31,8 @@ project matures.
   structured lists and fenced code, while reasoning summaries and tool activity stay visually
   distinct. Piped output automatically falls back to stable plain text.
 - **Useful tools with explicit boundaries.** Vegapunk can read and search a workspace, fetch web
-  content, edit files, and run commands. Side-effecting tools require interactive approval and all
-  filesystem and shell access stays inside the configured workspace.
+  content, edit files, and run commands. Side-effecting tools require interactive approval in
+  manual mode, and all filesystem and shell access stays inside the configured workspace.
 - **Persistent personal context.** Conversations, input history, and durable memories live in one
   local database. Sessions are auto-named and auto-saved after every successful turn.
 - **Provider flexibility.** Switch backends and models without leaving the conversation. Supported
@@ -73,6 +73,16 @@ Start Vegapunk from the directory you want it to treat as its workspace:
 .venv/bin/python -m vegapunk
 ```
 
+Manual approval is the default. To start a session in auto mode, where guarded tools run without
+individual approval prompts, pass the explicit startup flag:
+
+```bash
+.venv/bin/python -m vegapunk --auto
+```
+
+Auto mode does not relax workspace confinement, and scheduled tasks remain fail-closed. The startup
+banner displays a warning whenever auto is active.
+
 Then ask for work in plain language:
 
 ```text
@@ -98,6 +108,11 @@ The prompt supports persistent history, inline suggestions, tab completion for c
 arguments, and arrow-key pickers for `/model`, `/sessions`, `/skill`, and `/effort`. Press
 `Esc`-`Enter` or `Ctrl-J` to insert a newline; `Ctrl-D`, `/exit`, and `/quit` all end the session.
 
+Press `Shift`-`Tab` to toggle approval mode without submitting or changing the current draft.
+`manual` prompts before guarded tools run; `auto` allows them for the rest of the session until you
+toggle back. The active mode is always written in the bottom toolbar and included in `/status`, so
+the distinction remains visible with color disabled.
+
 Reasoning is collapsed in the Rich interface by default. `/reason` shows the previous turn's
 available reasoning summary, while `VEGAPUNK_REASONING=full` streams it into the live trace. Plain
 mode retains the full trace for compatibility with scripts and logs.
@@ -109,7 +124,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | Command | Description |
 | --- | --- |
 | `/help` | List available commands. |
-| `/status` | Show backend readiness, model, effort, context, session, scheduler, and workspace. |
+| `/status` | Show backend readiness, model, effort, approval mode, context, session, scheduler, and workspace. |
 | `/model [provider [model]]` | Show or switch the active provider and model. With no arguments, open the interactive picker. |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or change reasoning effort when the active model supports it. |
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
@@ -178,7 +193,8 @@ generated schemas and can call them as part of a multi-step turn.
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers
 four choices: allow once, deny, deny with guidance for the agent, or allow that tool for the rest
-of the session.
+of the session. In auto mode those three guarded tools bypass the menu, while workspace confinement
+continues to apply.
 
 Tool results shown in the terminal are abbreviated for readability; the model receives output up
 to `VEGAPUNK_OUTPUT_CAP` characters.
@@ -219,7 +235,8 @@ database.
 Unattended runs are fail-closed: tools that require approval (`write_file`, `edit_file`, and
 `run_shell`) are refused because no person is present to approve them. The worker uses
 `VEGAPUNK_SCHEDULER_MODEL`, falling back to the provider selected at startup; live `/model` changes
-do not silently change the scheduled-task provider.
+do not silently change the scheduled-task provider. Interactive auto mode never carries into the
+scheduler worker.
 
 ## Skills
 

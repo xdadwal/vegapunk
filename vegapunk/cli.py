@@ -16,7 +16,7 @@ from collections.abc import Generator
 from logpose import TextDelta
 
 from . import db, embedding, memory, session_store, skills, style, transcript, worker
-from .approval import CLIApprover
+from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend
 from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
@@ -51,7 +51,8 @@ def _status_line(ctx: CommandContext) -> str:
     left, context-window fullness on the right. Re-evaluated every render, so
     /save, /new, /model, and each finished turn show up on the next prompt.
     Identity comes from the live brain, not config — /model swaps it."""
-    left = f" {ctx.session.model_label} · {ctx.current_name or 'unsaved'}"
+    approval = ctx.approval_policy.mode
+    left = f" {approval} · {ctx.session.model_label} · {ctx.current_name or 'unsaved'}"
     right = _context_gauge(ctx.session.context_tokens, ctx.session.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
@@ -78,7 +79,12 @@ def _render_reply(events: Generator[TextDelta, None, str], renderer: Renderer) -
     renderer.reply_end()
 
 
-def main(prompter: Prompter | None = None, session: Session | None = None) -> None:
+def main(
+    prompter: Prompter | None = None,
+    session: Session | None = None,
+    *,
+    auto: bool = False,
+) -> None:
     # Persistence setup, before anything reads the database: take the
     # single-process lock, reconcile embeddings with the configured model, and
     # snapshot if the last backup is stale. All but the lock are best-effort and
@@ -89,6 +95,7 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
 
     # Defaults are built here (not as argument defaults) so tests can inject a
     # scripted prompter / fake-brain session and never touch the model or a TTY.
+    approval_policy = ApprovalPolicy(auto=auto)
     if session is None:
         # One approver for the whole REPL, so "always allow" lasts the session.
         # Fold remembered facts and the skill ads into the system prompt so the
@@ -99,15 +106,24 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             create_backend(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
             ALL_TOOLS,
             system_prompt=config.system_prompt + memory.as_system_block() + skills.as_system_block(),
-            approver=CLIApprover(),
+            approver=CLIApprover(approval_policy),
         )
     # ctx exists before the prompter so the toolbar callable can close over
     # it — /save and /new then show up on the very next prompt render.
-    ctx = CommandContext(session=session)
+    ctx = CommandContext(session=session, approval_policy=approval_policy)
     if prompter is None:
-        prompter = PromptToolkitPrompter(status=lambda: _status_line(ctx))
+        prompter = PromptToolkitPrompter(
+            status=lambda: _status_line(ctx),
+            toggle_approval=approval_policy.toggle,
+        )
     if _is_rich_session(session):
-        print(style.paint("── Vegapunk · /help for commands · /exit to quit", style.DIM, sys.stdout))
+        print(
+            style.paint(
+                "── Vegapunk · /help · Shift+Tab approval · /exit",
+                style.DIM,
+                sys.stdout,
+            )
+        )
         print(
             style.paint(
                 f"   model {session.model_label} · workspace {config.workspace_root}",
@@ -116,11 +132,19 @@ def main(prompter: Prompter | None = None, session: Session | None = None) -> No
             )
         )
     else:
-        print("Vegapunk interactive session. Type /help for commands, /exit to quit.")
+        print("Vegapunk interactive session. /help · Shift+Tab approval · /exit")
         print(
             style.paint(
                 f"model {session.model_label} · workspace {config.workspace_root}",
                 style.DIM,
+                sys.stdout,
+            )
+        )
+    if approval_policy.auto:
+        print(
+            style.paint(
+                "⚠ Auto mode active · guarded tools run without approval · Shift+Tab for manual",
+                style.YELLOW,
                 sys.stdout,
             )
         )
