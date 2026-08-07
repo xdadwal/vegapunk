@@ -2,33 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from dataclasses import replace
 
-from logpose import RuntimeEvent
+from logpose import Agent
 
-from tests.fake_provider import backend_for
+from tests.fake_provider import FakeProvider, backend_for, says
 from vegapunk import runtime, scheduler_worker, session
 from vegapunk.config import config
 
 
-def _event() -> RuntimeEvent:
-    return RuntimeEvent(
-        name="provider.attempt.failed",
-        run_id="run-123",
-        provider="fake",
-        model="fake-model",
-        attempt_id="attempt-456",
-        error_id="error-789",
-        status_code=429,
-        retry_delay_seconds=0.5,
+def _emit_runtime_event() -> None:
+    logging.getLogger("logpose.runtime").debug(
+        "never serialise this message",
+        extra={
+            "logpose_event": "provider.attempt.failed",
+            "logpose_schema_version": 1,
+            "logpose_run_id": "run-123",
+            "logpose_provider": "fake",
+            "logpose_model": "fake-model",
+            "logpose_attempt_id": "attempt-456",
+            "logpose_error_id": "error-789",
+            "logpose_status_code": 429,
+            "logpose_retry_delay_seconds": 0.5,
+            "prompt": "must never reach the runtime file",
+        },
     )
 
 
-def test_runtime_observer_writes_only_content_free_jsonl(tmp_path, capsys):
-    path = tmp_path / "runtime.jsonl"
+def test_runtime_logger_writes_only_content_free_jsonl(tmp_path, capsys):
+    cfg = replace(config, db_file=tmp_path / "vegapunk.db")
+    path = runtime.configure_runtime_logging(cfg)
 
-    runtime.JsonlRuntimeObserver(path)(_event())
+    _emit_runtime_event()
 
     row = json.loads(path.read_text())
     assert row == {
@@ -42,7 +50,7 @@ def test_runtime_observer_writes_only_content_free_jsonl(tmp_path, capsys):
         "input_tokens": None,
         "iterations": None,
         "model": "fake-model",
-        "name": "provider.attempt.failed",
+        "event": "provider.attempt.failed",
         "output_tokens": None,
         "provider": "fake",
         "queue_seconds": None,
@@ -63,15 +71,28 @@ def test_runtime_observer_writes_only_content_free_jsonl(tmp_path, capsys):
     assert captured.err == ""
 
 
+def test_logpose_runtime_events_are_captured_by_standard_logging(tmp_path):
+    cfg = replace(config, db_file=tmp_path / "vegapunk.db")
+    path = runtime.configure_runtime_logging(cfg)
+
+    result = asyncio.run(Agent(FakeProvider(says("done"))).run("hello"))
+
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert result.text == "done"
+    assert {row["event"] for row in rows} >= {"run.started", "run.completed"}
+    assert logging.getLogger("logpose.runtime").propagate is False
+
+
 def test_runtime_observer_rotates_files(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_LOG_MAX_BYTES", 1)
     monkeypatch.setattr(runtime, "_LOG_BACKUP_COUNT", 1)
-    observer = runtime.JsonlRuntimeObserver(tmp_path / "runtime.jsonl")
+    cfg = replace(config, db_file=tmp_path / "vegapunk.db")
+    path = runtime.configure_runtime_logging(cfg)
 
-    observer(_event())
-    observer(_event())
+    _emit_runtime_event()
+    _emit_runtime_event()
 
-    assert (tmp_path / "runtime.jsonl.1").exists()
+    assert path.with_suffix(".jsonl.1").exists()
 
 
 def test_runtime_options_share_limits_but_keep_process_logs_separate(tmp_path):
@@ -96,6 +117,8 @@ def test_runtime_options_share_limits_but_keep_process_logs_separate(tmp_path):
         assert interactive[key] == scheduler[key]
     assert interactive["retry_policy"].max_attempts == 1
     assert scheduler["retry_policy"].max_attempts == 1
+    assert "observers" not in interactive
+    assert "observers" not in scheduler
     assert runtime.runtime_log_path(cfg, "interactive").name == "vegapunk-runtime.jsonl"
     assert runtime.runtime_log_path(cfg, "scheduler").name == "scheduler-runtime.jsonl"
 
@@ -125,4 +148,3 @@ def test_session_and_scheduler_apply_the_shared_runtime_options(monkeypatch, tmp
         "tool_error_mode",
     ):
         assert interactive[key] == scheduled[key]
-    assert interactive["observers"] != scheduled["observers"]
