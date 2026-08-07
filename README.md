@@ -1,365 +1,319 @@
-# vegapunk
+# Vegapunk
 
-A self-hosted, CLI-first personal agent powered by a **local** LLM. Vegapunk runs an agentic loop
-([logpose](https://github.com/xdadwal/logpose)): it sends your input plus the available tool schemas
-to the model, runs whatever tools the model calls, feeds the results back, and repeats until the
-model produces a final answer.
-Irreversible actions (writing files, running shell commands) go behind an interactive approval gate.
-When a request is underspecified, Vegapunk asks a short clarifying question rather than guessing, then
-continues once you answer.
+**A local-first personal AI agent for your terminal.**
 
-The model is served locally over an OpenAI-compatible API — by default
-[Docker Model Runner](https://docs.docker.com/desktop/features/model-runner/) at
-`http://localhost:12434/engines/v1`, running `ai/qwen2.5:latest`. With this default `local`
-provider, the model and your files stay local; the only outbound traffic is the `fetch_url` /
-`search_web` tools, when the agent uses them. The hosted backends trade that away deliberately:
-`claude`/`anthropic` send the conversation (including tool results) to Anthropic, and
-`codex`/`openai` send it to OpenAI — billed to a subscription or an API key depending on which
-you pick. See [Choosing a backend](#choosing-a-backend).
+Vegapunk turns a language model into a persistent command-line assistant that can inspect your
+workspace, use tools, remember useful context, resume conversations, and run recurring tasks. It is
+built on [logpose](https://github.com/xdadwal/logpose), which provides the provider-neutral agent
+loop beneath the terminal experience.
+
+Use Vegapunk with Docker Model Runner for a fully local setup, or connect it to Anthropic, OpenAI,
+Claude Code, Codex, and other providers supported by logpose.
+
+```text
+you -> Vegapunk REPL -> logpose Agent -> model provider
+                              |
+                              +-> workspace tools
+                              +-> memory and sessions
+                              +-> approval gate
+                              +-> scheduled tasks
+```
+
+Vegapunk is under active development. Expect the interface and storage format to evolve while the
+project matures.
+
+## Highlights
+
+- **Local-first by default.** Docker Model Runner keeps prompts, model inference, tools, and stored
+  conversations on your machine. Network access occurs only when you select a hosted provider or
+  the agent uses a web tool.
+- **A terminal UI designed for long-running work.** Replies stream as rendered Markdown, including
+  structured lists and fenced code, while reasoning summaries and tool activity stay visually
+  distinct. Piped output automatically falls back to stable plain text.
+- **Useful tools with explicit boundaries.** Vegapunk can read and search a workspace, fetch web
+  content, edit files, and run commands. Side-effecting tools require interactive approval and all
+  filesystem and shell access stays inside the configured workspace.
+- **Persistent personal context.** Conversations, input history, and durable memories live in one
+  local database. Sessions are auto-named and auto-saved after every successful turn.
+- **Provider flexibility.** Switch backends and models without leaving the conversation. Supported
+  providers expose readiness checks, model discovery, and configurable reasoning effort where
+  available.
+- **Reusable agent skills.** Drop any compatible [Agent Skills](https://agentskills.io) package into
+  `.agents/skills/`; Vegapunk advertises it briefly and loads the full instructions only when needed.
+- **Recurring tasks.** Schedule a prompt to run in a separate worker while Vegapunk is open. The
+  worker is fail-closed and cannot use tools that require human approval.
 
 ## Requirements
 
-- **Python 3.10+** (developed and tested on 3.12).
-- A reachable **OpenAI-compatible model endpoint**. By default Vegapunk targets Docker Model
-  Runner; point it elsewhere with the environment variables below.
+- Python 3.10 or newer. Development and tests currently use Python 3.12.
+- A supported model provider. The default setup expects Docker Model Runner at
+  `http://localhost:12434/engines/v1` with `docker.io/gemma4:latest` available.
 
-## Install
+## Quickstart
+
+Clone the repository and create a virtual environment:
 
 ```bash
+git clone https://github.com/xdadwal/vegapunk.git
+cd vegapunk
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt        # runtime deps
-.venv/bin/pip install -r requirements-dev.txt     # + pytest/ipdb, to run the tests
+.venv/bin/pip install -r requirements.txt
 ```
 
-## Run
+For the default local backend, enable Docker Model Runner and pull the configured model:
+
+```bash
+docker desktop enable model-runner --tcp 12434
+docker model pull docker.io/gemma4:latest
+```
+
+Start Vegapunk from the directory you want it to treat as its workspace:
 
 ```bash
 .venv/bin/python -m vegapunk
 ```
 
-This starts an interactive REPL (it needs the model endpoint to be reachable). The REPL offers:
+Then ask for work in plain language:
 
-- **Persistent history** across sessions (recalled with ↑/↓), stored in the database.
-- **Persistent memory** — durable facts and preferences you share are saved and auto-loaded into
-  future sessions, so Vegapunk still knows them next time.
-  and (optionally) search them semantically with the `recall` tool — set `VEGAPUNK_EMBED_MODEL` to
-  an embedding model your endpoint serves and Vegapunk embeds facts for similarity search, falling
-  back to plain text matching otherwise.
-- **Skills** — teach Vegapunk repeatable procedures by dropping
-  [Agent Skills](https://agentskills.io) directories in `.agents/skills/` (the tool-agnostic
-  community format — skills written for other agents work unchanged); each is advertised to the
-  model as one line, and its full instructions load on demand when a task matches (or force one
-  with `/skill <name>`). See [Skills](#skills).
-- **Auto-saved conversations** — every chat is saved each turn under a short name the model picks
-  from your first message, so you can pick it back up later.
-- **Scheduled tasks** — save a prompt and an interval (at least 60s) and Vegapunk runs it itself
-  while the session is open, instead of only acting when you type: poll a page, save a fact on a
-  cadence. Set one up with `/schedule add <seconds> <prompt>`, or just ask — the model can schedule
-  one for you with the `schedule_task` tool. Runs are unattended, so they're fail-closed: read-only
-  tools work, while gated tools (`write_file`, `run_shell`) are blocked with no human to approve
-  them. They execute in a **separate worker process** the REPL starts and stops with it, so a due
-  task never delays your typing and its tool trace goes to `scheduler.log` beside the database
-  rather than onto your prompt. See [Scheduled tasks](#scheduled-tasks).
-- **Slash commands** (see below) — anything else you type goes to the model.
-- **Inline pickers.** Run `/model`, `/models`, `/load`, `/skill` or `/effort` with no argument
-  on a terminal and you get an arrow-key menu instead of a usage line — backends with their
-  credential and whether they can run, a backend's real model ids, saved conversations with
-  turn counts, skills with their summaries, effort levels. The current value is marked and the
-  cursor starts on it; `Esc` backs out and changes nothing. The menu is inline and erases
-  itself, so scrollback keeps only what you did. Piped or scripted sessions keep the plain
-  text behaviour, so nothing here changes what a script sees.
-- **Tab completion** for slash commands *and* their arguments — providers, model ids, saved
-  session names, skills, effort levels, sub-commands. Model ids come from what `/models` has
-  already fetched, so a keystroke never waits on the network.
-- **Auto-suggestions** from history — accept with → or `End`.
-- **Multi-line input** via `Esc`-`Enter` or `Ctrl-J`, plus Emacs-style line editing.
-- **Streaming output** — replies print token by token as the model generates them, instead of
-  appearing whole after a long silence; a spinner marks the wait before the first token.
-- Tool activity is traced to **stderr** (`[think]` = a model round-trip, `[reason]` = the model's
-  chain-of-thought, streamed live as it's generated, `[tool]` = a tool result, truncated for
-  display at 200 chars, `[note]` = a loop warning, e.g. the model ran out of tokens mid-answer),
-  leaving **stdout** clean for the agent's replies.
-- **Color-coded output**, themed on the Doctor himself: reasoning murmurs in Punk Records magenta,
-  tools glow Egghead cyan, failures go Atlas red, warnings York yellow, and your prompt wears
-  Shaka gold. Auto-disabled when a stream isn't a terminal; `NO_COLOR` and `VEGAPUNK_COLOR` give
-  manual control.
-- A **status toolbar** under the prompt shows the model and the current conversation's name on
-  the left, and — after the first turn — how full the model's context window is on the right
-  (exact server-reported tokens, absolute and percent).
+```text
+❯ Summarize this repository and identify the three highest-risk modules.
+❯ Remember that I prefer pytest tests next to the behavior they cover.
+❯ Check the latest release notes and save a concise migration guide.
+```
 
-### Commands
+The current model, session name, and context usage remain visible beneath the prompt. Use `/help`
+at any time to see the local command surface.
 
-Lines starting with `/` are handled locally instead of being sent to the model:
+## Terminal experience
 
-| Command | What it does |
-|---------|--------------|
-| `/help` | List the available commands |
-| `/history [n]` | Show the last `n` turns of this conversation (default 5) |
-| `/reason` | Show the display-only reasoning from the last completed turn, when the provider supplied it |
-| `/sessions [name \| remove <name>]` | Resume a saved conversation, list recent conversations, or remove one by name |
-| `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | List scheduled tasks (with their cadence, next run, and last result), schedule a prompt to run every `<seconds>` (minimum 60), or remove one by its short id |
-| `/skill <name>` | Stage a skill's instructions to ride along with your next message |
-| `/save <name>` | Rename the current conversation |
-| `/model [provider [name]]` | Pick a backend from a menu, or switch directly (e.g. `/model claude opus`) |
-| `/effort [low\|medium\|high\|xhigh\|max]` | Show or set the reasoning effort mid-session (Claude and Codex; the local model has none) |
-| `/status` | Show backend readiness, model, effort, context, session, scheduler, and workspace |
-| `/new` | Start a fresh conversation (alias: `/reset`) |
-| `/exit` | Quit (alias: `/quit`; `Ctrl-D` also quits) |
+Vegapunk selects its renderer based on the output stream:
 
-## Tools
+- An interactive, color-capable terminal gets the Rich interface with streaming Markdown, compact
+  tool traces, status indicators, and collapsed reasoning by default.
+- Pipes, logs, tests, and non-interactive sessions get a plain renderer with stable line-oriented
+  output. Assistant replies go to stdout; diagnostic and tool activity goes to stderr.
+- `VEGAPUNK_UI=rich` or `VEGAPUNK_UI=plain` overrides automatic selection.
 
-Tools are type-hinted Python functions decorated with `@tool` (see `vegapunk/tools/registry.py`);
-the decorator derives the name, description, and input schema and auto-registers them. The default
-toolset:
+The prompt supports persistent history, inline suggestions, tab completion for commands and their
+arguments, and arrow-key pickers for `/model`, `/sessions`, `/skill`, and `/effort`. Press
+`Esc`-`Enter` or `Ctrl-J` to insert a newline; `Ctrl-D`, `/exit`, and `/quit` all end the session.
 
-| Tool | What it does | Approval |
-|------|--------------|:--------:|
-| `get_battery` | Report battery charge % and whether it's charging | — |
-| `get_time` | Return the current local date and time | — |
-| `read_file` | Read a file's full text (relative to the workspace) | — |
-| `list_dir` | List the entries in a workspace directory | — |
-| `grep` | Search the workspace by file contents or by filename | — |
-| `write_file` | Create or overwrite a whole workspace file | ✋ gated |
-| `edit_file` | Replace an exact snippet in an existing file (targeted edit) | ✋ gated |
-| `run_shell` | Run a shell command in the workspace | ✋ gated |
-| `fetch_url` | Fetch a web page and return its readable text | — |
-| `search_web` | Search the web (DuckDuckGo) for external information | — |
-| `remember` | Save a durable fact/preference about you for future sessions | — |
-| `use_skill` | Load a skill's full instructions when a task matches one | — |
-| `schedule_task` | Schedule a prompt to run itself every N seconds (minimum 60) | — |
-| `yell` | Echo the reply in UPPERCASE (a persona tool) | — |
+Reasoning is collapsed in the Rich interface by default. `/reason` shows the previous turn's
+available reasoning summary, while `VEGAPUNK_REASONING=full` streams it into the live trace. Plain
+mode retains the full trace for compatibility with scripts and logs.
 
-Filesystem and shell tools are **confined to the workspace root** (default: the directory you
-launched Vegapunk in); paths outside it are refused. When the model calls a **gated** tool, an
-inline menu prompts **Yes / No / No — tell Vegapunk what to do instead / Always allow this tool this
-session** before anything runs. Declining with a message hands the model your steer (fed back as the
-tool result), so a "no" can redirect it instead of dead-ending.
+## Commands
+
+Lines beginning with `/` are handled by the REPL rather than sent to the model.
+
+| Command | Description |
+| --- | --- |
+| `/help` | List available commands. |
+| `/status` | Show backend readiness, model, effort, context, session, scheduler, and workspace. |
+| `/model [provider [model]]` | Show or switch the active provider and model. With no arguments, open the interactive picker. |
+| `/effort [low\|medium\|high\|xhigh\|max]` | Show or change reasoning effort when the active model supports it. |
+| `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
+| `/save <name>` | Rename the current conversation. |
+| `/history [n]` | Show the latest `n` turns; the default is five. |
+| `/reason` | Show the reasoning supplied for the last completed turn. |
+| `/skill <name>` | Include a skill's instructions with the next message. |
+| `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
+| `/new` | Start a fresh conversation. Alias: `/reset`. |
+| `/exit` | Quit Vegapunk. Alias: `/quit`; `Ctrl-D` also quits. |
+
+## Model providers
+
+`/model` reads the provider catalog from logpose, reports whether each backend is ready, and lets
+you choose a model when discovery is supported. Common provider names are:
+
+| Provider | Authentication | Notes |
+| --- | --- | --- |
+| `local` / `docker` | None | Docker Model Runner; this is the default. |
+| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Messages API. |
+| `openai` | `OPENAI_API_KEY` | OpenAI Responses API. |
+| `openai-compat` | Server-dependent | OpenAI-compatible Chat Completions endpoint. |
+| `claude` / `claude-code` | Local Claude Code session | Subscription-backed, unofficial integration. |
+| `codex` | Local Codex session | Subscription-backed, unofficial integration. |
+
+Select a provider at launch with `VEGAPUNK_PROVIDER`, or switch during a session:
+
+```text
+/model local docker.io/gemma4:latest
+/model anthropic claude-sonnet-4-5
+/model codex
+```
+
+Provider names correspond to credential types deliberately: `anthropic` and `openai` use API keys,
+while `claude-code` and `codex` use existing CLI subscription sessions. The subscription backends
+rely on undocumented authentication details and may stop working without notice; use the API-key
+backends when you need a supported integration.
+
+Switching models preserves the conversation. Reasoning state encoded by the previous provider is
+removed when necessary so it is not replayed to an incompatible backend.
+
+## Tools and approvals
+
+Tools are ordinary type-hinted Python functions registered with `@tool`. The model receives their
+generated schemas and can call them as part of a multi-step turn.
+
+| Tool | Purpose | Approval |
+| --- | --- | :---: |
+| `get_time` | Return the current local date and time. | — |
+| `get_battery` | Report battery charge and charging state. | — |
+| `get_system_stats` | Report CPU, memory, disk, temperature, and uptime data. | — |
+| `read_file` | Read a text file inside the workspace. | — |
+| `list_dir` | List a directory inside the workspace. | — |
+| `grep` | Search workspace content or filenames. | — |
+| `write_file` | Create or overwrite a file. | Required |
+| `edit_file` | Replace an exact snippet in an existing file. | Required |
+| `run_shell` | Run a shell command in the workspace. | Required |
+| `fetch_url` | Fetch a page and extract readable text. | — |
+| `search_web` | Search the web through DuckDuckGo. | — |
+| `remember` | Store a durable fact or preference. | — |
+| `recall` | Search saved memories. | — |
+| `use_skill` | Load a skill's full instructions. | — |
+| `schedule_task` | Create a recurring prompt. | — |
+| `yell` | Echo a response in uppercase. | — |
+
+All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
+directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers
+four choices: allow once, deny, deny with guidance for the agent, or allow that tool for the rest
+of the session.
+
+Tool results shown in the terminal are abbreviated for readability; the model receives output up
+to `VEGAPUNK_OUTPUT_CAP` characters.
+
+## Sessions, memory, and backups
+
+Vegapunk stores sessions, durable memory, scheduled tasks, and REPL input history in a local Turso
+database. The default path is `vegapunk.db` in the launch directory.
+
+- A successful first turn is assigned a short model-generated session name, then saved after every
+  turn. Use `/sessions` to resume or remove conversations and `/save` to rename the current one.
+- Facts recorded through `remember` are added to future sessions automatically. If
+  `VEGAPUNK_EMBED_MODEL` is configured, `recall` uses semantic similarity; otherwise it falls back
+  to text matching.
+- Startup creates a database snapshot when the newest backup is more than 24 hours old and retains
+  the latest three files under `backups/`.
+- One interactive Vegapunk process may use a database at a time. The scheduler worker has its own
+  coordinated connection.
+- The database is plaintext and SQLite-readable. Do not store secrets in conversations or memory.
+
+Turso's multi-process WAL support is experimental and requires a local filesystem on 64-bit Linux
+or macOS. Avoid placing the database on NFS or SMB storage.
+
+## Scheduled tasks
+
+Create a recurring task from the REPL or ask the model to schedule one:
+
+```text
+/schedule add 3600 Check the project status page and summarize any incident.
+/schedule list
+/schedule remove 8f17a2c4
+```
+
+The REPL starts a separate `vegapunk.scheduler_worker` process and stops it when you quit. Scheduled
+runs never delay interactive input, and their trace is written to `scheduler.log` beside the
+database.
+
+Unattended runs are fail-closed: tools that require approval (`write_file`, `edit_file`, and
+`run_shell`) are refused because no person is present to approve them. The worker uses
+`VEGAPUNK_SCHEDULER_MODEL`, falling back to the provider selected at startup; live `/model` changes
+do not silently change the scheduled-task provider.
 
 ## Skills
 
-Skills teach Vegapunk repeatable procedures, in the community
-[Agent Skills](https://agentskills.io) format: one **directory per skill** under `.agents/skills/`,
-holding a `SKILL.md` (frontmatter + instructions) plus any `scripts/`, `references/`, or `assets/`
-the instructions point at. Because the format is tool-agnostic, a skill written for Claude Code or
-any other spec-following agent drops in unchanged — and Vegapunk's skills work elsewhere too.
+Vegapunk supports the community [Agent Skills](https://agentskills.io) format. Each skill is a
+directory containing `SKILL.md` and, optionally, scripts, references, or assets:
 
-The design is progressive disclosure: at startup every skill costs the system prompt only a
-one-line `name — description` ad, and the full body enters the conversation only when it's
-needed — either the model calls `use_skill` because your request matches a listed skill, or you
-force one with `/skill <name>` (its instructions then ride along with your next message). A skill
-that bundles extra files gets a pointer to its directory so the model can read them on demand.
-
-```
+```text
 .agents/skills/
 └── commit-message/
-    └── SKILL.md
+    ├── SKILL.md
+    └── references/
 ```
 
-```markdown
----
-name: commit-message
-description: How to write a commit message for this repo
----
-# Commit messages
+At startup, only each skill's name and description enter the system prompt. The model calls
+`use_skill` to load relevant instructions on demand, or you can force the next turn to use one with
+`/skill <name>`. This progressive-disclosure model keeps the base prompt small while allowing
+substantial reusable workflows.
 
-- Format: type(scope): summary — imperative mood, <= 72 chars.
-- Types: feat, fix, refactor, test, docs, chore.
-- The body explains why, not what.
-```
-
-A skill's **name is its directory** (spec rules: lowercase letters, digits, single hyphens, max
-64 — content can't spoof identity, and a frontmatter `name` that disagrees is overruled with a
-note). Vegapunk consumes the spec leniently: a missing `description` falls back to the first body
-line, and unknown frontmatter keys (`license`, `compatibility`, `metadata`, `allowed-tools`) are
-ignored. Skipping is the exception and always announced with a `[skills]` note on stderr —
-spec-invalid names, directories without a `SKILL.md`, empty or unreadable manifests, and legacy
-flat `.md` files (which get a migration nudge). Skill bodies are capped at `VEGAPUNK_OUTPUT_CAP`
-characters like any other tool output. Skills are discovered at each use, but the ads in the
-system prompt are assembled once at launch — a skill added mid-session works via `use_skill` and
-`/skill`, but isn't advertised to the model until the next start.
+Skills are rediscovered when used, but the short catalog advertised to the model is built at
+startup. Restart Vegapunk after adding a skill if you want the model to discover it automatically.
 
 ## Configuration
 
-All settings have defaults in `vegapunk/config.py` and can be overridden with environment variables:
+Every application setting can be overridden with an environment variable.
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `VEGAPUNK_BASE_URL` | OpenAI-compatible model endpoint | `http://localhost:12434/engines/v1` |
-| `VEGAPUNK_MODEL` | Model id (Docker Model Runner needs the `ai/` prefix) | `ai/qwen2.5:latest` |
-| `VEGAPUNK_API_KEY` | API key (ignored by a local server) | `not-needed` |
-| `VEGAPUNK_WORKSPACE` | Root directory the file/shell tools are sandboxed to | current directory |
-| `VEGAPUNK_SHELL_TIMEOUT` | Max seconds a shell command may run | `30` |
-| `VEGAPUNK_OUTPUT_CAP` | Max characters of tool output fed back to the model | `10000` |
-| `VEGAPUNK_MAX_STEPS` | Max think→act→observe steps per turn before the agent stops | `25` |
-| `VEGAPUNK_COLOR` | CLI color: `auto` (only on terminals), `always` (even piped — overrides `NO_COLOR`), or `never`; the `NO_COLOR` standard also disables it | `auto` |
-| `VEGAPUNK_UI` | How a turn is drawn: `auto` uses rich output on a colour-capable terminal and plain output otherwise; `rich` forces rich output; `plain` forces plain output. `NO_COLOR` makes `auto` plain. | `auto` |
-| `VEGAPUNK_REASONING` | Rich-mode reasoning display: `collapsed` shows a compact summary and enables `/reason`; `full` streams it into the trace. Plain output retains its existing full trace. | `collapsed` |
-| `VEGAPUNK_CONTEXT_WINDOW` | The model's context window (tokens), for the toolbar's fullness gauge — find yours with `docker model logs \| grep n_ctx`; `0` = unknown (gauge shows tokens without a %) | `131072` |
-| `VEGAPUNK_DB_FILE` | Embedded database holding sessions, memory, and input history | `vegapunk.db` |
-| `VEGAPUNK_EMBED_MODEL` | Embedding model for semantic memory recall (served by your endpoint's `/embeddings`); empty disables it | (empty) |
-| `VEGAPUNK_SKILLS_DIR` | Skills directory ([Agent Skills](https://agentskills.io) format: one `<name>/SKILL.md` each, advertised at startup) | `.agents/skills` |
-| `VEGAPUNK_PROVIDER` | Backend at launch: `local`, `claude`, or any logpose provider name (`anthropic`, `codex`, `openai`, `openai-compat`); `/model` lists them | `local` |
-| `VEGAPUNK_MAX_OUTPUT_TOKENS` | Ceiling on what the model may generate in one turn (thinking included) | `16000` |
-| `VEGAPUNK_CLAUDE_MODEL` | Claude model: a full id, or the short `opus`/`sonnet`/`fable`/`mythos`/`haiku`; empty = the provider's default | (empty) |
-| `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | Claude's context window (tokens), for the toolbar gauge | `200000` |
-| `VEGAPUNK_CLAUDE_EFFORT` | Claude effort level at launch (`low`/`medium`/`high`/`xhigh`/`max`); empty = send none and let the API decide; ignored on models without the setting; adjust live with `/effort` | (empty) |
-| `VEGAPUNK_SCHEDULER_MODEL` | Model for [scheduled tasks](#scheduled-tasks), as `provider[:model]` (e.g. `local`, `claude:opus`); empty = inherit `VEGAPUNK_PROVIDER`/`VEGAPUNK_CLAUDE_MODEL`. A live `/model` swap never reaches the worker | (empty) |
-| `VEGAPUNK_SCHEDULER_EFFORT` | Effort for the worker's turns; empty falls back to `VEGAPUNK_CLAUDE_EFFORT` | (empty) |
-| `VEGAPUNK_CODEX_MODEL` | Model for the Responses backends (`codex`, `openai`); empty = the provider's default | (empty) |
-| `VEGAPUNK_CODEX_CONTEXT_WINDOW` | Their context window (tokens) for the toolbar gauge; `0` = unknown, so the gauge shows tokens without a percentage | `0` |
-| `VEGAPUNK_CODEX_EFFORT` | Their effort level at launch; empty = send none and let the API decide | (empty) |
+### Core runtime
 
-### Data & backups
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VEGAPUNK_PROVIDER` | `local` | Provider selected at launch. |
+| `VEGAPUNK_BASE_URL` | `http://localhost:12434/engines/v1` | Endpoint for Docker Model Runner or `openai-compat`. |
+| `VEGAPUNK_MODEL` | `docker.io/gemma4:latest` | Model used by Chat Completions-compatible backends. |
+| `VEGAPUNK_API_KEY` | `not-needed` | API key passed to the optional local embeddings client. |
+| `VEGAPUNK_WORKSPACE` | Current directory | Root available to filesystem and shell tools. |
+| `VEGAPUNK_MAX_OUTPUT_TOKENS` | `16000` | Maximum model output per turn, including reasoning. |
+| `VEGAPUNK_MAX_STEPS` | `25` | Maximum think-act-observe iterations per turn. |
+| `VEGAPUNK_SHELL_TIMEOUT` | `30` | Shell command timeout in seconds. |
+| `VEGAPUNK_OUTPUT_CAP` | `10000` | Maximum tool-output characters returned to the model. |
 
-Sessions, long-term memory, and REPL input history live in one embedded database at `vegapunk.db`
-in the launch directory (via [Turso](https://github.com/tursodatabase/turso)).
+### Interface
 
-- **One process at a time.** A lock file refuses a second `vegapunk` in the same directory. This is
-  policy, not a storage limit — connections enable Turso's experimental `multiprocess_wal`, which
-  coordinates several processes through a sibling `.tshm` file — but nothing yet coordinates two
-  REPLs, which would both autosave the same conversation and run the same due task. Multi-process
-  access needs 64-bit Linux/macOS and a local filesystem (not NFS/SMB).
-- **Backups.** Vegapunk snapshots the database to `backups/` at startup (at most daily, keeping the
-  newest three).
-- **Plaintext, no secrets.** Contents are readable by any SQLite client, so the same "don't paste
-  secrets" posture as before applies.
-- **Recovery.** The file is a standard SQLite database, so any `sqlite3` client can open
-  `vegapunk.db` (or a snapshot) to read or export your data. Worth knowing that Turso's
-  multi-process coordination format is experimental and may change between releases — which is
-  what the automatic backups are insurance for.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VEGAPUNK_UI` | `auto` | Renderer: `auto`, `rich`, or `plain`. |
+| `VEGAPUNK_COLOR` | `auto` | Color mode: `auto`, `always`, or `never`. `NO_COLOR` is also honored. |
+| `VEGAPUNK_REASONING` | `collapsed` | Rich reasoning mode: `collapsed` or `full`. |
+| `VEGAPUNK_CONTEXT_WINDOW` | `131072` | Local model context size used by the prompt gauge; `0` means unknown. |
 
-### Scheduled tasks
+### Hosted providers and scheduler
 
-`/schedule add <seconds> <prompt>` saves a prompt to run on a repeating interval (minimum 60s).
-The runs happen in a **separate worker process**, `vegapunk.scheduler_worker`, which the REPL
-starts at launch and stops when you quit — you never run it yourself.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VEGAPUNK_CLAUDE_MODEL` | Empty | Model for Anthropic and Claude Code backends. |
+| `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | `200000` | Context size used by the Claude prompt gauge. |
+| `VEGAPUNK_CLAUDE_EFFORT` | Empty | Initial Claude effort: `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `VEGAPUNK_CODEX_MODEL` | Empty | Model for Codex and OpenAI Responses backends. |
+| `VEGAPUNK_CODEX_CONTEXT_WINDOW` | `0` | Context size used by their prompt gauge; `0` means unknown. |
+| `VEGAPUNK_CODEX_EFFORT` | Empty | Initial Codex/OpenAI reasoning effort. |
+| `VEGAPUNK_SCHEDULER_MODEL` | Empty | Scheduler provider and optional model as `provider[:model]`; empty inherits startup configuration. |
+| `VEGAPUNK_SCHEDULER_EFFORT` | Empty | Scheduler effort; empty inherits the configured Claude effort. |
 
-- **Your prompt stays yours.** The worker has its own database connection and model client, so a
-  due task never blocks a typed turn, and its `[think]`/`[tool]` trace goes to `scheduler.log`
-  beside the database instead of landing on top of your prompt. `tail -f scheduler.log` to watch.
-- **Only while a session is open.** The worker is stopped when the REPL exits, and exits by itself
-  if the REPL is killed outright. Nothing runs when Vegapunk isn't. Quitting mid-task stops that run
-  rather than making you wait out a model turn — it wasn't recorded, so the task stays due and
-  simply runs again next time.
-- **Fail-closed.** Unattended runs get no approval prompt, so gated tools (`write_file`,
-  `run_shell`) are refused; read-only tools work normally.
-- **Its own model.** Because it's a separate process, a live `/model` swap deliberately does *not*
-  reach scheduled runs — otherwise switching providers would silently start billing background work
-  to your subscription. The worker uses `VEGAPUNK_SCHEDULER_MODEL` (spelled `provider[:model]`,
-  e.g. `claude:opus`), falling back to the provider/model the REPL launched with. Set it to `local`
-  to keep unattended runs on the free model while your own turns use Claude. `scheduler.log` records
-  which model it came up with.
+### Persistence and skills
 
-If the worker can't start (a bad model spec, or another one already running), the REPL says so once
-and points at the log rather than leaving scheduled tasks silently not happening.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VEGAPUNK_DB_FILE` | `./vegapunk.db` | Database path. |
+| `VEGAPUNK_EMBED_MODEL` | Empty | Embedding model used for semantic memory search. |
+| `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
 
-### Choosing a backend
+## Development
 
-`/model` with no argument lists every backend, what it authenticates with, and whether
-it can run right now — read from logpose's provider catalog rather than a table here,
-so a backend added to logpose appears without a change in Vegapunk:
-
-```
-  · anthropic (api_key) — No Anthropic API key found. Export ANTHROPIC_API_KEY…
-    claude-code|claude (subscription) [unofficial]
-    codex (subscription) [unofficial]
-    docker|local (none)
-  · openai (api_key) — No OpenAI API key found. Export OPENAI_API_KEY…
-  · openai-compat (optional) — No endpoint configured…
-```
-
-A leading `·` means the credential is missing, said while you're choosing rather than
-as an error on your next message. `local` and `claude` are Vegapunk's own names for
-`docker` and `claude-code`, kept so existing configs and saved schedules keep working.
-
-**One provider per credential.** `claude-code` and `codex` ride a subscription
-(`claude /login`, `codex login`); `anthropic` and `openai` take an API key. They are
-separate backends on purpose — a credential of the wrong kind can't shadow a usable
-one, so nobody gets silently billed per token by a stray `ANTHROPIC_API_KEY`.
-
-> **The subscription backends are not an officially supported integration.** They rely
-> on undocumented details and are at your own risk, including to your account. The
-> API-key backends (`anthropic`, `openai`) are the supported path and bill per token.
-
-### Models and effort
-
-`/models [provider]` lists what a backend actually serves — asked of the backend, so
-the answer is right for *your* account rather than a table that goes stale:
-
-```
-claude-code serves:
-  * claude-opus-5
-    claude-sonnet-5
-    claude-fable-5
-    …
-```
-
-Pick one with `/model <provider> <name>` (`opus`/`sonnet`/`fable`/`haiku` expand to full
-ids; `/model codex gpt-5.4` and `/model local ai/qwen3` work the same way). The choice is
-checked against that list before the switch, so a typo is caught while you're typing
-rather than as a 404 on your next message:
-
-```
-> /model codex gpt-4o
-codex doesn't serve 'gpt-4o'. Closest: gpt-5.4, gpt-5.5, gpt-5.4-mini. See /models codex.
-```
-
-A backend that won't answer never blocks the switch — discovery is a convenience, not a
-gate. Trade speed for reasoning depth with `/effort`
-(`low`|`medium`|`high`|`xhigh`|`max`, the APIs' own levels); both persist for the
-session, and a model switch keeps your effort choice. The two wire APIs spell effort
-differently — Anthropic's `output_config.effort`, the Responses API's `reasoning.effort`
-— and Vegapunk derives which from the backend, so `/effort high` means the same thing
-on `claude` and on `codex`. The local model has no such setting and says so.
-
-Effort is a per-model capability, not a Claude-wide one: the older families
-(`haiku`, `sonnet-4-5`, `opus-4-1`) reject the parameter, so `/effort` reports it as
-unsupported there instead of sending it, and those models are asked for no adaptive
-thinking. Switching models also drops the previous model's thinking from the history —
-another model's reasoning can't be replayed, and Claude rejects a turn carrying thinking
-blocks it never signed.
-
-> The previous subscription path — driving the bundled Claude Code CLI through
-> `claude-agent-sdk` — is parked in `vegapunk/claude_brain.py` rather than deleted, in
-> case the supported-client distinction turns out to matter.
-
-## Tests
+Install the development dependencies and run the test suite:
 
 ```bash
+.venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q
 ```
 
-`pytest.ini` sets `pythonpath = .` and `testpaths = tests`.
+The repository is intentionally small. The main extension points are:
 
-## Project layout
-
-```
+```text
 vegapunk/
-  __main__.py    # `python -m vegapunk` entry → cli.main()
-  cli.py         # interactive REPL and command dispatch
-  commands.py    # slash commands (/help, /status, /save, /sessions, /memory, /backup, /new, /exit)
-  db.py          # the embedded Turso database: connection, schema, lock, backups
-  session_store.py # save/list/resume conversations in the database
-  loop.py        # the live trace: logpose's event stream → what you watch on stderr
-  render.py      # how a turn is shown: every printed byte goes through here
-  menu.py        # the inline arrow-key picker every selection prompt runs on
-  session.py     # conversation state across turns
-  backend.py     # which model to talk to: name → logpose provider, label, context window
-  gate.py        # the approval gate logpose consults before running each tool
-  transcript.py  # reading history back: which turns were the user's, and what they said
-  brain.py       # PARKED: the old hand-written model layer (see claude_brain.py)
-  claude_brain.py # PARKED: the old Claude-subscription backend, via the Claude Code CLI
-  prompter.py    # prompt_toolkit input (history, suggestions, multi-line)
-  db_history.py  # REPL input history backed by the database
-  approval.py    # interactive approval gate for guarded tools
-  config.py      # settings + the persona system prompt
-  style.py       # ANSI color for the trace and replies (Vegapunk-themed palette)
-  memory.py      # long-term memory store (auto-loaded into the system prompt)
-  scheduler.py   # scheduled-task store + the ticker that runs what's due
-  scheduler_worker.py # the worker process the REPL spawns to run those tasks
-  worker.py      # the parent side of that process: spawning it and stopping it
-  embedding.py   # optional embeddings for semantic memory recall
-  skills.py      # skill discovery + on-demand loading (.agents/skills/, Agent Skills format)
-  tools/         # one module per tool, plus the @tool registry
-tests/           # test suite
+├── cli.py               # interactive loop and command dispatch
+├── commands.py          # slash-command registry and handlers
+├── backend.py           # provider selection, models, and effort
+├── session.py           # multi-turn conversation state
+├── loop.py              # logpose event stream and agent loop integration
+├── render.py            # Rich and plain terminal renderers
+├── approval.py          # interactive approval UI
+├── db.py                # Turso schema, locking, and backups
+├── scheduler_worker.py  # recurring-task worker process
+├── skills.py            # Agent Skills discovery and loading
+└── tools/               # built-in tool implementations and registry
 ```
+
+Contributions are welcome. Keep changes focused, add tests for behavioral changes, and ensure the
+full suite passes before opening a pull request.
