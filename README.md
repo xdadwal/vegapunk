@@ -230,7 +230,9 @@ Create a recurring task from the REPL or ask the model to schedule one:
 
 The REPL starts a separate `vegapunk.scheduler_worker` process and stops it when you quit. Scheduled
 runs never delay interactive input, and their trace is written to `scheduler.log` beside the
-database.
+database. Logpose lifecycle metadata is kept out of the TUI: interactive runs append JSON Lines to
+`vegapunk-runtime.jsonl`, and scheduled runs append them to `scheduler-runtime.jsonl`, also beside
+the database. These content-free operational logs rotate at 5 MiB and retain three older files.
 
 Unattended runs are fail-closed: tools that require approval (`write_file`, `edit_file`, and
 `run_shell`) are refused because no person is present to approve them. The worker uses
@@ -273,6 +275,10 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_WORKSPACE` | Current directory | Root available to filesystem and shell tools. |
 | `VEGAPUNK_MAX_OUTPUT_TOKENS` | `16000` | Maximum model output per turn, including reasoning. |
 | `VEGAPUNK_MAX_STEPS` | `25` | Maximum think-act-observe iterations per turn. |
+| `VEGAPUNK_PROVIDER_MAX_ATTEMPTS` | `3` | Total provider attempts for a turn; `1` disables retries. |
+| `VEGAPUNK_PROVIDER_TURN_TIMEOUT` | Provider default | Complete provider-turn deadline in seconds; `0` disables it. |
+| `VEGAPUNK_MAX_CONCURRENT_TOOLS` | `8` | Concurrent tool handlers allowed per agent. |
+| `VEGAPUNK_TOOL_TIMEOUT` | `300` | Tool-handler deadline in seconds; `0` disables it. |
 | `VEGAPUNK_SHELL_TIMEOUT` | `30` | Shell command timeout in seconds. |
 | `VEGAPUNK_OUTPUT_CAP` | `10000` | Maximum tool-output characters returned to the model. |
 

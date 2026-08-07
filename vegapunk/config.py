@@ -10,6 +10,37 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+
+def _positive_int(name: str, default: int) -> int:
+    """Read an integer environment setting that must be at least one."""
+    value = int(os.getenv(name, str(default)))
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1, got {value!r}.")
+    return value
+
+
+def _optional_timeout(name: str, default: float) -> float | None:
+    """Read a positive timeout; zero explicitly disables it."""
+    value = float(os.getenv(name, str(default)))
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}.")
+    return None if value == 0 else value
+
+
+def _provider_turn_timeout() -> float | None | Literal["default"]:
+    """Keep Logpose's provider-specific default unless the user overrides it."""
+    raw = os.getenv("VEGAPUNK_PROVIDER_TURN_TIMEOUT")
+    if raw is None or raw.strip().lower() == "default":
+        return "default"
+    value = float(raw)
+    if value < 0:
+        raise ValueError(
+            "VEGAPUNK_PROVIDER_TURN_TIMEOUT must be non-negative or 'default', "
+            f"got {value!r}."
+        )
+    return None if value == 0 else value
 
 
 @dataclass(frozen=True)
@@ -50,6 +81,15 @@ class Config:
     # recover from failed steps; the limit exists as the runaway-loop backstop,
     # not as a working budget.
     max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "25"))
+
+    # Logpose applies these to every provider turn and tool call. They live in
+    # Vegapunk's config namespace so applications embedding the library retain
+    # one clear owner for operational policy; provider-specific credentials stay
+    # in their standard environment variables.
+    provider_max_attempts: int = _positive_int("VEGAPUNK_PROVIDER_MAX_ATTEMPTS", 3)
+    provider_turn_timeout: float | None | Literal["default"] = _provider_turn_timeout()
+    max_concurrent_tools: int = _positive_int("VEGAPUNK_MAX_CONCURRENT_TOOLS", 8)
+    tool_timeout: float | None = _optional_timeout("VEGAPUNK_TOOL_TIMEOUT", 300.0)
 
     # Color in the CLI: "auto" (color only when the stream is a terminal),
     # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR
