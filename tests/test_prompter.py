@@ -44,6 +44,23 @@ def test_esc_enter_inserts_newline(tmp_path):
         assert _prompter(tmp_path, inp).prompt() == "first\nmore"
 
 
+def test_shift_tab_toggles_approval_without_submitting_or_changing_the_draft():
+    from vegapunk.approval import ApprovalPolicy
+
+    policy = ApprovalPolicy()
+    with create_pipe_input() as inp:
+        inp.send_text("keep this\x1b[Z intact\r")
+        prompter = PromptToolkitPrompter(
+            history=InMemoryHistory(),
+            input=inp,
+            output=DummyOutput(),
+            toggle_approval=policy.toggle,
+        )
+
+        assert prompter.prompt() == "keep this intact"
+        assert policy.mode == "auto"
+
+
 def test_history_persists_to_db(tmp_path):
     # Drive a prompter with the default DbHistory, then prove a fresh DbHistory
     # reads the entry back from the (conftest-isolated) database.

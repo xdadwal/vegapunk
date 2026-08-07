@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
 from . import db, menu, scheduler, session_store, skills, transcript
+from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
     EFFORT_LEVELS,
@@ -50,6 +51,7 @@ class CommandContext:
     pending_skill: tuple[str, str] | None = None
     scheduler: object | None = None
     scheduler_log: str | None = None
+    approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
 
 
 @dataclass
@@ -199,10 +201,14 @@ def _status(ctx: CommandContext, arg: str) -> CommandResult:
         worker = "running" if code is None else f"exited ({code})"
     if ctx.scheduler_log:
         worker += f" · {ctx.scheduler_log}"
+    approval = (
+        "auto · guarded tools run without prompts" if ctx.approval_policy.auto else "manual"
+    )
     return CommandResult(output="\n".join([
         f"Backend: {provider} · {readiness}",
         f"Model: {ctx.session.model_label}",
         f"Effort: {effort}",
+        f"Approval: {approval}",
         f"Context: {context}",
         f"Session: {ctx.current_name or 'unsaved'}",
         f"Scheduler: {worker}",

@@ -332,9 +332,12 @@ def test_status_line_shows_the_live_model_and_session_name():
 
     ctx = CommandContext(session=_labeled("ai/test"))
     # rstrip: the line is padded to the terminal width for the right gauge.
-    assert _status_line(ctx).rstrip() == " ai/test · unsaved"  # before the first autosave
+    assert _status_line(ctx).rstrip() == " manual · ai/test · unsaved"
     ctx.current_name = "my-chat"
-    assert _status_line(ctx).rstrip() == " ai/test · my-chat"  # /save and autosave show live
+    assert _status_line(ctx).rstrip() == " manual · ai/test · my-chat"
+
+    ctx.approval_policy.toggle()
+    assert _status_line(ctx).rstrip() == " auto · ai/test · my-chat"
 
 
 def test_status_line_follows_a_model_switch():
@@ -343,7 +346,7 @@ def test_status_line_follows_a_model_switch():
 
     ctx = CommandContext(session=_labeled("ai/test"))
     ctx.session.swap_backend(backend_for(model_label="claude"))
-    assert _status_line(ctx).rstrip() == " claude · unsaved"
+    assert _status_line(ctx).rstrip() == " manual · claude · unsaved"
 
 
 def test_context_gauge_formats_absolute_and_percent():
@@ -396,6 +399,33 @@ def test_main_builds_the_backend_from_the_configured_provider(monkeypatch, capsy
 
     assert seen["provider"] == config.provider  # "local" unless VEGAPUNK_PROVIDER says otherwise
     assert "model stub-model" in capsys.readouterr().out  # banner shows the live model
+
+
+def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsys):
+    from vegapunk.approval import CLIApprover as RealCLIApprover
+
+    policies = []
+
+    def capture_policy(policy):
+        policies.append(policy)
+        return RealCLIApprover(policy)
+
+    monkeypatch.setattr(
+        "vegapunk.cli.create_backend", lambda provider: backend_for(model_label="stub-model")
+    )
+    monkeypatch.setattr("vegapunk.cli.CLIApprover", capture_policy)
+
+    main(prompter=ScriptedPrompter(["/exit"]), auto=True)
+
+    assert policies[0].auto is True
+    assert "Auto mode active" in capsys.readouterr().out
+
+
+def test_startup_arguments_default_to_manual_and_accept_auto():
+    from vegapunk.__main__ import _parse_args
+
+    assert _parse_args([]).auto is False
+    assert _parse_args(["--auto"]).auto is True
 
 
 class _SpyPopen:

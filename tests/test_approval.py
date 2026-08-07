@@ -19,7 +19,7 @@ from logpose import ToolGateResult, ToolUseBlock
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from vegapunk.approval import CLIApprover, Decision, ScriptedApprover
+from vegapunk.approval import ApprovalPolicy, CLIApprover, Decision, ScriptedApprover
 from vegapunk.gate import DENIED, NO_GATE, make_gate
 from vegapunk.tools.registry import GUARDED
 
@@ -211,4 +211,17 @@ def test_cli_approver_auto_denies_without_tty(monkeypatch):
     # non-TTY guard must short-circuit before the menu is ever built.
     approver = _PipeCLIApprover([])
     monkeypatch.setattr(approver, "_ask", boom)
+    assert approver.approve("act", {}).allow is False
+
+
+def test_auto_policy_bypasses_prompts_and_can_return_to_manual(monkeypatch):
+    """The approver reads live policy state rather than its startup value."""
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(False))
+    policy = ApprovalPolicy()
+    approver = CLIApprover(policy)
+
+    assert approver.approve("act", {}).allow is False
+    assert policy.toggle() == "auto"
+    assert approver.approve("act", {}).allow is True
+    assert policy.toggle() == "manual"
     assert approver.approve("act", {}).allow is False
