@@ -1,7 +1,6 @@
 
-# --- Claude Code (managed by ccc) ---
-.claude/settings.local.json
-.claude/.ccc-source
+# --- Claude Code local state ---
+.claude/
 CLAUDE.local.md
 
 # --- Python ---
