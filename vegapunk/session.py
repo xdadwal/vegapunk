@@ -33,6 +33,7 @@ from .approval import Approver
 from .backend import Backend, with_effort
 from .config import config
 from .gate import make_gate
+from .interactive_agent import InteractiveAgent
 from .loop import trace
 from .render import Renderer
 from .runtime import agent_runtime_options
@@ -121,7 +122,7 @@ class Session:
         self._conversation = Conversation()
 
     def _build_agent(self) -> Agent:
-        return Agent(
+        return InteractiveAgent(
             self._backend.provider,
             system=self._system_prompt,
             tools=self._tools,

@@ -22,6 +22,7 @@ from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
 from .prompter import Prompter, PromptToolkitPrompter
+from .questions import CLIQuestioner, set_questioner
 from .render import Renderer, RichRenderer
 from .session import Session
 from .tools import ALL_TOOLS
@@ -92,6 +93,9 @@ def main(
     db.acquire_process_lock()
     embedding.sync_embeddings()
     db.backup_if_stale()
+    # The registered ask_user tool resolves through this handler while this
+    # REPL owns stdin. It is cleared on every exit path below.
+    set_questioner(CLIQuestioner())
 
     # Defaults are built here (not as argument defaults) so tests can inject a
     # scripted prompter / fake-brain session and never touch the model or a TTY.
@@ -264,6 +268,7 @@ def main(
         # teardown.
         worker.stop(scheduler)
         session.close()
+        set_questioner(None)
 
 
 def _autosave_turn(ctx: CommandContext) -> None:

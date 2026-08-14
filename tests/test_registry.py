@@ -154,6 +154,6 @@ def test_the_real_tool_set_guards_exactly_the_side_effecting_tools():
     from vegapunk.tools import ALL_TOOLS
 
     names = {t.name for t in ALL_TOOLS}
-    assert {"write_file", "edit_file", "run_shell"} <= names
+    assert {"write_file", "edit_file", "run_shell", "ask_user"} <= names
     assert {"get_battery", "get_time", "get_system_stats", "yell"}.isdisjoint(names)
     assert GUARDED >= {"write_file", "edit_file", "run_shell"}

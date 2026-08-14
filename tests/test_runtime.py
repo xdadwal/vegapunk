@@ -132,7 +132,7 @@ def test_session_and_scheduler_apply_the_shared_runtime_options(monkeypatch, tmp
             seen.setdefault("agents", []).append(kwargs)
 
     monkeypatch.setattr(session, "config", cfg)
-    monkeypatch.setattr(session, "Agent", CapturedAgent)
+    monkeypatch.setattr(session, "InteractiveAgent", CapturedAgent)
     monkeypatch.setattr(scheduler_worker, "config", cfg)
     monkeypatch.setattr(scheduler_worker, "Agent", CapturedAgent)
 

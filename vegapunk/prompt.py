@@ -29,7 +29,8 @@ _MODE_STANZAS: dict[PromptMode, str] = {
     "unattended": (
         "Approval mode: unattended. No user is present, so tools that require "
         "approval are unavailable and will be blocked. Do not repeatedly request "
-        "them; use available alternatives or report the limitation."
+        "them; use available alternatives or report the limitation. The ask_user "
+        "tool is also unavailable; never call it in an unattended run."
     ),
 }
 
