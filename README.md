@@ -173,9 +173,6 @@ generated schemas and can call them as part of a multi-step turn.
 
 | Tool | Purpose | Approval |
 | --- | --- | :---: |
-| `get_time` | Return the current local date and time. | — |
-| `get_battery` | Report battery charge and charging state. | — |
-| `get_system_stats` | Report CPU, memory, disk, temperature, and uptime data. | — |
 | `read_file` | Read a text file inside the workspace. | — |
 | `list_dir` | List a directory inside the workspace. | — |
 | `grep` | Search workspace content or filenames. | — |
@@ -188,7 +185,6 @@ generated schemas and can call them as part of a multi-step turn.
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
-| `yell` | Echo a response in uppercase. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers

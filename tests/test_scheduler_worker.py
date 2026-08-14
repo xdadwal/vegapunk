@@ -130,6 +130,28 @@ def test_build_backend_rejects_a_malformed_spec(monkeypatch):
         scheduler_worker.build_backend()
 
 
+def test_build_agent_uses_the_complete_shared_prompt(monkeypatch):
+    captured: dict = {}
+
+    class CapturedAgent:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("vegapunk.scheduler_worker.Agent", CapturedAgent)
+    seen: dict = {}
+
+    def composed_prompt(cfg, *, mode):
+        seen["mode"] = mode
+        return "BASE\nMEMORY\nSKILLS\nUNATTENDED"
+
+    monkeypatch.setattr("vegapunk.scheduler_worker.prompt.system_prompt", composed_prompt)
+
+    scheduler_worker.build_agent(_local_backend())
+
+    assert captured["system"] == "BASE\nMEMORY\nSKILLS\nUNATTENDED"
+    assert seen["mode"] == "unattended"
+
+
 def test_watch_parent_stops_when_reparented(monkeypatch):
     # cli terminates the worker on every ordinary exit; this is the kill -9
     # backstop. Being reparented (getppid changes) is the signal.

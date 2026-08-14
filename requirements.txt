@@ -13,7 +13,6 @@ openai>=1.0
 # Claude Code CLI and speaks to it over a subprocess (auth via `claude /login`
 # or CLAUDE_CODE_OAUTH_TOKEN). The raw `anthropic` SDK is API-key-only.
 claude-agent-sdk>=0.2
-psutil>=5.9
 prompt_toolkit>=3.0.52
 # Embedded Turso database (import name: turso). Beta — the startup backup in
 # vegapunk/db.py exists because of this. The 0.7.1 floor is load-bearing, not

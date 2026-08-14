@@ -405,20 +405,56 @@ def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsy
     from vegapunk.approval import CLIApprover as RealCLIApprover
 
     policies = []
+    prompt_modes = []
 
     def capture_policy(policy):
         policies.append(policy)
         return RealCLIApprover(policy)
 
+    def compose_prompt(cfg, *, mode):
+        prompt_modes.append(mode)
+        return f"SYS {mode}"
+
     monkeypatch.setattr(
         "vegapunk.cli.create_backend", lambda provider: backend_for(model_label="stub-model")
     )
     monkeypatch.setattr("vegapunk.cli.CLIApprover", capture_policy)
+    monkeypatch.setattr("vegapunk.cli.prompt.system_prompt", compose_prompt)
 
     main(prompter=ScriptedPrompter(["/exit"]), auto=True)
 
     assert policies[0].auto is True
+    assert prompt_modes == ["auto"]
     assert "Auto mode active" in capsys.readouterr().out
+
+
+def test_shift_tab_refreshes_the_model_facing_approval_mode(monkeypatch, capsys):
+    prompt_modes = []
+
+    def compose_prompt(cfg, *, mode):
+        prompt_modes.append(mode)
+        return f"SYS {mode}"
+
+    class TogglingPrompter:
+        def __init__(self, *, status, toggle_approval):
+            self.toggle_approval = toggle_approval
+            self.toggled = False
+
+        def prompt(self):
+            if not self.toggled:
+                self.toggled = True
+                assert self.toggle_approval() == "auto"
+            return "/exit"
+
+    monkeypatch.setattr(
+        "vegapunk.cli.create_backend", lambda provider: backend_for(model_label="stub-model")
+    )
+    monkeypatch.setattr("vegapunk.cli.prompt.system_prompt", compose_prompt)
+    monkeypatch.setattr("vegapunk.cli.PromptToolkitPrompter", TogglingPrompter)
+
+    main()
+
+    assert prompt_modes == ["manual", "auto"]
 
 
 def test_startup_arguments_default_to_manual_and_accept_auto():

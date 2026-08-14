@@ -8,7 +8,7 @@ create a module with an ``@tool`` function and import it here.
 from .registry import GUARDED, REGISTRY, tool
 
 # Import tool modules for their side effect: each @tool registers itself.
-from . import battery, clock, filesystem, grep, shell, yell, fetch, search, system_stats, memory, skills, scheduler  # noqa: E402,F401 — imported for registration
+from . import filesystem, grep, shell, fetch, search, memory, skills, scheduler  # noqa: E402,F401 — imported for registration
 
 ALL_TOOLS = REGISTRY
 

@@ -225,6 +225,7 @@ def test_options_pin_the_isolation_and_single_turn_contract():
     assert options.strict_mcp_config is True
     assert options.system_prompt.startswith("SYS")
     assert "```vega_tool" in options.system_prompt  # the tool protocol rode along
+    assert "don't guess about results a tool can verify" in options.system_prompt
     assert "[user]\nhello" in recorded["prompt"]
 
 

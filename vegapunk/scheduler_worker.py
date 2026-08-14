@@ -29,7 +29,7 @@ import threading
 
 from logpose import Agent
 
-from . import db
+from . import db, prompt
 from .backend import Backend, create_backend, describe, with_effort, with_model
 from .config import config
 from .gate import make_gate
@@ -97,7 +97,7 @@ def build_agent(backend: Backend) -> Agent:
     """
     return Agent(
         backend.provider,
-        system=config.system_prompt,
+        system=prompt.system_prompt(config, mode="unattended"),
         tools=ALL_TOOLS,
         max_iterations=config.max_steps,
         extra=backend.extra,

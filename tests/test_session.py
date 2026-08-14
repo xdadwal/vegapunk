@@ -105,6 +105,22 @@ def test_the_system_prompt_is_sent_every_turn_but_is_not_history():
     assert all(m["role"] != "system" for m in session.messages)
 
 
+def test_system_prompt_can_change_without_resetting_the_conversation():
+    session = _session([says("first"), says("second")])
+    _reply(session.send("one"))
+
+    session.set_system_prompt("UPDATED")
+    _reply(session.send("two"))
+
+    assert [request.system for request in session.backend.provider.requests] == ["SYS", "UPDATED"]
+    assert [message["role"] for message in session.messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+
 def test_a_tool_turn_records_the_call_and_its_result():
     session = _session([wants(call("ping")), says("pong received")], tools=[ping])
 
