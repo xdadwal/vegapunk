@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input import Input
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import Output
 
 from . import menu
@@ -58,7 +59,7 @@ class CLIQuestioner(Questioner):
             if choice == CUSTOM:
                 answer = self._custom_answer()
                 return _answered(answer, custom=True) if answer else CANCELLED
-            return _answered(choice)
+            return _answered(choice, note=self._option_note() or None)
 
     def _choose(
         self,
@@ -73,7 +74,10 @@ class CLIQuestioner(Questioner):
         title: menu.FormattedText = [
             ("bold", "Vegapunk needs your input\n"),
             ("", f"{question}\n"),
-            ("class:dim", "Choose an option or type your own answer.\n"),
+            (
+                "class:dim",
+                "Choose an option or type your own answer; selected options can include a note.\n",
+            ),
         ]
         choices = [
             menu.Option(value=option, label=option, active=option == preferred_option)
@@ -93,12 +97,34 @@ class CLIQuestioner(Questioner):
         except EOFError:
             return ""
 
+    def _option_note(self, *, input: Input | None = None, output: Output | None = None) -> str:
+        """Read an optional note that adds context to the selected option."""
+        bindings = KeyBindings()
+
+        @bindings.add("c-c")
+        @bindings.add("escape", eager=True)
+        def _(event) -> None:
+            # The option is already selected. Cancelling this optional follow-up
+            # means "continue without a note", not "discard the whole answer".
+            event.app.exit(result="")
+
+        try:
+            return PromptSession(
+                message="add a note (optional) > ",
+                input=input,
+                output=output,
+                key_bindings=bindings,
+            ).prompt().strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+
 
 class ScriptedQuestioner(Questioner):
     """Deterministic questioner for tests and non-terminal embeddings."""
 
-    def __init__(self, answers: list[str | None]) -> None:
+    def __init__(self, answers: list[str | None], notes: list[str | None] | None = None) -> None:
         self._answers = list(answers)
+        self._notes = list(notes or [])
         self.calls: list[tuple[str, list[str], str]] = []
 
     def ask(self, question: str, options: list[str], preferred_option: str) -> str:
@@ -106,7 +132,10 @@ class ScriptedQuestioner(Questioner):
         if not self._answers:
             return UNAVAILABLE
         answer = self._answers.pop(0)
-        return CANCELLED if answer is None else _answered(answer, custom=answer not in options)
+        if answer is None:
+            return CANCELLED
+        note = self._notes.pop(0) if self._notes else None
+        return _answered(answer, custom=answer not in options, note=note)
 
 
 _questioner: Questioner | None = None
@@ -159,11 +188,12 @@ def ask_from_tool(question: str, options: list[str], preferred_option: str) -> s
     return ask(question, options, preferred_option)
 
 
-def _answered(answer: str, *, custom: bool = False) -> str:
+def _answered(answer: str, *, custom: bool = False, note: str | None = None) -> str:
     """Return an unambiguous result the model can use in the next loop step."""
     kind = "custom response" if custom else "option"
+    note_line = f"\nUser note: {json.dumps(note, ensure_ascii=False)}" if note else ""
     return (
-        f"User selected {kind}: {json.dumps(answer, ensure_ascii=False)}\n\n"
+        f"User selected {kind}: {json.dumps(answer, ensure_ascii=False)}{note_line}\n\n"
         "Interactive questioning protocol: if another preference or decision is needed, "
         "call ask_user again. Do not ask a question or present options in assistant text; "
         "when you have enough information, begin the completed response with FINAL:."

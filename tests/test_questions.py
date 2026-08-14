@@ -41,10 +41,11 @@ def _clear_questioner():
 class _PipeQuestioner(CLIQuestioner):
     """Drive both halves of the real terminal UI through prompt_toolkit pipes."""
 
-    def __init__(self, menu_keys: str, custom_text: str = "") -> None:
+    def __init__(self, menu_keys: str, custom_text: str = "", note_text: str = "\r") -> None:
         super().__init__()
         self._menu_keys = menu_keys
         self._custom_text = custom_text
+        self._note_text = note_text
 
     def _choose(self, question, options, preferred_option, *, input=None, output=None):
         with create_pipe_input() as pipe:
@@ -58,6 +59,11 @@ class _PipeQuestioner(CLIQuestioner):
             pipe.send_text(self._custom_text)
             return super()._custom_answer(input=pipe, output=DummyOutput())
 
+    def _option_note(self, *, input=None, output=None):
+        with create_pipe_input() as pipe:
+            pipe.send_text(self._note_text)
+            return super()._option_note(input=pipe, output=DummyOutput())
+
 
 def test_recommended_option_is_preselected_and_returned(monkeypatch):
     monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
@@ -66,6 +72,27 @@ def test_recommended_option_is_preselected_and_returned(monkeypatch):
     result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
 
     assert 'User selected option: "Wait"' in result
+
+
+def test_selected_option_can_include_an_optional_note(monkeypatch):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner(ENTER, note_text="Only movies under two hours\r")
+
+    result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
+
+    assert 'User selected option: "Wait"' in result
+    assert 'User note: "Only movies under two hours"' in result
+
+
+@pytest.mark.parametrize("note_input", ["\x03", ESC])
+def test_cancelling_an_optional_note_keeps_the_selected_option(monkeypatch, note_input):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner(ENTER, note_text=note_input)
+
+    result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
+
+    assert 'User selected option: "Wait"' in result
+    assert "User note:" not in result
 
 
 def test_other_opens_a_free_text_prompt(monkeypatch):
@@ -106,12 +133,13 @@ def test_cli_installs_and_clears_the_question_handler(monkeypatch):
 
 
 def test_tool_returns_the_scripted_answer_and_records_the_question():
-    questioner = ScriptedQuestioner(["Wait"])
+    questioner = ScriptedQuestioner(["Wait"], notes=["Prefer the safer rollout"])
     questions.set_questioner(questioner)
 
     result = ask_user("Choose a release path", ["Ship now", "Wait"], "Ship now")
 
     assert 'User selected option: "Wait"' in result
+    assert 'User note: "Prefer the safer rollout"' in result
     assert "call ask_user again" in result
     assert questioner.calls == [
         ("Choose a release path", ["Ship now", "Wait"], "Ship now")

@@ -23,9 +23,11 @@ def ask_user(question: str, options: list[str], preferred_option: str) -> str:
     exact options and identifies the option you recommend. The picker always
     includes an "Other" choice for a custom typed response. Make this the only
     tool call in the current step so the user can answer before you take a
-    dependent action. Once you have enough information, begin the completed
-    response with ``FINAL:``; Vegapunk removes that private marker before the
-    user sees the recommendation.
+    dependent action. After choosing a listed option, the user can optionally
+    add a note with constraints or context; use that note alongside the option.
+    Once you have enough information, begin the completed response with
+    ``FINAL:``; Vegapunk removes that private marker before the user sees the
+    recommendation.
 
     Args:
         question: The concise decision the user needs to make.
