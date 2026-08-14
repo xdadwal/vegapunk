@@ -18,6 +18,7 @@ list for a Claude subscription is already ten entries.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from prompt_toolkit.application import Application
@@ -76,6 +77,10 @@ def build(
     *,
     input: Input | None = None,
     output: Output | None = None,
+    selected_value: str | None = None,
+    action_key: str | None = None,
+    action_label: str = "",
+    on_action: Callable[[str], object] | None = None,
 ) -> Application:
     """The picker as an Application; ``.run()`` yields a value or ``None``.
 
@@ -87,10 +92,15 @@ def build(
         options: The rows, in display order. Must not be empty.
         input: Test seam — a prompt_toolkit input pipe.
         output: Test seam — usually a DummyOutput.
+        selected_value: Value to place under the cursor when the menu opens.
+            Falls back to the active row, then the first row.
+        action_key: Optional key binding for an action on the highlighted row.
+        action_label: Short label shown for ``action_key`` in the footer.
+        on_action: Maps the highlighted value to the result of ``action_key``.
 
     Returns:
-        An Application returning the chosen ``Option.value``, or ``None`` if the
-        user backed out.
+        An Application returning the chosen ``Option.value``, the optional
+        action result, or ``None`` if the user backed out.
 
     Raises:
         ValueError: If ``options`` is empty — a menu with nothing to pick is a
@@ -100,9 +110,24 @@ def build(
         raise ValueError("a menu needs at least one option")
 
     header: FormattedText = [("bold", f"{title}\n")] if isinstance(title, str) else list(title)
-    # Start on the active row, so opening a menu lands on what's already set
-    # rather than making you find it.
-    state = {"idx": next((i for i, o in enumerate(options) if o.active), 0)}
+    if (action_key is None) != (on_action is None):
+        raise ValueError("action_key and on_action must be supplied together")
+    if action_key is not None and not action_label:
+        raise ValueError("action_label is required when action_key is supplied")
+
+    # Reopening a picker after an action keeps the cursor on the option the
+    # action changed. Otherwise, start on the active row so settings menus land
+    # on their current value rather than making the user find it.
+    state = {
+        "idx": next(
+            (
+                i
+                for i, option in enumerate(options)
+                if option.value == selected_value
+            ),
+            next((i for i, option in enumerate(options) if option.active), 0),
+        )
+    }
 
     def render() -> FormattedText:
         lines: FormattedText = list(header)
@@ -122,7 +147,10 @@ def build(
             lines.append((style, "\n"))
         if end < len(options):
             lines.append(("class:dim", f"  ⋯ {len(options) - end} more below\n"))
-        lines.append(("class:dim", "  ↑↓ move · enter select · esc cancel"))
+        hint = "  ↑↓ move · enter select"
+        if action_key is not None:
+            hint += f" · {action_label}"
+        lines.append(("class:dim", hint + " · esc cancel"))
         return lines
 
     kb = KeyBindings()
@@ -138,6 +166,13 @@ def build(
     @kb.add("enter")
     def _(event) -> None:
         event.app.exit(result=options[state["idx"]].value)
+
+    if action_key is not None:
+
+        @kb.add(action_key)
+        def _(event) -> None:
+            assert on_action is not None  # validated above; narrows the closure for type checkers
+            event.app.exit(result=on_action(options[state["idx"]].value))
 
     # Both back out with no selection. Ctrl-C is the habit; Esc is what the hint
     # line advertises. Neither raises — a cancelled menu is an ordinary outcome,
@@ -167,6 +202,24 @@ def choose(
     *,
     input: Input | None = None,
     output: Output | None = None,
-) -> str | None:
-    """Run the picker and return the chosen value, or ``None`` if cancelled."""
-    return build(title, options, input=input, output=output).run()
+    selected_value: str | None = None,
+    action_key: str | None = None,
+    action_label: str = "",
+    on_action: Callable[[str], object] | None = None,
+) -> object | None:
+    """Run the picker and return a selection, action result, or ``None``.
+
+    Normal menus return an option value. A caller that supplies ``on_action``
+    also receives that callback's result when the matching ``action_key`` is
+    pressed on the highlighted option.
+    """
+    return build(
+        title,
+        options,
+        input=input,
+        output=output,
+        selected_value=selected_value,
+        action_key=action_key,
+        action_label=action_label,
+        on_action=on_action,
+    ).run()

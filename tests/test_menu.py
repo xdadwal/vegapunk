@@ -79,6 +79,32 @@ def test_details_do_not_change_what_is_returned():
     assert _run(options, ENTER) == "a"
 
 
+def test_action_key_returns_an_action_for_the_highlighted_row():
+    with create_pipe_input() as inp:
+        inp.send_text(DOWN + "\x0e")  # Ctrl-N
+        result = build(
+            "pick one",
+            _three(),
+            input=inp,
+            output=DummyOutput(),
+            action_key="c-n",
+            action_label="ctrl+n add note",
+            on_action=lambda value: ("note", value),
+        ).run()
+
+    assert result == ("note", "b")
+
+
+def test_selected_value_reopens_the_cursor_on_the_updated_row():
+    with create_pipe_input() as inp:
+        inp.send_text(ENTER)
+        result = build(
+            "pick one", _three(), input=inp, output=DummyOutput(), selected_value="c"
+        ).run()
+
+    assert result == "c"
+
+
 # ---------------------------------------------------------------------------
 # the scrolling viewport
 # ---------------------------------------------------------------------------

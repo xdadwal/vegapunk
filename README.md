@@ -35,7 +35,7 @@ project matures.
   manual mode, and all filesystem and shell access stays inside the configured workspace.
 - **Decisions without breaking flow.** When work needs a user choice, Vegapunk presents a compact
   option picker with its recommended choice preselected, an always-available custom response, and
-  an optional note for any selected option.
+  an optional note for any option: press `Ctrl+N` to add or edit it, then `Enter` to submit.
 - **Persistent personal context.** Conversations, input history, and durable memories live in one
   local database. Sessions are auto-named and auto-saved after every successful turn.
 - **Provider flexibility.** Switch backends and models without leaving the conversation. Supported
@@ -189,7 +189,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
-| `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and option notes. | — |
+| `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and Ctrl+N option notes. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers

@@ -41,17 +41,23 @@ def _clear_questioner():
 class _PipeQuestioner(CLIQuestioner):
     """Drive both halves of the real terminal UI through prompt_toolkit pipes."""
 
-    def __init__(self, menu_keys: str, custom_text: str = "", note_text: str = "\r") -> None:
+    def __init__(
+        self,
+        menu_keys: str | list[str],
+        custom_text: str = "",
+        note_text: str | list[str] = "\r",
+    ) -> None:
         super().__init__()
-        self._menu_keys = menu_keys
+        self._menu_keys = [menu_keys] if isinstance(menu_keys, str) else list(menu_keys)
         self._custom_text = custom_text
-        self._note_text = note_text
+        self._note_texts = [note_text] if isinstance(note_text, str) else list(note_text)
+        self.note_calls = 0
 
-    def _choose(self, question, options, preferred_option, *, input=None, output=None):
+    def _choose(self, question, options, preferred_option, **kwargs):
         with create_pipe_input() as pipe:
-            pipe.send_text(self._menu_keys)
+            pipe.send_text(self._menu_keys.pop(0))
             return super()._choose(
-                question, options, preferred_option, input=pipe, output=DummyOutput()
+                question, options, preferred_option, input=pipe, output=DummyOutput(), **kwargs
             )
 
     def _custom_answer(self, *, input=None, output=None):
@@ -59,10 +65,11 @@ class _PipeQuestioner(CLIQuestioner):
             pipe.send_text(self._custom_text)
             return super()._custom_answer(input=pipe, output=DummyOutput())
 
-    def _option_note(self, *, input=None, output=None):
+    def _option_note(self, existing="", *, input=None, output=None):
+        self.note_calls += 1
         with create_pipe_input() as pipe:
-            pipe.send_text(self._note_text)
-            return super()._option_note(input=pipe, output=DummyOutput())
+            pipe.send_text(self._note_texts.pop(0))
+            return super()._option_note(existing, input=pipe, output=DummyOutput())
 
 
 def test_recommended_option_is_preselected_and_returned(monkeypatch):
@@ -72,11 +79,15 @@ def test_recommended_option_is_preselected_and_returned(monkeypatch):
     result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
 
     assert 'User selected option: "Wait"' in result
+    assert "User note:" not in result
+    assert questioner.note_calls == 0
 
 
 def test_selected_option_can_include_an_optional_note(monkeypatch):
     monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
-    questioner = _PipeQuestioner(ENTER, note_text="Only movies under two hours\r")
+    questioner = _PipeQuestioner(
+        ["\x0e", ENTER], note_text="Only movies under two hours\r"
+    )
 
     result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
 
@@ -85,14 +96,48 @@ def test_selected_option_can_include_an_optional_note(monkeypatch):
 
 
 @pytest.mark.parametrize("note_input", ["\x03", ESC])
-def test_cancelling_an_optional_note_keeps_the_selected_option(monkeypatch, note_input):
+def test_cancelling_a_note_keeps_the_picker_and_selected_option(monkeypatch, note_input):
     monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
-    questioner = _PipeQuestioner(ENTER, note_text=note_input)
+    questioner = _PipeQuestioner(["\x0e", ENTER], note_text=note_input)
 
     result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Wait")
 
     assert 'User selected option: "Wait"' in result
     assert "User note:" not in result
+
+
+def test_note_attaches_to_the_highlighted_option_before_it_is_submitted(monkeypatch):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner([DOWN + "\x0e", ENTER], note_text="No horror\r")
+
+    result = questioner.ask("Choose a genre", ["Drama", "Science fiction"], "Drama")
+
+    assert 'User selected option: "Science fiction"' in result
+    assert 'User note: "No horror"' in result
+
+
+def test_cancelling_a_second_note_edit_keeps_the_original_note(monkeypatch):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner(
+        ["\x0e", "\x0e", ENTER], note_text=["No horror\r", "\x03"]
+    )
+
+    result = questioner.ask("Choose a genre", ["Science fiction"], "Science fiction")
+
+    assert 'User selected option: "Science fiction"' in result
+    assert 'User note: "No horror"' in result
+
+
+def test_a_second_note_edit_extends_the_note_before_submission(monkeypatch):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner(
+        ["\x0e", "\x0e", ENTER], note_text=["No horror\r", " or gore\r"]
+    )
+
+    result = questioner.ask("Choose a genre", ["Science fiction"], "Science fiction")
+
+    assert 'User selected option: "Science fiction"' in result
+    assert 'User note: "No horror or gore"' in result
 
 
 def test_other_opens_a_free_text_prompt(monkeypatch):

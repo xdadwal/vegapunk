@@ -12,6 +12,7 @@ import json
 import sys
 import threading
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input import Input
@@ -29,6 +30,13 @@ UNAVAILABLE = (
     "User input is unavailable in this run. Do not retry ask_user; use available "
     "information or state what is still needed."
 )
+
+
+@dataclass(frozen=True)
+class _NoteRequest:
+    """A request to edit the note attached to the highlighted picker option."""
+
+    option: str
 
 
 class Questioner(ABC):
@@ -53,13 +61,35 @@ class CLIQuestioner(Questioner):
         if not sys.stdin.isatty():
             return UNAVAILABLE
         with self._lock:
-            choice = self._choose(question, options, preferred_option)
-            if choice is None:
-                return CANCELLED
-            if choice == CUSTOM:
-                answer = self._custom_answer()
-                return _answered(answer, custom=True) if answer else CANCELLED
-            return _answered(choice, note=self._option_note() or None)
+            notes: dict[str, str] = {}
+            selected_value: str | None = None
+            while True:
+                choice = self._choose(
+                    question,
+                    options,
+                    preferred_option,
+                    notes=notes,
+                    selected_value=selected_value,
+                )
+                if choice is None:
+                    return CANCELLED
+                if isinstance(choice, _NoteRequest):
+                    updated_note = self._option_note(notes.get(choice.option, ""))
+                    if updated_note is not None:
+                        if updated_note:
+                            notes[choice.option] = updated_note
+                        else:
+                            notes.pop(choice.option, None)
+                    selected_value = choice.option
+                    continue
+                if choice == CUSTOM:
+                    answer = self._custom_answer()
+                    return (
+                        _answered(answer, custom=True, note=notes.get(CUSTOM))
+                        if answer
+                        else CANCELLED
+                    )
+                return _answered(choice, note=notes.get(choice))
 
     def _choose(
         self,
@@ -69,22 +99,49 @@ class CLIQuestioner(Questioner):
         *,
         input: Input | None = None,
         output: Output | None = None,
-    ) -> str | None:
+        notes: dict[str, str] | None = None,
+        selected_value: str | None = None,
+    ) -> str | _NoteRequest | None:
         """Run the option picker; isolated so tests can drive real key input."""
         title: menu.FormattedText = [
             ("bold", "Vegapunk needs your input\n"),
             ("", f"{question}\n"),
             (
                 "class:dim",
-                "Choose an option or type your own answer; selected options can include a note.\n",
+                "Choose an option or type your own answer. Ctrl+N adds a note to an option.\n",
             ),
         ]
         choices = [
-            menu.Option(value=option, label=option, active=option == preferred_option)
+            menu.Option(
+                value=option,
+                label=option,
+                detail=f"Note: {notes[option]}" if notes and option in notes else "",
+                active=option == preferred_option,
+            )
             for option in options
         ]
-        choices.append(menu.Option(value=CUSTOM, label="Other — type your own answer"))
-        return menu.choose(title, choices, input=input, output=output)
+        choices.append(
+            menu.Option(
+                value=CUSTOM,
+                label="Other — type your own answer",
+                detail=f"Note: {notes[CUSTOM]}" if notes and CUSTOM in notes else "",
+            )
+        )
+        choice = menu.choose(
+            title,
+            choices,
+            input=input,
+            output=output,
+            selected_value=selected_value,
+            action_key="c-n",
+            action_label="ctrl+n add/edit note",
+            on_action=_NoteRequest,
+        )
+        if choice is None or isinstance(choice, _NoteRequest):
+            return choice
+        if not isinstance(choice, str):
+            raise TypeError("question picker returned an unexpected result")
+        return choice
 
     def _custom_answer(
         self, *, input: Input | None = None, output: Output | None = None
@@ -97,26 +154,35 @@ class CLIQuestioner(Questioner):
         except EOFError:
             return ""
 
-    def _option_note(self, *, input: Input | None = None, output: Output | None = None) -> str:
-        """Read an optional note that adds context to the selected option."""
+    def _option_note(
+        self,
+        existing: str = "",
+        *,
+        input: Input | None = None,
+        output: Output | None = None,
+    ) -> str | None:
+        """Read an optional note before the user submits its attached option."""
         bindings = KeyBindings()
+        cancelled = False
 
         @bindings.add("c-c")
         @bindings.add("escape", eager=True)
         def _(event) -> None:
-            # The option is already selected. Cancelling this optional follow-up
-            # means "continue without a note", not "discard the whole answer".
+            nonlocal cancelled
+            # Return to the picker without changing an existing note.
+            cancelled = True
             event.app.exit(result="")
 
         try:
-            return PromptSession(
-                message="add a note (optional) > ",
+            note = PromptSession(
+                message="note (Ctrl-C keeps it) > ",
                 input=input,
                 output=output,
                 key_bindings=bindings,
-            ).prompt().strip()
+            ).prompt(default=existing).strip()
+            return None if cancelled else note
         except (EOFError, KeyboardInterrupt):
-            return ""
+            return None
 
 
 class ScriptedQuestioner(Questioner):
