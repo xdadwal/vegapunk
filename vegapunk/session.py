@@ -194,6 +194,16 @@ class Session:
         """The live backend (for /effort, which asks what it supports)."""
         return self._backend
 
+    def set_system_prompt(self, system_prompt: str) -> None:
+        """Replace the instructions sent on subsequent turns.
+
+        Approval mode can change without restarting the conversation. Keep the
+        stored prompt and the live agent in sync so a later backend swap inherits
+        the same instructions.
+        """
+        self._system_prompt = system_prompt
+        self._agent.system = system_prompt
+
     def swap_backend(self, backend: Backend) -> None:
         """Switch the model mid-conversation.
 

@@ -60,6 +60,18 @@ def test_max_steps_defaults_to_a_multi_step_budget(monkeypatch):
         _restore(monkeypatch)
 
 
+def test_system_prompt_scopes_tools_to_tasks_that_need_them(monkeypatch):
+    try:
+        prompt = _reloaded_config(monkeypatch).system_prompt
+        assert "For multi-step tasks, use an agent loop" in prompt
+        assert "don't add unnecessary tool calls" in prompt
+        assert "Never claim success unless" in prompt
+        assert "concise and proportional to the task" in prompt
+        assert "a sentence or two" not in prompt
+    finally:
+        _restore(monkeypatch)
+
+
 def test_max_steps_env_override(monkeypatch):
     try:
         assert _reloaded_config(monkeypatch, VEGAPUNK_MAX_STEPS="3").max_steps == 3

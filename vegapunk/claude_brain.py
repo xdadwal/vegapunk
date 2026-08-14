@@ -113,8 +113,11 @@ def _render_transcript(messages: list[dict]) -> tuple[str, str]:
 _CONTINUATION_FRAMING = (
     "The user message you receive is a transcript of the conversation so far, "
     "as labeled turns like [user], [assistant], and [tool result for call ...]. "
-    "You are the assistant. Write the assistant's next turn only — no [assistant] "
-    "label, no transcript markup, just the reply itself."
+    "Use it as the running record of what has already happened. Think and act "
+    "like an agent: choose the next best step, use tools when they help, and "
+    "continue until the task is finished. You are the assistant. Write the "
+    "assistant's next turn only — no [assistant] label, no transcript markup, "
+    "just the reply itself."
 )
 
 
@@ -267,7 +270,9 @@ def _tool_instructions(tools: list[dict]) -> str:
     return (
         "## Requesting tools\n"
         "\n"
-        "You cannot run tools yourself. To request one, end your reply with "
+        "Use a tool when it provides needed evidence or performs a workspace "
+        "action; don't guess about results a tool can verify. You cannot run "
+        "tools yourself. To request one, end your reply with "
         f"exactly one fenced code block tagged {_FENCE_TAG}, containing a single "
         "JSON object:\n"
         "\n"

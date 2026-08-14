@@ -15,7 +15,7 @@ from collections.abc import Generator
 
 from logpose import TextDelta
 
-from . import db, embedding, memory, session_store, skills, style, transcript, worker
+from . import db, embedding, prompt, session_store, style, transcript, worker
 from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend
 from .commands import CommandContext, dispatch
@@ -96,7 +96,8 @@ def main(
     # Defaults are built here (not as argument defaults) so tests can inject a
     # scripted prompter / fake-brain session and never touch the model or a TTY.
     approval_policy = ApprovalPolicy(auto=auto)
-    if session is None:
+    owns_session = session is None
+    if owns_session:
         # One approver for the whole REPL, so "always allow" lasts the session.
         # Fold remembered facts and the skill ads into the system prompt so the
         # model starts the session knowing both. Assembled once — a skill added
@@ -105,16 +106,27 @@ def main(
         session = Session(
             create_backend(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
             ALL_TOOLS,
-            system_prompt=config.system_prompt + memory.as_system_block() + skills.as_system_block(),
+            system_prompt=prompt.system_prompt(config, mode=approval_policy.mode),
             approver=CLIApprover(approval_policy),
         )
+    assert session is not None  # narrowed after the optional construction above
+
     # ctx exists before the prompter so the toolbar callable can close over
     # it — /save and /new then show up on the very next prompt render.
     ctx = CommandContext(session=session, approval_policy=approval_policy)
+
+    def toggle_approval() -> str:
+        mode = approval_policy.toggle()
+        if owns_session:
+            # The tool gate already reads the mutable policy live. Keep the
+            # model-facing description equally current after Shift-Tab.
+            session.set_system_prompt(prompt.system_prompt(config, mode=mode))
+        return mode
+
     if prompter is None:
         prompter = PromptToolkitPrompter(
             status=lambda: _status_line(ctx),
-            toggle_approval=approval_policy.toggle,
+            toggle_approval=toggle_approval,
         )
     if _is_rich_session(session):
         print(
