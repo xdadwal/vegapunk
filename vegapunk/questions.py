@@ -16,7 +16,6 @@ from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input import Input
-from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import Output
 
 from . import menu
@@ -33,10 +32,11 @@ UNAVAILABLE = (
 
 
 @dataclass(frozen=True)
-class _NoteRequest:
-    """A request to edit the note attached to the highlighted picker option."""
+class _NotedOption:
+    """A picker option submitted with text from its inline note field."""
 
     option: str
+    note: str
 
 
 class Questioner(ABC):
@@ -61,35 +61,17 @@ class CLIQuestioner(Questioner):
         if not sys.stdin.isatty():
             return UNAVAILABLE
         with self._lock:
-            notes: dict[str, str] = {}
-            selected_value: str | None = None
-            while True:
-                choice = self._choose(
-                    question,
-                    options,
-                    preferred_option,
-                    notes=notes,
-                    selected_value=selected_value,
-                )
-                if choice is None:
-                    return CANCELLED
-                if isinstance(choice, _NoteRequest):
-                    updated_note = self._option_note(notes.get(choice.option, ""))
-                    if updated_note is not None:
-                        if updated_note:
-                            notes[choice.option] = updated_note
-                        else:
-                            notes.pop(choice.option, None)
-                    selected_value = choice.option
-                    continue
-                if choice == CUSTOM:
-                    answer = self._custom_answer()
-                    return (
-                        _answered(answer, custom=True, note=notes.get(CUSTOM))
-                        if answer
-                        else CANCELLED
-                    )
-                return _answered(choice, note=notes.get(choice))
+            choice = self._choose(question, options, preferred_option)
+            if choice is None:
+                return CANCELLED
+            note: str | None = None
+            if isinstance(choice, _NotedOption):
+                note = choice.note or None
+                choice = choice.option
+            if choice == CUSTOM:
+                answer = self._custom_answer()
+                return _answered(answer, custom=True, note=note) if answer else CANCELLED
+            return _answered(choice, note=note)
 
     def _choose(
         self,
@@ -99,45 +81,38 @@ class CLIQuestioner(Questioner):
         *,
         input: Input | None = None,
         output: Output | None = None,
-        notes: dict[str, str] | None = None,
-        selected_value: str | None = None,
-    ) -> str | _NoteRequest | None:
+    ) -> str | _NotedOption | None:
         """Run the option picker; isolated so tests can drive real key input."""
         title: menu.FormattedText = [
             ("bold", "Vegapunk needs your input\n"),
             ("", f"{question}\n"),
             (
                 "class:dim",
-                "Choose an option or type your own answer. Ctrl+N adds a note to an option.\n",
+                "Choose an option or type your own answer. Ctrl+N opens an inline note field.\n",
             ),
         ]
         choices = [
             menu.Option(
                 value=option,
                 label=option,
-                detail=f"Note: {notes[option]}" if notes and option in notes else "",
                 active=option == preferred_option,
             )
             for option in options
         ]
-        choices.append(
-            menu.Option(
-                value=CUSTOM,
-                label="Other — type your own answer",
-                detail=f"Note: {notes[CUSTOM]}" if notes and CUSTOM in notes else "",
-            )
-        )
+        choices.append(menu.Option(value=CUSTOM, label="Other — type your own answer"))
         choice = menu.choose(
             title,
             choices,
             input=input,
             output=output,
-            selected_value=selected_value,
-            action_key="c-n",
-            action_label="ctrl+n add/edit note",
-            on_action=_NoteRequest,
+            inline_editor=menu.InlineEditor(
+                key="c-n",
+                label="ctrl+n add note",
+                prompt="note",
+                on_submit=lambda option, note: _NotedOption(option, note),
+            ),
         )
-        if choice is None or isinstance(choice, _NoteRequest):
+        if choice is None or isinstance(choice, _NotedOption):
             return choice
         if not isinstance(choice, str):
             raise TypeError("question picker returned an unexpected result")
@@ -153,37 +128,6 @@ class CLIQuestioner(Questioner):
             ).prompt().strip()
         except EOFError:
             return ""
-
-    def _option_note(
-        self,
-        existing: str = "",
-        *,
-        input: Input | None = None,
-        output: Output | None = None,
-    ) -> str | None:
-        """Read an optional note before the user submits its attached option."""
-        bindings = KeyBindings()
-        cancelled = False
-
-        @bindings.add("c-c")
-        @bindings.add("escape", eager=True)
-        def _(event) -> None:
-            nonlocal cancelled
-            # Return to the picker without changing an existing note.
-            cancelled = True
-            event.app.exit(result="")
-
-        try:
-            note = PromptSession(
-                message="note (Ctrl-C keeps it) > ",
-                input=input,
-                output=output,
-                key_bindings=bindings,
-            ).prompt(default=existing).strip()
-            return None if cancelled else note
-        except (EOFError, KeyboardInterrupt):
-            return None
-
 
 class ScriptedQuestioner(Questioner):
     """Deterministic questioner for tests and non-terminal embeddings."""
