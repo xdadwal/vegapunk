@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.input import Input
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import Output
 
 from . import menu
@@ -61,17 +62,29 @@ class CLIQuestioner(Questioner):
         if not sys.stdin.isatty():
             return UNAVAILABLE
         with self._lock:
-            choice = self._choose(question, options, preferred_option)
-            if choice is None:
-                return CANCELLED
-            note: str | None = None
-            if isinstance(choice, _NotedOption):
-                note = choice.note or None
-                choice = choice.option
-            if choice == CUSTOM:
-                answer = self._custom_answer()
-                return _answered(answer, custom=True, note=note) if answer else CANCELLED
-            return _answered(choice, note=note)
+            selected_value: str | None = None
+            pending_custom_note: str | None = None
+            while True:
+                choice = self._choose(
+                    question, options, preferred_option, selected_value=selected_value
+                )
+                if choice is None:
+                    return CANCELLED
+                note: str | None = None
+                noted = isinstance(choice, _NotedOption)
+                if noted:
+                    note = choice.note or None
+                    choice = choice.option
+                if choice == CUSTOM:
+                    if not noted:
+                        note = pending_custom_note
+                    answer = self._custom_answer()
+                    if answer is None:
+                        pending_custom_note = note
+                        selected_value = CUSTOM
+                        continue
+                    return _answered(answer, custom=True, note=note) if answer else CANCELLED
+                return _answered(choice, note=note)
 
     def _choose(
         self,
@@ -81,6 +94,7 @@ class CLIQuestioner(Questioner):
         *,
         input: Input | None = None,
         output: Output | None = None,
+        selected_value: str | None = None,
     ) -> str | _NotedOption | None:
         """Run the option picker; isolated so tests can drive real key input."""
         title: menu.FormattedText = [
@@ -105,6 +119,7 @@ class CLIQuestioner(Questioner):
             choices,
             input=input,
             output=output,
+            selected_value=selected_value,
             inline_editor=menu.InlineEditor(
                 key="c-n",
                 label="ctrl+n add note",
@@ -120,12 +135,26 @@ class CLIQuestioner(Questioner):
 
     def _custom_answer(
         self, *, input: Input | None = None, output: Output | None = None
-    ) -> str:
-        """Read a custom response after the user chooses the final menu row."""
+    ) -> str | None:
+        """Read a custom response, or ``None`` when returning to the picker."""
+        bindings = KeyBindings()
+        back_to_picker = False
+
+        @bindings.add("escape", eager=True)
+        @bindings.add("c-c", eager=True)
+        def _(event) -> None:
+            nonlocal back_to_picker
+            back_to_picker = True
+            event.app.exit(result="")
+
         try:
-            return PromptSession(
-                message="your answer > ", input=input, output=output
+            answer = PromptSession(
+                message="your answer (esc returns) > ",
+                input=input,
+                output=output,
+                key_bindings=bindings,
             ).prompt().strip()
+            return None if back_to_picker else answer
         except EOFError:
             return ""
 

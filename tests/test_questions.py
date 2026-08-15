@@ -27,6 +27,7 @@ from vegapunk.tools.questions import ask_user
 from tests.fake_provider import FakeProvider, agent_for, call, says, session_for, wants
 
 DOWN = "\x1b[B"
+UP = "\x1b[A"
 ENTER = "\r"
 ESC = "\x1b\x1b"
 
@@ -41,21 +42,23 @@ def _clear_questioner():
 class _PipeQuestioner(CLIQuestioner):
     """Drive both halves of the real terminal UI through prompt_toolkit pipes."""
 
-    def __init__(self, menu_keys: str, custom_text: str = "") -> None:
+    def __init__(
+        self, menu_keys: str | list[str], custom_text: str | list[str] = ""
+    ) -> None:
         super().__init__()
-        self._menu_keys = menu_keys
-        self._custom_text = custom_text
+        self._menu_keys = [menu_keys] if isinstance(menu_keys, str) else list(menu_keys)
+        self._custom_texts = [custom_text] if isinstance(custom_text, str) else list(custom_text)
 
     def _choose(self, question, options, preferred_option, **kwargs):
         with create_pipe_input() as pipe:
-            pipe.send_text(self._menu_keys)
+            pipe.send_text(self._menu_keys.pop(0))
             return super()._choose(
                 question, options, preferred_option, input=pipe, output=DummyOutput(), **kwargs
             )
 
     def _custom_answer(self, *, input=None, output=None):
         with create_pipe_input() as pipe:
-            pipe.send_text(self._custom_text)
+            pipe.send_text(self._custom_texts.pop(0))
             return super()._custom_answer(input=pipe, output=DummyOutput())
 
 def test_recommended_option_is_preselected_and_returned(monkeypatch):
@@ -118,10 +121,33 @@ def test_other_opens_a_free_text_prompt(monkeypatch):
     assert 'User selected custom response: "Use a canary"' in result
 
 
+@pytest.mark.parametrize("back_key", ["\x03", ESC])
+def test_cancelling_other_returns_to_the_picker(monkeypatch, back_key):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner([DOWN + DOWN + ENTER, UP + ENTER], custom_text=back_key)
+
+    result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Ship now")
+
+    assert 'User selected option: "Wait"' in result
+
+
 def test_other_can_include_an_inline_note(monkeypatch):
     monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
     questioner = _PipeQuestioner(
         DOWN + DOWN + "\x0eUse a canary\r", custom_text="Use a canary\r"
+    )
+
+    result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Ship now")
+
+    assert 'User selected custom response: "Use a canary"' in result
+    assert 'User note: "Use a canary"' in result
+
+
+def test_other_keeps_its_note_when_returning_from_custom_input(monkeypatch):
+    monkeypatch.setattr("vegapunk.questions.sys.stdin.isatty", lambda: True)
+    questioner = _PipeQuestioner(
+        [DOWN + DOWN + "\x0eUse a canary\r", ENTER],
+        custom_text=["\x03", "Use a canary\r"],
     )
 
     result = questioner.ask("Choose a release path", ["Ship now", "Wait"], "Ship now")

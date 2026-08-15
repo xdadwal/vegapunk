@@ -25,7 +25,8 @@ def ask_user(question: str, options: list[str], preferred_option: str) -> str:
     tool call in the current step so the user can answer before you take a
     dependent action. The user can press Ctrl+N to open an inline note field on
     the highlighted option, then press Enter to submit that option and its note.
-    Use the note alongside the option.
+    Use the note alongside the option. Esc or Ctrl+C from the custom-answer
+    field returns the user to the picker without cancelling the question.
     Once you have enough information, begin the completed response with
     ``FINAL:``; Vegapunk removes that private marker before the user sees the
     recommendation.

@@ -35,7 +35,8 @@ project matures.
   manual mode, and all filesystem and shell access stays inside the configured workspace.
 - **Decisions without breaking flow.** When work needs a user choice, Vegapunk presents a compact
   option picker with its recommended choice preselected, an always-available custom response, and
-  an optional inline note for any option: press `Ctrl+N`, type it, then `Enter` to submit.
+  an optional inline note for any option: press `Ctrl+N`, type it, then `Enter` to submit; `Esc`
+  returns from custom input to the picker.
 - **Persistent personal context.** Conversations, input history, and durable memories live in one
   local database. Sessions are auto-named and auto-saved after every successful turn.
 - **Provider flexibility.** Switch backends and models without leaving the conversation. Supported
