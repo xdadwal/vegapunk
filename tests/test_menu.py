@@ -16,7 +16,7 @@ import pytest
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from vegapunk.menu import VISIBLE, Option, _viewport, build
+from vegapunk.menu import VISIBLE, InlineEditor, Option, _viewport, build
 
 DOWN = "\x1b[B"
 UP = "\x1b[A"
@@ -77,6 +77,35 @@ def test_details_do_not_change_what_is_returned():
     options = [Option(value="a", label="A", detail="some context")]
 
     assert _run(options, ENTER) == "a"
+
+
+def test_inline_editor_submits_text_for_the_highlighted_row():
+    with create_pipe_input() as inp:
+        inp.send_text(DOWN + "\x0econtext\r")  # Ctrl-N, type, Enter
+        result = build(
+            "pick one",
+            _three(),
+            input=inp,
+            output=DummyOutput(),
+            inline_editor=InlineEditor(
+                key="c-n",
+                label="ctrl+n add note",
+                prompt="note",
+                on_submit=lambda value, text: ("note", value, text),
+            ),
+        ).run()
+
+    assert result == ("note", "b", "context")
+
+
+def test_selected_value_reopens_the_cursor_on_the_updated_row():
+    with create_pipe_input() as inp:
+        inp.send_text(ENTER)
+        result = build(
+            "pick one", _three(), input=inp, output=DummyOutput(), selected_value="c"
+        ).run()
+
+    assert result == "c"
 
 
 # ---------------------------------------------------------------------------

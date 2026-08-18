@@ -33,6 +33,10 @@ project matures.
 - **Useful tools with explicit boundaries.** Vegapunk can read and search a workspace, fetch web
   content, edit files, and run commands. Side-effecting tools require interactive approval in
   manual mode, and all filesystem and shell access stays inside the configured workspace.
+- **Decisions without breaking flow.** When work needs a user choice, Vegapunk presents a compact
+  option picker with its recommended choice preselected, an always-available custom response, and
+  an optional inline note for any option: press `Ctrl+N`, type it, then `Enter` to submit; `Esc`
+  returns from custom input to the picker.
 - **Persistent personal context.** Conversations, input history, and durable memories live in one
   local database. Sessions are auto-named and auto-saved after every successful turn.
 - **Provider flexibility.** Switch backends and models without leaving the conversation. Supported
@@ -105,7 +109,8 @@ Vegapunk selects its renderer based on the output stream:
 - `VEGAPUNK_UI=rich` or `VEGAPUNK_UI=plain` overrides automatic selection.
 
 The prompt supports persistent history, inline suggestions, tab completion for commands and their
-arguments, and arrow-key pickers for `/model`, `/sessions`, `/skill`, and `/effort`. Press
+arguments, and arrow-key pickers for `/model`, `/sessions`, `/skill`, `/effort`, and agent questions.
+Press
 `Esc`-`Enter` or `Ctrl-J` to insert a newline; `Ctrl-D`, `/exit`, and `/quit` all end the session.
 
 Press `Shift`-`Tab` to toggle approval mode without submitting or changing the current draft.
@@ -185,6 +190,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
+| `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and inline Ctrl+N notes. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers

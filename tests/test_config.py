@@ -68,6 +68,8 @@ def test_system_prompt_scopes_tools_to_tasks_that_need_them(monkeypatch):
         assert "Never claim success unless" in prompt
         assert "concise and proportional to the task" in prompt
         assert "a sentence or two" not in prompt
+        assert "ask_user is mandatory for EVERY question" in prompt
+        assert "recommend a movie based on questions" in prompt
     finally:
         _restore(monkeypatch)
 

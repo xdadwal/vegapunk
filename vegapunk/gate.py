@@ -18,6 +18,7 @@ import asyncio
 from logpose import ToolGateResult, ToolUseBlock
 
 from .approval import Approver
+from . import questions
 from .tools import GUARDED
 
 # Results fed back when a guarded tool is not allowed to run. Both are worded to
@@ -26,6 +27,11 @@ DENIED = "Denied by the user. Do not retry this tool; consider another approach 
 NO_GATE = (
     "Blocked: this tool needs approval, but no approval gate is available here. "
     "Do not retry it; tell the user it can't run in this context."
+)
+QUESTION_TOOL = "ask_user"
+INVALID_QUESTION = (
+    "ask_user needs a non-empty question, 1 to 5 distinct non-empty options, "
+    "and a preferred_option that exactly matches one option."
 )
 
 
@@ -57,6 +63,23 @@ def make_gate(approver: Approver | None):
     """
 
     async def gate(call: ToolUseBlock) -> str | ToolGateResult | None:
+        if call.name == QUESTION_TOOL:
+            # A question is deliberately answered in the pre-execution gate:
+            # logpose applies tool deadlines only to handlers, and cancelling a
+            # timed-out sync PromptSession would leave it reading the terminal
+            # while the agent continued without its answer.
+            try:
+                result = await asyncio.to_thread(
+                    questions.ask_from_tool,
+                    call.input.get("question"),
+                    call.input.get("options"),
+                    call.input.get("preferred_option"),
+                )
+            except (TypeError, ValueError):
+                return ToolGateResult(INVALID_QUESTION, is_error=True)
+            except KeyboardInterrupt as exc:
+                raise ApprovalCancelled("cancelled at question prompt") from exc
+            return ToolGateResult(result, is_error=False)
         if call.name not in GUARDED:
             return None  # read-only, or a name that doesn't exist — runs freely
         if approver is None:

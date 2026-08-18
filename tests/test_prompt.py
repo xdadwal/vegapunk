@@ -35,3 +35,4 @@ def test_unattended_prompt_tells_the_agent_not_to_retry_blocked_tools():
 
     assert "Do not repeatedly request them" in composed
     assert "use available alternatives or report the limitation" in composed
+    assert "ask_user tool is also unavailable" in composed
