@@ -143,7 +143,7 @@ class ModelExtractor:
         if self.agent is None:
             provider, _, model = self.cfg.memory_model.partition(":")
             provider, model = provider.strip().lower(), model.strip()
-            cfg = with_model(replace(self.cfg, max_output_tokens=2048,
+            cfg = with_model(replace(self.cfg, max_output_tokens=4096,
                                     provider_max_attempts=1, provider_turn_timeout=self.cfg.memory_timeout),
                              provider, model)
             backend = create_backend(provider, cfg)

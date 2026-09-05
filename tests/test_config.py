@@ -33,6 +33,7 @@ def _reloaded_config(monkeypatch, **env: str):
         "VEGAPUNK_MEMORY_MODEL",
         "VEGAPUNK_MEMORY_REVIEW",
         "VEGAPUNK_MEMORY_TIMEOUT",
+        "VEGAPUNK_MEMORY_SCAN_INTERVAL",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -60,16 +61,20 @@ def test_provider_defaults_to_local(monkeypatch):
 def test_memory_defaults_and_review_override(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.memory_enabled and cfg.memory_model == "local" and cfg.memory_review == "auto"
-        assert cfg.memory_timeout == 180
+        assert cfg.memory_enabled and cfg.memory_model == "codex" and cfg.memory_review == "auto"
+        assert cfg.memory_timeout == 600
+        assert cfg.memory_scan_interval == 3600
         cfg = _reloaded_config(monkeypatch, VEGAPUNK_MEMORY_ENABLED="false",
-                               VEGAPUNK_MEMORY_MODEL="claude:haiku", VEGAPUNK_MEMORY_REVIEW="review")
+                               VEGAPUNK_MEMORY_MODEL="claude:haiku", VEGAPUNK_MEMORY_REVIEW="review",
+                               VEGAPUNK_MEMORY_TIMEOUT="900", VEGAPUNK_MEMORY_SCAN_INTERVAL="7200")
         assert not cfg.memory_enabled and cfg.memory_model == "claude:haiku" and cfg.memory_review == "review"
+        assert cfg.memory_timeout == 900 and cfg.memory_scan_interval == 7200
     finally:
         _restore(monkeypatch)
 
 
-@pytest.mark.parametrize("name", ["VEGAPUNK_MEMORY_ENABLED", "VEGAPUNK_MEMORY_REVIEW"])
+@pytest.mark.parametrize("name", ["VEGAPUNK_MEMORY_ENABLED", "VEGAPUNK_MEMORY_REVIEW",
+                                  "VEGAPUNK_MEMORY_TIMEOUT", "VEGAPUNK_MEMORY_SCAN_INTERVAL"])
 def test_memory_invalid_policy_is_rejected(monkeypatch, name):
     try:
         with pytest.raises(ValueError, match=name):

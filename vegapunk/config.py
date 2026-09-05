@@ -15,7 +15,10 @@ from typing import Literal
 
 def _positive_int(name: str, default: int) -> int:
     """Read an integer environment setting that must be at least one."""
-    value = int(os.getenv(name, str(default)))
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer of at least 1.") from exc
     if value < 1:
         raise ValueError(f"{name} must be at least 1, got {value!r}.")
     return value
@@ -165,11 +168,12 @@ class Config:
     # which has no effort setting.
     scheduler_effort: str = os.getenv("VEGAPUNK_SCHEDULER_EFFORT", "")
 
-    # Background extraction uses the local model unless explicitly overridden.
+    # Unattended extraction uses Codex with a relaxed budget and hourly scans.
     memory_enabled: bool = _choice("VEGAPUNK_MEMORY_ENABLED", "true", {"true", "false"}) == "true"
-    memory_model: str = os.getenv("VEGAPUNK_MEMORY_MODEL", "local")
+    memory_model: str = os.getenv("VEGAPUNK_MEMORY_MODEL", "codex")
     memory_review: str = _choice("VEGAPUNK_MEMORY_REVIEW", "auto", {"auto", "review"})
-    memory_timeout: int = _positive_int("VEGAPUNK_MEMORY_TIMEOUT", 180)
+    memory_timeout: int = _positive_int("VEGAPUNK_MEMORY_TIMEOUT", 600)
+    memory_scan_interval: int = _positive_int("VEGAPUNK_MEMORY_SCAN_INTERVAL", 3600)
 
     # The embedded database holding sessions, long-term memory, and REPL input
     # history. Defaults to vegapunk.db at the project root (the launch

@@ -225,18 +225,23 @@ or macOS. Avoid placing the database on NFS or SMB storage.
 
 ### Background personalization
 
-While Vegapunk is open, a separate thread in its worker scans existing and newly saved conversations
-after 60 seconds without a save. It processes at most 12,000 characters per batch, with no tools,
-a 2,048-token output budget where supported by the provider, and a 180-second provider timeout
-(configurable with `VEGAPUNK_MEMORY_TIMEOUT`).
-Jobs checkpoint progress in the
-database, recover interrupted leases, and retry failures up to three times with backoff. Unfinished
-work resumes on the next launch; no extraction runs while the app is closed. Local inference can
-still compete with foreground requests for model-server resources.
+While Vegapunk is open, a separate thread in its worker scans conversations at startup, then waits
+one hour between completed scan cycles (`VEGAPUNK_MEMORY_SCAN_INTERVAL=3600`). Each cycle drains
+all eligible batches, rather than processing only one batch per hour. Conversations saved after
+the cycle starts wait for the next scan; the 60-second quiet interval still applies.
 
-The extractor defaults to `local`, independently of `/model` and the scheduler model. There is no
-hosted fallback. Set `VEGAPUNK_MEMORY_MODEL=provider[:model]` to select another backend; that backend
-receives the user-text batches. No additional provider credentials are introduced.
+Each batch contains at most 12,000 characters and uses a tool-free extractor with a 4,096-token
+output budget where supported by the provider. The default timeout is 600 seconds, configurable
+with `VEGAPUNK_MEMORY_TIMEOUT`, to give background jobs more time to finish. Jobs checkpoint
+progress, recover interrupted leases, and retry failures up to three times with backoff. Unfinished
+work resumes on the next launch; no extraction runs while the app is closed. Queued retries and
+resumed extraction are picked up by an eligible scan.
+
+The extractor defaults to `codex`, independently of `/model` and the scheduler model, and uses the
+existing Codex sign-in. The model follows `VEGAPUNK_CODEX_MODEL` or the provider default. Set
+`VEGAPUNK_MEMORY_MODEL=provider[:model]` to override it (for example, `local`); the selected backend
+receives the user-text batches. Local inference can compete with foreground requests for
+model-server resources.
 
 Only user text is eligible evidence. Tool results, assistant replies, and injected `/skill` bodies
 are excluded. Each candidate must include a quote that exactly occurs in its source. The model is
@@ -369,9 +374,10 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_DB_FILE` | `./vegapunk.db` | Database path. |
 | `VEGAPUNK_EMBED_MODEL` | Empty | Embedding model used for semantic memory search. |
 | `VEGAPUNK_MEMORY_ENABLED` | `true` | Enable background conversation extraction (`true` or `false`). |
-| `VEGAPUNK_MEMORY_MODEL` | `local` | Extraction provider and optional model, using `provider[:model]`. |
+| `VEGAPUNK_MEMORY_MODEL` | `codex` | Extraction provider and optional model, using `provider[:model]`. |
 | `VEGAPUNK_MEMORY_REVIEW` | `auto` | Activate clear explicit candidates automatically, or use `review` for all candidates. |
-| `VEGAPUNK_MEMORY_TIMEOUT` | `180` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
+| `VEGAPUNK_MEMORY_TIMEOUT` | `600` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
+| `VEGAPUNK_MEMORY_SCAN_INTERVAL` | `3600` | Positive wait in seconds between completed scan cycles; also scans at startup. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
 
 ## Development
