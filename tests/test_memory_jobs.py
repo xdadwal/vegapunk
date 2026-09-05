@@ -343,8 +343,8 @@ def test_extractor_runs_real_agent_without_tools_and_closes_provider(monkeypatch
         sources = memory_extraction.sources_from_messages([user_turn("I prefer concise replies")])
         assert extractor(sources)[0].content == "Prefers concise replies"
         assert not fake.last_request.tools
-        assert seen[0][0] == "local"
-        assert seen[0][1].max_output_tokens == 2048
+        assert seen[0][0] == "codex"
+        assert seen[0][1].max_output_tokens == 4096
         assert seen[0][1].provider_max_attempts == 1
         assert seen[0][1].provider_turn_timeout == 240
     finally:
@@ -484,3 +484,72 @@ def test_legacy_session_is_reported_instead_of_silently_marked_complete():
     db.execute("UPDATE sessions SET messages=?", (json.dumps([{"role": "user", "content": "old chat"}]),))
     memory_jobs.process_one(lambda _: pytest.fail("unsupported format"), now=NOW)
     assert db.query("SELECT status,attempts FROM memory_jobs") == [("pending", 1)]
+
+
+def test_hourly_worker_drains_backlog_and_only_processes_new_text_next_cycle(monkeypatch):
+    from vegapunk import memory_jobs
+    from dataclasses import replace
+    clock = [NOW]
+    monkeypatch.setattr(db, "utcnow", lambda: clock[0])
+    monkeypatch.setattr(memory_jobs, "config", replace(memory_jobs.config, memory_scan_interval=3600))
+    save()
+    long_text = "a" * 25000 + "tail"
+    session_store.save_session("long", [user_turn(long_text)])
+    clock[0] = db.stamp_plus(NOW, 120)
+    seen = []
+
+    class Extractor:
+        closed = False
+
+        def __call__(self, sources):
+            seen.extend(s.text for s in sources)
+            return []
+
+        def close(self):
+            self.closed = True
+
+    class Stop:
+        stopped = False
+        waits = []
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, seconds):
+            self.waits.append(seconds)
+            assert db.query("SELECT status FROM memory_jobs ORDER BY session_slug") == [
+                ("complete",), ("complete",)]
+            if len(self.waits) == 1:
+                assert seen.count("I prefer concise replies") == 1
+                assert "".join(s for s in seen if s != "I prefer concise replies") == long_text
+                clock[0] = db.stamp_plus(NOW, 180)
+                session_store.save_session("chat", [user_turn("I prefer concise replies"),
+                                                   assistant_turn("Understood"), user_turn("I use zsh")])
+                clock[0] = db.stamp_plus(NOW, 3720)
+                return False
+            self.stopped = True
+            return True
+
+    extractor, stop = Extractor(), Stop()
+    monkeypatch.setattr(memory_jobs, "ModelExtractor", lambda: extractor)
+    memory_jobs.run_worker(stop)
+    assert stop.waits == [3600, 3600]
+    assert seen.count("I prefer concise replies") == 1
+    assert seen[-1] == "I use zsh"
+    assert "".join(s for s in seen[:-1] if s != "I prefer concise replies") == long_text
+    assert extractor.closed
+
+
+def test_scan_does_not_chase_conversations_saved_during_the_cycle(monkeypatch):
+    from vegapunk import memory_jobs
+    save()
+    def extract_and_save(sources):
+        monkeypatch.setattr(db, "utcnow", lambda: db.stamp_plus(NOW, 1))
+        session_store.save_session("later", [user_turn("I use zsh")])
+        return extract_one(sources)
+    memory_jobs.process_one(extract_and_save, now=NOW, scan_before=NOW)
+    assert not memory_jobs.process_one(lambda _: pytest.fail("new conversation should await next cycle"),
+                                       now=db.stamp_plus(NOW, 120), scan_before=NOW)
+    seen = []
+    memory_jobs.process_one(lambda sources: seen.extend(sources) or [], now=db.stamp_plus(NOW, 3600))
+    assert [s.text for s in seen] == ["I use zsh"]

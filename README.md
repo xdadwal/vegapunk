@@ -1,14 +1,14 @@
 # Vegapunk
 
-**A local-first personal AI agent for your terminal.**
+**A personal AI agent for your terminal.**
 
 Vegapunk turns a language model into a persistent command-line assistant that can inspect your
 workspace, use tools, remember useful context, resume conversations, and run recurring tasks. It is
 built on [logpose](https://github.com/xdadwal/logpose), which provides the provider-neutral agent
 loop beneath the terminal experience.
 
-Use Vegapunk with Docker Model Runner for a fully local setup, or connect it to Anthropic, OpenAI,
-Claude Code, Codex, and other providers supported by logpose.
+Vegapunk defaults to Codex with GPT-5.5, using your existing Codex sign-in. You can also use Docker
+Model Runner, Anthropic, OpenAI, Claude Code, and other providers supported by logpose.
 
 ```text
 you -> Vegapunk REPL -> logpose Agent -> model provider
@@ -24,9 +24,9 @@ project matures.
 
 ## Highlights
 
-- **Local-first by default.** Docker Model Runner keeps prompts, model inference, tools, and stored
-  conversations on your machine. Network access occurs only when you select a hosted provider or
-  the agent uses a web tool.
+- **Codex with GPT-5.5 by default.** Chat, conversation titles, scheduled tasks, and memory extraction
+  use the configured model. Tools and stored conversations stay on your machine; prompts are sent
+  to your selected provider. Docker Model Runner remains available for local inference.
 - **A terminal UI designed for long-running work.** Replies stream as rendered Markdown, including
   structured lists and fenced code, while reasoning summaries and tool activity stay visually
   distinct. Piped output automatically falls back to stable plain text.
@@ -50,8 +50,8 @@ project matures.
 ## Requirements
 
 - Python 3.10 or newer. Development and tests currently use Python 3.12.
-- A supported model provider. The default setup expects Docker Model Runner at
-  `http://localhost:12434/engines/v1` with `docker.io/gemma4:latest` available.
+- A supported model provider. The default setup uses an existing Codex CLI sign-in with access to
+  GPT-5.5; Docker Model Runner is optional.
 
 ## Quickstart
 
@@ -64,17 +64,20 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-For the default local backend, enable Docker Model Runner and pull the configured model:
+Sign in through the Codex CLI, then start Vegapunk from the directory you want it to treat as its
+workspace:
+
+```bash
+.venv/bin/python -m vegapunk
+```
+
+For local inference in both chat and memory processing, enable Docker Model Runner and explicitly
+select it:
 
 ```bash
 docker desktop enable model-runner --tcp 12434
 docker model pull docker.io/gemma4:latest
-```
-
-Start Vegapunk from the directory you want it to treat as its workspace:
-
-```bash
-.venv/bin/python -m vegapunk
+VEGAPUNK_PROVIDER=local VEGAPUNK_MEMORY_MODEL=local .venv/bin/python -m vegapunk
 ```
 
 Manual approval is the default. To start a session in auto mode, where guarded tools run without
@@ -149,12 +152,12 @@ you choose a model when discovery is supported. Common provider names are:
 
 | Provider | Authentication | Notes |
 | --- | --- | --- |
-| `local` / `docker` | None | Docker Model Runner; this is the default. |
+| `local` / `docker` | None | Optional Docker Model Runner backend. |
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Messages API. |
-| `openai` | `OPENAI_API_KEY` | OpenAI Responses API. |
+| `openai` | `OPENAI_API_KEY` | OpenAI Responses API; defaults to GPT-5.5. |
 | `openai-compat` | Server-dependent | OpenAI-compatible Chat Completions endpoint. |
 | `claude` / `claude-code` | Local Claude Code session | Subscription-backed, unofficial integration. |
-| `codex` | Local Codex session | Subscription-backed, unofficial integration. |
+| `codex` | Local Codex session | Default provider with GPT-5.5; subscription-backed, unofficial integration. |
 
 Select a provider at launch with `VEGAPUNK_PROVIDER`, or switch during a session:
 
@@ -225,18 +228,23 @@ or macOS. Avoid placing the database on NFS or SMB storage.
 
 ### Background personalization
 
-While Vegapunk is open, a separate thread in its worker scans existing and newly saved conversations
-after 60 seconds without a save. It processes at most 12,000 characters per batch, with no tools,
-a 2,048-token output budget where supported by the provider, and a 180-second provider timeout
-(configurable with `VEGAPUNK_MEMORY_TIMEOUT`).
-Jobs checkpoint progress in the
-database, recover interrupted leases, and retry failures up to three times with backoff. Unfinished
-work resumes on the next launch; no extraction runs while the app is closed. Local inference can
-still compete with foreground requests for model-server resources.
+While Vegapunk is open, a separate thread in its worker scans conversations at startup, then waits
+one hour between completed scan cycles (`VEGAPUNK_MEMORY_SCAN_INTERVAL=3600`). Each cycle drains
+all eligible batches, rather than processing only one batch per hour. Conversations saved after
+the cycle starts wait for the next scan; the 60-second quiet interval still applies.
 
-The extractor defaults to `local`, independently of `/model` and the scheduler model. There is no
-hosted fallback. Set `VEGAPUNK_MEMORY_MODEL=provider[:model]` to select another backend; that backend
-receives the user-text batches. No additional provider credentials are introduced.
+Each batch contains at most 12,000 characters and uses a tool-free extractor with a 4,096-token
+output budget where supported by the provider. The default timeout is 600 seconds, configurable
+with `VEGAPUNK_MEMORY_TIMEOUT`, to give background jobs more time to finish. Jobs checkpoint
+progress, recover interrupted leases, and retry failures up to three times with backoff. Unfinished
+work resumes on the next launch; no extraction runs while the app is closed. Queued retries and
+resumed extraction are picked up by an eligible scan.
+
+The extractor defaults to `codex`, independently of `/model` and the scheduler model, and uses the
+existing Codex sign-in. The model follows `VEGAPUNK_CODEX_MODEL`, which defaults to `gpt-5.5`. Set
+`VEGAPUNK_MEMORY_MODEL=provider[:model]` to override it (for example, `local`); the selected backend
+receives the user-text batches. Local inference can compete with foreground requests for
+model-server resources.
 
 Only user text is eligible evidence. Tool results, assistant replies, and injected `/skill` bodies
 are excluded. Each candidate must include a quote that exactly occurs in its source. The model is
@@ -326,7 +334,7 @@ Every application setting can be overridden with an environment variable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VEGAPUNK_PROVIDER` | `local` | Provider selected at launch. |
+| `VEGAPUNK_PROVIDER` | `codex` | Provider selected at launch. |
 | `VEGAPUNK_BASE_URL` | `http://localhost:12434/engines/v1` | Endpoint for Docker Model Runner or `openai-compat`. |
 | `VEGAPUNK_MODEL` | `docker.io/gemma4:latest` | Model used by Chat Completions-compatible backends. |
 | `VEGAPUNK_API_KEY` | `not-needed` | API key passed to the optional local embeddings client. |
@@ -356,11 +364,11 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_CLAUDE_MODEL` | Empty | Model for Anthropic and Claude Code backends. |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | `200000` | Context size used by the Claude prompt gauge. |
 | `VEGAPUNK_CLAUDE_EFFORT` | Empty | Initial Claude effort: `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `VEGAPUNK_CODEX_MODEL` | Empty | Model for Codex and OpenAI Responses backends. |
+| `VEGAPUNK_CODEX_MODEL` | `gpt-5.5` | Model for Codex and OpenAI Responses backends; explicitly empty uses the provider default. |
 | `VEGAPUNK_CODEX_CONTEXT_WINDOW` | `0` | Context size used by their prompt gauge; `0` means unknown. |
 | `VEGAPUNK_CODEX_EFFORT` | Empty | Initial Codex/OpenAI reasoning effort. |
 | `VEGAPUNK_SCHEDULER_MODEL` | Empty | Scheduler provider and optional model as `provider[:model]`; empty inherits startup configuration. |
-| `VEGAPUNK_SCHEDULER_EFFORT` | Empty | Scheduler effort; empty inherits the configured Claude effort. |
+| `VEGAPUNK_SCHEDULER_EFFORT` | Empty | Scheduler effort; empty inherits the selected provider's configured effort. |
 
 ### Persistence and skills
 
@@ -369,9 +377,10 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_DB_FILE` | `./vegapunk.db` | Database path. |
 | `VEGAPUNK_EMBED_MODEL` | Empty | Embedding model used for semantic memory search. |
 | `VEGAPUNK_MEMORY_ENABLED` | `true` | Enable background conversation extraction (`true` or `false`). |
-| `VEGAPUNK_MEMORY_MODEL` | `local` | Extraction provider and optional model, using `provider[:model]`. |
+| `VEGAPUNK_MEMORY_MODEL` | `codex` | Extraction provider and optional model, using `provider[:model]`. |
 | `VEGAPUNK_MEMORY_REVIEW` | `auto` | Activate clear explicit candidates automatically, or use `review` for all candidates. |
-| `VEGAPUNK_MEMORY_TIMEOUT` | `180` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
+| `VEGAPUNK_MEMORY_TIMEOUT` | `600` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
+| `VEGAPUNK_MEMORY_SCAN_INTERVAL` | `3600` | Positive wait in seconds between completed scan cycles; also scans at startup. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
 
 ## Development

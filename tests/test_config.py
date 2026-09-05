@@ -19,6 +19,11 @@ def _reloaded_config(monkeypatch, **env: str):
     """Reload vegapunk.config with the given env and return a fresh Config."""
     for key in (
         "VEGAPUNK_PROVIDER",
+        "VEGAPUNK_CODEX_MODEL",
+        "VEGAPUNK_CODEX_CONTEXT_WINDOW",
+        "VEGAPUNK_CODEX_EFFORT",
+        "VEGAPUNK_SCHEDULER_MODEL",
+        "VEGAPUNK_SCHEDULER_EFFORT",
         "VEGAPUNK_CLAUDE_MODEL",
         "VEGAPUNK_CLAUDE_CONTEXT_WINDOW",
         "VEGAPUNK_CLAUDE_EFFORT",
@@ -33,6 +38,7 @@ def _reloaded_config(monkeypatch, **env: str):
         "VEGAPUNK_MEMORY_MODEL",
         "VEGAPUNK_MEMORY_REVIEW",
         "VEGAPUNK_MEMORY_TIMEOUT",
+        "VEGAPUNK_MEMORY_SCAN_INTERVAL",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -46,10 +52,12 @@ def _restore(monkeypatch) -> None:
     importlib.reload(config_module)
 
 
-def test_provider_defaults_to_local(monkeypatch):
+def test_provider_defaults_to_codex_with_gpt_5_5(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.provider == "local"
+        assert cfg.provider == "codex"
+        assert cfg.codex_model == "gpt-5.5"
+        assert cfg.scheduler_model == ""
         assert cfg.claude_model == ""
         assert cfg.claude_context_window == 200000
         assert cfg.claude_effort == ""  # "" = the SDK default ("high")
@@ -60,16 +68,20 @@ def test_provider_defaults_to_local(monkeypatch):
 def test_memory_defaults_and_review_override(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.memory_enabled and cfg.memory_model == "local" and cfg.memory_review == "auto"
-        assert cfg.memory_timeout == 180
+        assert cfg.memory_enabled and cfg.memory_model == "codex" and cfg.memory_review == "auto"
+        assert cfg.memory_timeout == 600
+        assert cfg.memory_scan_interval == 3600
         cfg = _reloaded_config(monkeypatch, VEGAPUNK_MEMORY_ENABLED="false",
-                               VEGAPUNK_MEMORY_MODEL="claude:haiku", VEGAPUNK_MEMORY_REVIEW="review")
+                               VEGAPUNK_MEMORY_MODEL="claude:haiku", VEGAPUNK_MEMORY_REVIEW="review",
+                               VEGAPUNK_MEMORY_TIMEOUT="900", VEGAPUNK_MEMORY_SCAN_INTERVAL="7200")
         assert not cfg.memory_enabled and cfg.memory_model == "claude:haiku" and cfg.memory_review == "review"
+        assert cfg.memory_timeout == 900 and cfg.memory_scan_interval == 7200
     finally:
         _restore(monkeypatch)
 
 
-@pytest.mark.parametrize("name", ["VEGAPUNK_MEMORY_ENABLED", "VEGAPUNK_MEMORY_REVIEW"])
+@pytest.mark.parametrize("name", ["VEGAPUNK_MEMORY_ENABLED", "VEGAPUNK_MEMORY_REVIEW",
+                                  "VEGAPUNK_MEMORY_TIMEOUT", "VEGAPUNK_MEMORY_SCAN_INTERVAL"])
 def test_memory_invalid_policy_is_rejected(monkeypatch, name):
     try:
         with pytest.raises(ValueError, match=name):
@@ -191,10 +203,12 @@ def test_provider_env_overrides(monkeypatch):
             VEGAPUNK_CLAUDE_MODEL="opus",
             VEGAPUNK_CLAUDE_CONTEXT_WINDOW="500000",
             VEGAPUNK_CLAUDE_EFFORT="max",
+            VEGAPUNK_CODEX_MODEL="gpt-5.4",
         )
         assert cfg.provider == "claude"
         assert cfg.claude_model == "opus"
         assert cfg.claude_context_window == 500000
         assert cfg.claude_effort == "max"
+        assert cfg.codex_model == "gpt-5.4"
     finally:
         _restore(monkeypatch)

@@ -83,13 +83,18 @@ def _store_candidate(conn, item: Candidate, slug: str, stamp: str) -> None:
                   item.confidence, status, slug, item.source_id, item.quote, memory_id, stamp))
 
 
-def process_one(extract: Callable[[list[Source]], list[Candidate]], *, now: str | None = None) -> bool:
+def process_one(
+    extract: Callable[[list[Source]], list[Candidate]], *, now: str | None = None,
+    scan_before: str | None = None,
+) -> bool:
     """Process one bounded batch; persist failures and never block interactive chat."""
     if not config.memory_enabled or paused():
         return False
     discover_jobs()
     stamp = now or db.utcnow()
     cutoff = db.stamp_plus(stamp, -_QUIET_SECONDS)
+    if scan_before is not None:
+        cutoff = min(cutoff, scan_before)
     token = db.new_id()
     with db.transaction(immediate=True) as conn:
         row = conn.execute(
@@ -203,7 +208,8 @@ def decide(prefix: str, action: str) -> str:
 
 def job_status() -> str:
     state = "disabled" if not config.memory_enabled else "paused" if paused() else "enabled"
-    lines = [f"Memory extraction: {state}; model {config.memory_model}; review {config.memory_review}."]
+    lines = [f"Memory extraction: {state}; model {config.memory_model}; review {config.memory_review}.",
+             f"Scan interval: {config.memory_scan_interval}s; job timeout: {config.memory_timeout}s."]
     for slug, status, attempts, error in db.query(
             "SELECT session_slug,status,attempts,last_error FROM memory_jobs ORDER BY updated_at DESC"):
         lines.append(f"  {slug} [{status}] attempts {attempts}" + (f" — {error}" if error else ""))
@@ -234,14 +240,20 @@ def retry_failed() -> None:
 
 
 def run_worker(stop: threading.Event) -> None:
-    """Run inside the scheduler process with an independent provider/connection."""
+    """Drain eligible work at startup, then in periodic scans until shutdown."""
     extractor = ModelExtractor()
     try:
-        while not stop.wait(5):
+        while not stop.is_set():
+            scan_before = db.utcnow()
             try:
-                process_one(extractor)
+                # Finish the eligible backlog instead of doing just one batch
+                # per hour. Later conversation saves wait for the next cycle.
+                while not stop.is_set() and process_one(extractor, scan_before=scan_before):
+                    pass
             except db.StoreError as exc:
                 print(f"  [memory] job storage unavailable ({type(exc).__name__})", file=sys.stderr)
+            if stop.wait(config.memory_scan_interval):
+                break
     finally:
         try:
             extractor.close()
