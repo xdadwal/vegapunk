@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     messages TEXT NOT NULL,
     turns INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    conversation_mode TEXT NOT NULL DEFAULT 'conversation'
 );
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
@@ -257,34 +258,36 @@ def get_connection() -> turso.Connection:
 
 
 def _check_version(conn: turso.Connection) -> None:
-    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row is None:
-        # OR IGNORE because the REPL and its worker can reach a brand-new database
-        # at the same moment: ``_open_lock`` only orders threads within one process,
-        # and the losing INSERT would otherwise be a UNIQUE violation that fails the
-        # whole connection rather than a no-op.
-        conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-        conn.commit()
-        return
+    # The CLI and worker may open an older database together. Hold the writer
+    # lock across inspection and migration so only one adds the mode column.
+    conn.execute("BEGIN IMMEDIATE")
     try:
-        found = int(row[0])
-    except (TypeError, ValueError) as exc:
-        # A hand-edited / half-written meta row must degrade like any other
-        # corruption, not crash startup with a raw ValueError.
-        raise StoreError(f"unreadable schema_version {row[0]!r} in the database") from exc
-    if found > SCHEMA_VERSION:
-        raise StoreError(
-            f"database schema v{found} is newer than this Vegapunk "
-            f"(v{SCHEMA_VERSION}) — upgrade Vegapunk"
-        )
-    if found < SCHEMA_VERSION:
-        # v2 only adds job/candidate tables; existing session and memory rows
-        # are untouched. The idempotent bootstrap above makes retry safe.
-        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        try:
+            found = int(row[0]) if row else 0
+        except (TypeError, ValueError) as exc:
+            raise StoreError(f"unreadable schema_version {row[0]!r} in the database") from exc
+        if found > SCHEMA_VERSION:
+            raise StoreError(
+                f"database schema v{found} is newer than this Vegapunk "
+                f"(v{SCHEMA_VERSION}) — upgrade Vegapunk"
+            )
+        if found < 3:
+            # v2 tables are created by the idempotent bootstrap. v3 preserves
+            # existing transcripts and marks them as regular conversations.
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "conversation_mode" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN conversation_mode "
+                             "TEXT NOT NULL DEFAULT 'conversation'")
+        if found < SCHEMA_VERSION:
+            conn.execute(
+                "INSERT INTO meta (key,value) VALUES ('schema_version',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),),
+            )
         conn.commit()
+    except BaseException:
+        _safe_rollback(conn)
+        raise
 
 
 def _safe_close(conn: turso.Connection | None) -> None:

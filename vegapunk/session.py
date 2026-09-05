@@ -195,6 +195,11 @@ class Session:
         """The live backend (for /effort, which asks what it supports)."""
         return self._backend
 
+    @property
+    def system_prompt(self) -> str:
+        """The current instructions, so temporary modes can restore a caller's prompt."""
+        return self._system_prompt
+
     def set_system_prompt(self, system_prompt: str) -> None:
         """Replace the instructions sent on subsequent turns.
 

@@ -435,7 +435,7 @@ def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsy
         policies.append(policy)
         return RealCLIApprover(policy)
 
-    def compose_prompt(cfg, *, mode):
+    def compose_prompt(cfg, *, mode, conversation_mode="conversation"):
         prompt_modes.append(mode)
         return f"SYS {mode}"
 
@@ -455,7 +455,7 @@ def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsy
 def test_shift_tab_refreshes_the_model_facing_approval_mode(monkeypatch, capsys):
     prompt_modes = []
 
-    def compose_prompt(cfg, *, mode):
+    def compose_prompt(cfg, *, mode, conversation_mode="conversation"):
         prompt_modes.append(mode)
         return f"SYS {mode}"
 
