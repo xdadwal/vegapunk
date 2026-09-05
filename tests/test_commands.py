@@ -193,23 +193,51 @@ def test_sessions_forget_active_clears_current_name():
 
 
 def test_memory_list_empty():
-    assert "Unknown command /memory" in dispatch("/memory", _ctx()).output
+    assert "no active memories" in dispatch("/memory list", _ctx()).output
+    assert "Memory extraction:" in dispatch("/memory", _ctx()).output
 
 
 def test_memory_list_shows_short_id_date_and_fact():
-    assert "Unknown command /memory" in dispatch("/memory list", _ctx()).output
+    from vegapunk import memory
+    memory.save_memory("Uses zsh")
+    fact = memory.list_memory()[0]
+    out = dispatch("/memory list", _ctx()).output
+    assert fact.id[:8] in out and fact.created_at[:10] in out and fact.content in out
 
 
 def test_memory_forget_removes_by_prefix():
-    assert "Unknown command /memory" in dispatch("/memory remove anything", _ctx()).output
+    from vegapunk import memory
+    memory.save_memory("Uses zsh")
+    fact = memory.list_memory()[0]
+    assert "Forgot" in dispatch(f"/memory forget {fact.id[:8]}", _ctx()).output
+    assert memory.list_memory() == []
 
 
 def test_memory_forget_unknown_prefix():
-    assert "Unknown command /memory" in dispatch("/memory remove deadbeef", _ctx()).output
+    assert "No memory fact" in dispatch("/memory forget deadbeef", _ctx()).output
 
 
 def test_memory_bad_subcommand_shows_usage():
-    assert "Unknown command /memory" in dispatch("/memory frobnicate", _ctx()).output
+    assert "Usage: /memory" in dispatch("/memory frobnicate", _ctx()).output
+
+
+def test_memory_review_commands_show_evidence_and_apply_decisions():
+    from dataclasses import replace
+    from vegapunk import memory, memory_jobs
+    from tests.test_memory_jobs import NOW, extract_one, save
+    ctx = _ctx()
+    save()
+    memory_jobs.process_one(lambda sources: [replace(extract_one(sources)[0], explicit=False)], now=NOW)
+    candidate = memory_jobs.candidates()[0]
+    assert candidate.id[:8] in dispatch("/memory review", ctx).output
+    assert candidate.quote in dispatch(f"/memory show {candidate.id[:8]}", ctx).output
+    assert "Activated" in dispatch(f"/memory approve {candidate.id[:8]}", ctx).output
+    assert len(memory.list_memory()) == 1
+    assert "Rejected" in dispatch(f"/memory reject {candidate.id[:8]}", ctx).output
+    assert memory.list_memory() == []
+    assert "paused" in dispatch("/memory pause", ctx).output
+    assert "enabled" in dispatch("/memory resume", ctx).output
+    assert "queued" in dispatch("/memory retry", ctx).output
 
 
 def test_schedule_list_empty():
@@ -285,7 +313,7 @@ def test_backup_writes_a_snapshot_file():
 
 def test_help_lists_memory_and_backup():
     out = dispatch("/help", _ctx()).output
-    assert "/memory" not in out and "/backup" not in out
+    assert "/memory" in out and "/backup" not in out
 
 
 def test_history_shows_recent_turns():

@@ -2,15 +2,15 @@
 
 A conversation's history lives only as long as the process; this is the part that
 persists. Facts are rows in the embedded database (``kind = 'fact'``); the
-``remember`` tool inserts them, ``cli.main`` folds them into the system prompt at
-session start (``as_system_block``) so the model always *sees* what it knows, and
+``remember`` tool or background extraction inserts them, ``cli.main`` folds them
+into the system prompt before each turn (``as_system_block``), and
 ``/memory list`` / ``/memory forget`` let a human prune them (there is no
 hand-editable file any more — use those commands or a sqlite3 client).
 
 The ``kind`` column is deliberately open: only ``'fact'`` is produced today, but
 future kinds (episodes, summaries, preferences…) slot in without a schema change.
 
-Remembered text is re-injected into the system prompt next session inside an
+Remembered text is re-injected into the system prompt next turn inside an
 explicit data-only block. It remains model-visible context, so it should contain
 facts and preferences rather than secrets or one-off task instructions.
 """
@@ -18,12 +18,18 @@ facts and preferences rather than secrets or one-off task instructions.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from dataclasses import dataclass
 
 from . import db, embedding
 
 _HEX = frozenset("0123456789abcdef")
+
+
+def fingerprint(content: str) -> str:
+    """Stable exact-text identity, ignoring only case and repeated whitespace."""
+    return hashlib.sha256(" ".join(content.casefold().split()).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -112,7 +118,20 @@ def forget_memory(id_prefix: str) -> str:
         return f"'{prefix}' is ambiguous — matches {len(rows)} facts; use more characters."
     fact_id, content = rows[0]
     try:
-        db.execute("DELETE FROM memory WHERE id = ?", (fact_id,))
+        with db.transaction() as conn:
+            conn.execute("DELETE FROM memory WHERE id = ?", (fact_id,))
+            conn.execute("DELETE FROM memory WHERE id IN (SELECT memory_id FROM memory_candidates "
+                         "WHERE fingerprint=?)", (fingerprint(content),))
+            # Retain only a hash to stop background extraction from relearning
+            # a forgotten fact, including one originally saved with remember.
+            conn.execute(
+                "INSERT INTO memory_candidates "
+                "(id,fingerprint,content,topic,category,confidence,status,source_id,quote,created_at) "
+                "VALUES (?,?,'','forgotten','fact',1,'rejected','','',?) "
+                "ON CONFLICT(fingerprint) DO UPDATE SET status='rejected',content='',quote='',"
+                "source_id='',session_slug=NULL,memory_id=NULL,topic='forgotten'",
+                (db.new_id(), fingerprint(content), db.utcnow()),
+            )
     except db.StoreError as exc:
         return f"Could not forget: {exc}"
     return f"Forgot: {content}"

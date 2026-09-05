@@ -10,6 +10,7 @@ registers a handler into ``REGISTRY``, so adding a command is one function and
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -17,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import db, menu, scheduler, session_store, skills, transcript
+from . import db, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -398,6 +399,45 @@ def _effort(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"(effort set to {arg.lower()})")
 
 
+@command("memory", "Review and manage personalization: /memory [list|review|jobs|pause|resume]")
+def _memory(ctx: CommandContext, arg: str) -> CommandResult:
+    sub, _, rest = arg.partition(" ")
+    sub, rest = sub.lower(), rest.strip()
+    usage = ("Usage: /memory [list|review|jobs|pause|resume|retry] or "
+             "/memory show|approve|reject <candidate-id> or /memory forget <memory-id>")
+    try:
+        if sub in {"", "jobs"} and not rest:
+            return CommandResult(output=memory_jobs.job_status())
+        if sub == "list" and not rest:
+            facts = memory.list_memory()
+            return CommandResult(output="\n".join(
+                f"  {m.id[:8]} [{m.created_at[:10]}] {json.dumps(m.content, ensure_ascii=False)}"
+                for m in facts) or "(no active memories)")
+        if sub == "review" and not rest:
+            pending = memory_jobs.candidates()
+            lines = [f"  {m.id[:8]} {json.dumps(m.content, ensure_ascii=False)} "
+                     f"(topic {m.topic}, model confidence {m.confidence:.2f})" for m in pending]
+            if pending:
+                lines.append("Inspect evidence: /memory show <id>; decide: /memory approve|reject <id>.")
+                lines.append("Approval replaces other extracted memories with the same topic.")
+            return CommandResult(output="\n".join(lines) or "(no memories awaiting review)")
+        if sub == "show" and rest:
+            return CommandResult(output=memory_jobs.show_candidate(rest))
+        if sub in {"approve", "reject"} and rest:
+            return CommandResult(output=memory_jobs.decide(rest, sub))
+        if sub == "forget" and rest:
+            return CommandResult(output=memory.forget_memory(rest))
+        if sub in {"pause", "resume"} and not rest:
+            memory_jobs.set_paused(sub == "pause")
+            return CommandResult(output=memory_jobs.job_status())
+        if sub == "retry" and not rest:
+            memory_jobs.retry_failed()
+            return CommandResult(output="Failed memory jobs queued for retry.\n" + memory_jobs.job_status())
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not manage memory: {exc}")
+    return CommandResult(output=usage)
+
+
 @command("save", "Rename the current session: /save <name>")
 def _save(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
@@ -408,9 +448,10 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
             return CommandResult(
                 output=f"A session named '{name}' already exists — choose another name."
             )
-        session_store.save_session(name, ctx.session.messages)
         if ctx.current_name and ctx.current_name != name:
-            session_store.delete_session(ctx.current_name)  # rename: drop the old (auto-named) row
+            session_store.rename_session(ctx.current_name, name, ctx.session.messages)
+        else:
+            session_store.save_session(name, ctx.session.messages)
     except db.StoreError as exc:
         return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
