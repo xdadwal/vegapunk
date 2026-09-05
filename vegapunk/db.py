@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -109,6 +109,34 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(enabled, next_run_at);
+CREATE TABLE IF NOT EXISTS memory_jobs (
+    session_slug TEXT PRIMARY KEY,
+    cursor INTEGER NOT NULL DEFAULT 0,
+    prefix_hash TEXT NOT NULL DEFAULT '',
+    source_revision TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_run_at TEXT NOT NULL DEFAULT '',
+    lease_token TEXT,
+    lease_until TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    content TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    category TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL,
+    session_slug TEXT,
+    source_id TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    memory_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_status ON memory_candidates(status, created_at);
 """
 
 
@@ -252,6 +280,11 @@ def _check_version(conn: turso.Connection) -> None:
             f"database schema v{found} is newer than this Vegapunk "
             f"(v{SCHEMA_VERSION}) — upgrade Vegapunk"
         )
+    if found < SCHEMA_VERSION:
+        # v2 only adds job/candidate tables; existing session and memory rows
+        # are untouched. The idempotent bootstrap above makes retry safe.
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),))
+        conn.commit()
 
 
 def _safe_close(conn: turso.Connection | None) -> None:
@@ -300,7 +333,7 @@ def execute(sql: str, params: tuple = ()) -> None:
 
 
 @contextmanager
-def transaction() -> Iterator[turso.Connection]:
+def transaction(*, immediate: bool = False) -> Iterator[turso.Connection]:
     """Group multiple writes into one commit.
 
     Commits on clean exit; rolls back and re-raises on failure (driver errors as
@@ -309,9 +342,14 @@ def transaction() -> Iterator[turso.Connection]:
     The yielded connection belongs to the calling thread and must not outlive the
     block or be handed to another one — that is the single way to reach the
     driver's cross-thread panic from here.
+
+    Use immediate=True when reads determine subsequent writes: acquire the
+    writer lock before reading so another process cannot change that decision.
     """
     conn = get_connection()
     try:
+        if immediate:
+            conn.execute("BEGIN IMMEDIATE")
         yield conn
     except turso.Error as exc:
         _safe_rollback(conn)
@@ -323,6 +361,7 @@ def transaction() -> Iterator[turso.Connection]:
         try:
             conn.commit()
         except turso.Error as exc:
+            _safe_rollback(conn)
             raise StoreError(f"commit failed: {exc}") from exc
 
 

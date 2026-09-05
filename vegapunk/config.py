@@ -21,6 +21,13 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in choices:
+        raise ValueError(f"{name} must be one of {', '.join(sorted(choices))}.")
+    return value
+
+
 def _optional_timeout(name: str, default: float) -> float | None:
     """Read a positive timeout; zero explicitly disables it."""
     value = float(os.getenv(name, str(default)))
@@ -158,6 +165,12 @@ class Config:
     # which has no effort setting.
     scheduler_effort: str = os.getenv("VEGAPUNK_SCHEDULER_EFFORT", "")
 
+    # Background extraction uses the local model unless explicitly overridden.
+    memory_enabled: bool = _choice("VEGAPUNK_MEMORY_ENABLED", "true", {"true", "false"}) == "true"
+    memory_model: str = os.getenv("VEGAPUNK_MEMORY_MODEL", "local")
+    memory_review: str = _choice("VEGAPUNK_MEMORY_REVIEW", "auto", {"auto", "review"})
+    memory_timeout: int = _positive_int("VEGAPUNK_MEMORY_TIMEOUT", 180)
+
     # The embedded database holding sessions, long-term memory, and REPL input
     # history. Defaults to vegapunk.db at the project root (the launch
     # directory). One Vegapunk process at a time (enforced with a lock file);
@@ -217,10 +230,11 @@ class Config:
         "pushing through tool failures without asking for permission to continue.\n"
         "- For open-ended tasks, break the work into the smallest useful next step "
         "and finish that step before moving on.\n"
-        "- When the user states a durable fact or preference about themselves "
-        "(their tools, environment, how they like things done), or asks you to "
-        "remember something, call remember to save it for future sessions. Don't "
-        "save ephemeral, one-off task details.\n"
+        "- When the user explicitly asks you to remember a durable fact or "
+        "preference, call remember to save it for future sessions. Don't proactively "
+        "call remember for other statements; background conversation processing "
+        "handles those according to the user's memory review settings. Don't "
+        "save secrets or ephemeral, one-off task details.\n"
         "- Stop only when the task is genuinely done, or you've tried the "
         "reasonable options and are truly stuck — then briefly say what you tried.\n"
         "\n"

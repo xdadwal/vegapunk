@@ -120,8 +120,36 @@ def load_session(name: str) -> list[dict]:
 
 
 def delete_session(name: str) -> None:
-    """Remove a saved session if present (used to rename — drop the old row)."""
-    db.execute("DELETE FROM sessions WHERE slug = ?", (name,))
+    """Remove a session, its extraction work, and memories owned by that source."""
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM sessions WHERE slug = ?", (name,))
+        conn.execute("DELETE FROM memory WHERE id IN (SELECT memory_id FROM memory_candidates "
+                     "WHERE session_slug=?)", (name,))
+        conn.execute("DELETE FROM memory_candidates WHERE session_slug=?", (name,))
+        conn.execute("DELETE FROM memory_jobs WHERE session_slug=?", (name,))
+
+
+def rename_session(old: str, new: str, messages: list[dict]) -> None:
+    """Rename atomically, preserving extraction progress and source attribution."""
+    if old == new:
+        save_session(new, messages)
+        return
+    encoded, stamp = json.dumps(messages), db.utcnow()
+    with db.transaction(immediate=True) as conn:
+        if conn.execute("SELECT 1 FROM sessions WHERE slug=?", (new,)).fetchone():
+            raise db.StoreError(f"A session named '{new}' already exists")
+        source = conn.execute("SELECT created_at,updated_at,messages FROM sessions WHERE slug=?",
+                              (old,)).fetchone()
+        created = source[0] if source else stamp
+        updated = source[1] if source and source[2] == encoded else stamp
+        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at) VALUES (?,?,?,?,?)",
+                     (new, encoded, count_user_turns(messages), created, updated))
+        conn.execute("DELETE FROM sessions WHERE slug=?", (old,))
+        conn.execute("UPDATE memory_candidates SET session_slug=? WHERE session_slug=?", (new, old))
+        # An in-flight result uses the old slug and must not commit after rename.
+        conn.execute("UPDATE memory_jobs SET session_slug=?,lease_token=NULL,lease_until=NULL,"
+                     "status=CASE WHEN status='running' THEN 'pending' ELSE status END "
+                     "WHERE session_slug=?", (new, old))
 
 
 def list_sessions(limit: int | None = None) -> list[tuple[str, int, str]]:

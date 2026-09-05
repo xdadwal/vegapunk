@@ -27,9 +27,9 @@ import signal
 import sys
 import threading
 
-from logpose import Agent
+from logpose import Agent, close_sync
 
-from . import db, prompt
+from . import db, memory_jobs, prompt
 from .backend import Backend, create_backend, describe, with_effort, with_model
 from .config import config
 from .gate import make_gate
@@ -146,7 +146,23 @@ def main() -> None:
         f"  [scheduler] worker {os.getpid()} up — model {backend.model_label}, db {db.db_path()}",
         file=sys.stderr,
     )
-    Scheduler(lambda: agent, stop=stop).serve()
+    memory_thread = None
+    if config.memory_enabled:
+        memory_thread = threading.Thread(target=memory_jobs.run_worker, args=(stop,),
+                                         name="memory-extraction", daemon=True)
+        memory_thread.start()
+
+    def current_agent() -> Agent:
+        agent.system = prompt.system_prompt(config, mode="unattended")
+        return agent
+
+    try:
+        Scheduler(current_agent, stop=stop).serve()
+    finally:
+        stop.set()
+        if memory_thread is not None:
+            memory_thread.join(timeout=1)
+        close_sync(agent)
     print(f"  [scheduler] worker {os.getpid()} stopped", file=sys.stderr)
 
 

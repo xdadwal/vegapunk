@@ -29,6 +29,10 @@ def _reloaded_config(monkeypatch, **env: str):
         "VEGAPUNK_TOOL_TIMEOUT",
         "VEGAPUNK_DB_FILE",
         "VEGAPUNK_EMBED_MODEL",
+        "VEGAPUNK_MEMORY_ENABLED",
+        "VEGAPUNK_MEMORY_MODEL",
+        "VEGAPUNK_MEMORY_REVIEW",
+        "VEGAPUNK_MEMORY_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -49,6 +53,36 @@ def test_provider_defaults_to_local(monkeypatch):
         assert cfg.claude_model == ""
         assert cfg.claude_context_window == 200000
         assert cfg.claude_effort == ""  # "" = the SDK default ("high")
+    finally:
+        _restore(monkeypatch)
+
+
+def test_memory_defaults_and_review_override(monkeypatch):
+    try:
+        cfg = _reloaded_config(monkeypatch)
+        assert cfg.memory_enabled and cfg.memory_model == "local" and cfg.memory_review == "auto"
+        assert cfg.memory_timeout == 180
+        cfg = _reloaded_config(monkeypatch, VEGAPUNK_MEMORY_ENABLED="false",
+                               VEGAPUNK_MEMORY_MODEL="claude:haiku", VEGAPUNK_MEMORY_REVIEW="review")
+        assert not cfg.memory_enabled and cfg.memory_model == "claude:haiku" and cfg.memory_review == "review"
+    finally:
+        _restore(monkeypatch)
+
+
+@pytest.mark.parametrize("name", ["VEGAPUNK_MEMORY_ENABLED", "VEGAPUNK_MEMORY_REVIEW"])
+def test_memory_invalid_policy_is_rejected(monkeypatch, name):
+    try:
+        with pytest.raises(ValueError, match=name):
+            _reloaded_config(monkeypatch, **{name: "invalid"})
+    finally:
+        _restore(monkeypatch)
+
+
+def test_foreground_memory_is_reserved_for_explicit_requests(monkeypatch):
+    try:
+        prompt = _reloaded_config(monkeypatch).system_prompt
+        assert "explicitly asks you to remember" in prompt
+        assert "Don't proactively call remember" in prompt
     finally:
         _restore(monkeypatch)
 

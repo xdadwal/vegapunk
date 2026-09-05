@@ -211,3 +211,28 @@ def test_main_exits_cleanly_on_a_bad_model_spec(monkeypatch, capsys):
 
     assert exit_info.value.code == 1
     assert "bad model configuration" in capsys.readouterr().err
+
+
+def test_memory_thread_shares_shutdown_and_scheduled_prompts_refresh(monkeypatch):
+    from vegapunk import memory
+    entered = threading.Event()
+    stopped = threading.Event()
+
+    def extraction_worker(stop):
+        entered.set()
+        if stop.wait(2):
+            stopped.set()
+
+    def serve(scheduler):
+        assert entered.wait(1)
+        memory.save_memory("Prefers concise replies")
+        agent = scheduler._agent_provider()
+        assert "Prefers concise replies" in agent.system
+
+    monkeypatch.setattr(scheduler_worker, "config", replace(config, memory_enabled=True))
+    monkeypatch.setattr(scheduler_worker.db, "acquire_scheduler_lock", lambda: None)
+    monkeypatch.setattr(scheduler_worker, "build_backend", _local_backend)
+    monkeypatch.setattr("vegapunk.memory_jobs.run_worker", extraction_worker)
+    monkeypatch.setattr(scheduler_worker.Scheduler, "serve", serve)
+    scheduler_worker.main()
+    assert stopped.is_set()

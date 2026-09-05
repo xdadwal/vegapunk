@@ -1,7 +1,7 @@
 """Compose the model-visible instructions shared by every Vegapunk agent.
 
 The base operating prompt lives in ``config``; approval policy, durable memory,
-and the compact skill catalog are dynamic stanzas loaded when an agent starts.
+and the compact skill catalog are dynamic stanzas refreshed before each run.
 Keeping assembly in one function prevents interactive and scheduled agents from
 drifting apart.
 """
@@ -36,7 +36,7 @@ _MODE_STANZAS: dict[PromptMode, str] = {
 
 
 def system_prompt(cfg: Config = config, *, mode: PromptMode) -> str:
-    """Return the complete system prompt for a newly created agent."""
+    """Return the complete system prompt with current memory and skills."""
     return (
         cfg.system_prompt
         + "\n\n"

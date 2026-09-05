@@ -104,9 +104,8 @@ def main(
     if owns_session:
         # One approver for the whole REPL, so "always allow" lasts the session.
         # Fold remembered facts and the skill ads into the system prompt so the
-        # model starts the session knowing both. Assembled once — a skill added
-        # mid-session is reachable via use_skill but not advertised until the
-        # next launch (same staleness memory has).
+        # model starts the session knowing both. Refreshed before each user turn
+        # so background memories and human review decisions take effect live.
         session = Session(
             create_backend(config.provider),  # a bad VEGAPUNK_PROVIDER fails loudly here
             ALL_TOOLS,
@@ -181,7 +180,7 @@ def main(
                 print(
                     style.paint(
                         f"[scheduler] worker exited ({scheduler.returncode}) — scheduled tasks "
-                        f"are not running; see {scheduler_log}",
+                        f"and memory extraction are not running; see {scheduler_log}",
                         style.YELLOW,
                         sys.stdout,
                     )
@@ -223,6 +222,8 @@ def main(
 
             events = None
             try:
+                if owns_session:
+                    session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode))
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.

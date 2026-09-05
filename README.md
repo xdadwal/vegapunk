@@ -138,6 +138,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
+| `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
 | `/exit` | Quit Vegapunk. Alias: `/quit`; `Ctrl-D` also quits. |
 
@@ -208,7 +209,9 @@ database. The default path is `vegapunk.db` in the launch directory.
 
 - A successful first turn is assigned a short model-generated session name, then saved after every
   turn. Use `/sessions` to resume or remove conversations and `/save` to rename the current one.
-- Facts recorded through `remember` are added to future sessions automatically. If
+- Facts recorded through `remember` or accepted from background extraction are loaded before the
+  next interactive turn or scheduled run. Explicit requests to remember a fact save it immediately;
+  other statements go through background extraction. If
   `VEGAPUNK_EMBED_MODEL` is configured, `recall` uses semantic similarity; otherwise it falls back
   to text matching.
 - Startup creates a database snapshot when the newest backup is more than 24 hours old and retains
@@ -219,6 +222,58 @@ database. The default path is `vegapunk.db` in the launch directory.
 
 Turso's multi-process WAL support is experimental and requires a local filesystem on 64-bit Linux
 or macOS. Avoid placing the database on NFS or SMB storage.
+
+### Background personalization
+
+While Vegapunk is open, a separate thread in its worker scans existing and newly saved conversations
+after 60 seconds without a save. It processes at most 12,000 characters per batch, with no tools,
+a 2,048-token output budget where supported by the provider, and a 180-second provider timeout
+(configurable with `VEGAPUNK_MEMORY_TIMEOUT`).
+Jobs checkpoint progress in the
+database, recover interrupted leases, and retry failures up to three times with backoff. Unfinished
+work resumes on the next launch; no extraction runs while the app is closed. Local inference can
+still compete with foreground requests for model-server resources.
+
+The extractor defaults to `local`, independently of `/model` and the scheduler model. There is no
+hosted fallback. Set `VEGAPUNK_MEMORY_MODEL=provider[:model]` to select another backend; that backend
+receives the user-text batches. No additional provider credentials are introduced.
+
+Only user text is eligible evidence. Tool results, assistant replies, and injected `/skill` bodies
+are excluded. Each candidate must include a quote that exactly occurs in its source. The model is
+instructed to omit secrets, sensitive information, quoted material, and temporary task details;
+credential patterns and candidates marked sensitive are discarded. This is a model-assisted filter,
+not a guarantee that every retained statement is correct or non-sensitive.
+
+By default, explicit candidates with model confidence at least 0.9 become active automatically.
+Other candidates and different values with the same topic await review. Confidence is the model's
+judgment, not a calibrated probability, and topic matching does not detect every contradiction.
+Set `VEGAPUNK_MEMORY_REVIEW=review` to review every extracted candidate before activation.
+
+```text
+/memory jobs                 # enabled/paused state, model, retries, and errors
+/memory review               # pending candidates and candidate IDs
+/memory show <candidate-id>  # content, source session, message segment, and quote
+/memory approve <candidate-id>
+/memory reject <candidate-id>
+/memory list                 # active facts and memory IDs
+/memory show <memory-id>     # inspect an active memory's extraction evidence
+/memory forget <memory-id>
+/memory pause
+/memory resume
+/memory retry                # retry jobs that exhausted automatic attempts
+```
+
+Approval replaces other extracted memories with the same topic; facts explicitly saved through
+`remember` remain under manual control. Reject and forget remove the extracted content/evidence and
+retain a hash to suppress the same text (ignoring case and whitespace). Paraphrases may still need
+review. `/memory pause` persists across restarts and prevents in-flight results from activating while
+paused; it leaves existing memories available. `VEGAPUNK_MEMORY_ENABLED=false` disables extraction.
+
+Renaming a conversation preserves its progress and evidence. Removing one also deletes memories
+and candidates attributed to it; independently remembered facts remain. An exact duplicate keeps
+its first source, so deleting that source removes the extracted memory even if another conversation
+repeated it. Conversations and older database backups can still contain forgotten text. Memories
+currently apply across sessions sharing the same database, without project scopes or expiration.
 
 ## Scheduled tasks
 
@@ -233,7 +288,8 @@ Create a recurring task from the REPL or ask the model to schedule one:
 The REPL starts a separate `vegapunk.scheduler_worker` process and stops it when you quit. Scheduled
 runs never delay interactive input, and their trace is written to `scheduler.log` beside the
 database. Logpose lifecycle metadata is kept out of the TUI: interactive runs append JSON Lines to
-`vegapunk-runtime.jsonl`, and scheduled runs append them to `scheduler-runtime.jsonl`, also beside
+`vegapunk-runtime.jsonl`, and scheduled runs and memory extraction append them to
+`scheduler-runtime.jsonl`, also beside
 the database. These content-free operational logs rotate at 5 MiB and retain three older files.
 
 Unattended runs are fail-closed: tools that require approval (`write_file`, `edit_file`, and
@@ -312,6 +368,10 @@ Every application setting can be overridden with an environment variable.
 | --- | --- | --- |
 | `VEGAPUNK_DB_FILE` | `./vegapunk.db` | Database path. |
 | `VEGAPUNK_EMBED_MODEL` | Empty | Embedding model used for semantic memory search. |
+| `VEGAPUNK_MEMORY_ENABLED` | `true` | Enable background conversation extraction (`true` or `false`). |
+| `VEGAPUNK_MEMORY_MODEL` | `local` | Extraction provider and optional model, using `provider[:model]`. |
+| `VEGAPUNK_MEMORY_REVIEW` | `auto` | Activate clear explicit candidates automatically, or use `review` for all candidates. |
+| `VEGAPUNK_MEMORY_TIMEOUT` | `180` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
 
 ## Development
@@ -336,6 +396,8 @@ vegapunk/
 ├── approval.py          # interactive approval UI
 ├── db.py                # Turso schema, locking, and backups
 ├── scheduler_worker.py  # recurring-task worker process
+├── memory_jobs.py       # durable conversation jobs and memory review decisions
+├── memory_extraction.py # bounded model extraction and source validation
 ├── skills.py            # Agent Skills discovery and loading
 └── tools/               # built-in tool implementations and registry
 ```

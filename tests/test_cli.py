@@ -401,6 +401,30 @@ def test_main_builds_the_backend_from_the_configured_provider(monkeypatch, capsy
     assert "model stub-model" in capsys.readouterr().out  # banner shows the live model
 
 
+def test_new_memories_reach_the_next_turn_without_restarting(monkeypatch):
+    from vegapunk import memory
+    from tests.fake_provider import says
+    backend = backend_for([says("hello"), says("a chat"), says("welcome back")])
+    fake = backend.provider
+    monkeypatch.setattr("vegapunk.cli.create_backend", lambda _: backend)
+
+    class MemoryPrompter:
+        count = 0
+
+        def prompt(self):
+            self.count += 1
+            if self.count == 1:
+                return "hi"
+            if self.count == 2:
+                memory.save_memory("Prefers concise replies")
+                return "hello again"
+            return "/exit"
+
+    main(prompter=MemoryPrompter())
+    assert "Prefers concise replies" not in fake.requests[0].system
+    assert "Prefers concise replies" in fake.requests[-1].system
+
+
 def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsys):
     from vegapunk.approval import CLIApprover as RealCLIApprover
 
