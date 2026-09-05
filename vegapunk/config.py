@@ -1,8 +1,8 @@
 """All of Vegapunk's tunable settings in one place.
 
-Defaults match the local Docker Model Runner setup. Override any value with the
-matching ``VEGAPUNK_*`` environment variable — no code change needed when you
-move to a different machine, port, or model.
+Defaults use Codex with GPT-5.5. Override any value with the matching
+``VEGAPUNK_*`` environment variable, including the optional local Docker Model
+Runner setup — no code change needed when you move to another provider or model.
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ class Config:
     # logpose's provider catalog also works — "anthropic" (an API key rather
     # than the subscription), "codex", "openai", "openai-compat". Switch live
     # with /model, which lists them; this only sets the default at launch.
-    provider: str = os.getenv("VEGAPUNK_PROVIDER", "local")
+    provider: str = os.getenv("VEGAPUNK_PROVIDER", "codex")
 
     # Claude model override: a full model id (e.g. "claude-opus-5"), or the
     # short "opus"/"sonnet"/"haiku", which backend.py expands. Empty means
@@ -145,25 +145,25 @@ class Config:
     # message rather than an import-time crash.
     claude_effort: str = os.getenv("VEGAPUNK_CLAUDE_EFFORT", "")
 
-    # The same three settings for the Responses backends (codex, openai). Model
-    # empty means the provider's own default (gpt-5.5 on Codex, gpt-5.1 on
-    # OpenAI). The context window defaults to 0 — "unknown", which makes the
+    # The same three settings for the Responses backends (codex, openai).
+    # GPT-5.5 is the application default; an explicitly empty model uses the
+    # provider's own default. The context window defaults to 0 — "unknown", making the
     # toolbar show tokens without a percentage — rather than a guessed number
     # that would quietly mis-report how full the window is.
-    codex_model: str = os.getenv("VEGAPUNK_CODEX_MODEL", "")
+    codex_model: str = os.getenv("VEGAPUNK_CODEX_MODEL", "gpt-5.5")
     codex_context_window: int = int(os.getenv("VEGAPUNK_CODEX_CONTEXT_WINDOW", "0"))
     codex_effort: str = os.getenv("VEGAPUNK_CODEX_EFFORT", "")
 
     # The scheduler worker's default brain, spelled "provider[:model]" — the same
     # syntax the /schedule --model flag takes (e.g. "local", "claude:opus"), so
-    # one spelling covers both. Empty means inherit the provider/claude_model
+    # one spelling covers both. Empty inherits the provider and its model
     # above, i.e. whatever the REPL was launched with; the worker is a separate
     # process, so a live /model swap deliberately does *not* reach it. Set this
     # to "local" to keep unattended runs off a billed provider while your own
     # turns use it.
     scheduler_model: str = os.getenv("VEGAPUNK_SCHEDULER_MODEL", "")
 
-    # Effort for the worker's Claude turns; empty falls back to claude_effort.
+    # Effort for worker turns; empty inherits the selected provider's effort.
     # Ignored (with a note in the worker log) when the worker runs on local,
     # which has no effort setting.
     scheduler_effort: str = os.getenv("VEGAPUNK_SCHEDULER_EFFORT", "")

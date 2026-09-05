@@ -19,6 +19,11 @@ def _reloaded_config(monkeypatch, **env: str):
     """Reload vegapunk.config with the given env and return a fresh Config."""
     for key in (
         "VEGAPUNK_PROVIDER",
+        "VEGAPUNK_CODEX_MODEL",
+        "VEGAPUNK_CODEX_CONTEXT_WINDOW",
+        "VEGAPUNK_CODEX_EFFORT",
+        "VEGAPUNK_SCHEDULER_MODEL",
+        "VEGAPUNK_SCHEDULER_EFFORT",
         "VEGAPUNK_CLAUDE_MODEL",
         "VEGAPUNK_CLAUDE_CONTEXT_WINDOW",
         "VEGAPUNK_CLAUDE_EFFORT",
@@ -47,10 +52,12 @@ def _restore(monkeypatch) -> None:
     importlib.reload(config_module)
 
 
-def test_provider_defaults_to_local(monkeypatch):
+def test_provider_defaults_to_codex_with_gpt_5_5(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.provider == "local"
+        assert cfg.provider == "codex"
+        assert cfg.codex_model == "gpt-5.5"
+        assert cfg.scheduler_model == ""
         assert cfg.claude_model == ""
         assert cfg.claude_context_window == 200000
         assert cfg.claude_effort == ""  # "" = the SDK default ("high")
@@ -196,10 +203,12 @@ def test_provider_env_overrides(monkeypatch):
             VEGAPUNK_CLAUDE_MODEL="opus",
             VEGAPUNK_CLAUDE_CONTEXT_WINDOW="500000",
             VEGAPUNK_CLAUDE_EFFORT="max",
+            VEGAPUNK_CODEX_MODEL="gpt-5.4",
         )
         assert cfg.provider == "claude"
         assert cfg.claude_model == "opus"
         assert cfg.claude_context_window == 500000
         assert cfg.claude_effort == "max"
+        assert cfg.codex_model == "gpt-5.4"
     finally:
         _restore(monkeypatch)

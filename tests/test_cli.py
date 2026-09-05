@@ -397,7 +397,7 @@ def test_main_builds_the_backend_from_the_configured_provider(monkeypatch, capsy
     monkeypatch.setattr("vegapunk.cli.create_backend", fake_create)
     main(prompter=ScriptedPrompter(["/exit"]))  # session=None: built from config
 
-    assert seen["provider"] == config.provider  # "local" unless VEGAPUNK_PROVIDER says otherwise
+    assert seen["provider"] == config.provider  # honors VEGAPUNK_PROVIDER at launch
     assert "model stub-model" in capsys.readouterr().out  # banner shows the live model
 
 

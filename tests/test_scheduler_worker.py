@@ -91,11 +91,27 @@ def test_build_backend_applies_effort_with_fallback(monkeypatch):
         "vegapunk.scheduler_worker.config",
         replace(config, scheduler_model="claude", scheduler_effort="", claude_effort="xhigh"),
     )
-    _capture_create_backend(monkeypatch, _claude_backend())
-
     backend = scheduler_worker.build_backend()
 
     assert current_effort(backend) == "xhigh"  # fell back to the general claude effort
+
+
+@pytest.mark.parametrize("provider", ["codex", "openai"])
+@pytest.mark.parametrize("scheduler_model", ["", "codex:gpt-5.4"])
+def test_responses_scheduler_uses_its_own_model_and_effort(monkeypatch, provider, scheduler_model):
+    # Settings left over from Claude must not overwrite a Responses backend.
+    monkeypatch.setattr(
+        scheduler_worker, "config",
+        replace(config, provider=provider, scheduler_model=scheduler_model, scheduler_effort="",
+                codex_model="gpt-5.5", codex_effort="low",
+                claude_model="opus", claude_effort="max"),
+    )
+
+    backend = scheduler_worker.build_backend()
+
+    assert backend.provider.name == ("codex" if scheduler_model else provider)
+    assert backend.model_label == ("gpt-5.4" if scheduler_model else "gpt-5.5")
+    assert current_effort(backend) == "low"
 
 
 def test_build_backend_scheduler_effort_wins(monkeypatch):

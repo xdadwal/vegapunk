@@ -60,7 +60,7 @@ def build_backend() -> Backend:
 
     ``VEGAPUNK_SCHEDULER_MODEL`` (``provider[:model]``) wins; unset, the worker
     inherits the provider/model the REPL was launched with, since it inherits the
-    environment. Effort likewise falls back to ``VEGAPUNK_CLAUDE_EFFORT``.
+    environment. Effort likewise inherits the selected provider's configuration.
 
     Inheriting is the right default rather than pinning to ``local``: someone
     running ``VEGAPUNK_PROVIDER=claude`` usually does so *because* no local model
@@ -73,9 +73,9 @@ def build_backend() -> Backend:
     if config.scheduler_model:
         provider, model = parse_model_spec(config.scheduler_model)
     else:
-        provider, model = config.provider, config.claude_model
+        provider, model = config.provider, ""
     backend = create_backend(provider, with_model(config, provider, model))
-    effort = config.scheduler_effort or config.claude_effort
+    effort = config.scheduler_effort
     if effort:
         # Asking for an effort level on a backend that has none is a config
         # mismatch worth saying out loud rather than dropping silently.
