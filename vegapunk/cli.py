@@ -54,6 +54,8 @@ def _status_line(ctx: CommandContext) -> str:
     Identity comes from the live brain, not config — /model swaps it."""
     approval = ctx.approval_policy.mode
     left = f" {approval} · {ctx.session.model_label} · {ctx.current_name or 'unsaved'}"
+    if ctx.conversation_mode == "journal":
+        left += " · journal"
     right = _context_gauge(ctx.session.context_tokens, ctx.session.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
@@ -117,13 +119,25 @@ def main(
     # ctx exists before the prompter so the toolbar callable can close over
     # it — /save and /new then show up on the very next prompt render.
     ctx = CommandContext(session=session, approval_policy=approval_policy)
+    provided_prompt: str | None = None
+
+    def refresh_prompt() -> None:
+        nonlocal provided_prompt
+        if not owns_session and ctx.conversation_mode == "journal" and provided_prompt is None:
+            # Explicit journal mode also works with caller-supplied sessions;
+            # their custom regular prompt returns when they leave the mode.
+            provided_prompt = session.system_prompt
+        if owns_session or ctx.conversation_mode == "journal":
+            session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode,
+                                                          conversation_mode=ctx.conversation_mode))
+        elif provided_prompt is not None:
+            session.set_system_prompt(provided_prompt)
+            provided_prompt = None
 
     def toggle_approval() -> str:
         mode = approval_policy.toggle()
-        if owns_session:
-            # The tool gate already reads the mutable policy live. Keep the
-            # model-facing description equally current after Shift-Tab.
-            session.set_system_prompt(prompt.system_prompt(config, mode=mode))
+        # The tool gate reads the mutable policy live; keep its description current.
+        refresh_prompt()
         return mode
 
     if prompter is None:
@@ -222,8 +236,7 @@ def main(
 
             events = None
             try:
-                if owns_session:
-                    session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode))
+                refresh_prompt()
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.
@@ -291,11 +304,12 @@ def _autosave_turn(ctx: CommandContext) -> None:
                 "",
             )
             name = session_store.choose_name(ctx.session.suggest_name(), first)
-            session_store.save_session(name, ctx.session.messages)
+            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode)
             ctx.current_name = name
             print(style.paint(f"(saved as '{name}')", style.DIM, sys.stdout))
         else:
-            session_store.save_session(ctx.current_name, ctx.session.messages)
+            session_store.save_session(ctx.current_name, ctx.session.messages,
+                                       conversation_mode=ctx.conversation_mode)
     except KeyboardInterrupt:
         print(
             style.paint("  [session] autosave skipped (interrupted).", style.YELLOW, sys.stderr),

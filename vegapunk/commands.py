@@ -53,6 +53,7 @@ class CommandContext:
     scheduler: object | None = None
     scheduler_log: str | None = None
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
+    conversation_mode: session_store.SessionMode = "conversation"
 
 
 @dataclass
@@ -136,9 +137,21 @@ def _exit(ctx: CommandContext, arg: str) -> CommandResult:
 @command("new", "Start a fresh conversation", "reset")
 def _new(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.session.reset()
+    ctx.conversation_mode = "conversation"
     ctx.current_name = None  # next turn auto-names a fresh saved session
     ctx.pending_skill = None  # a fresh conversation drops staged state too
     return CommandResult(output="(new conversation)")
+
+
+@command("journal", "Start a fresh journal entry; /new returns to regular conversation")
+def _journal(ctx: CommandContext, arg: str) -> CommandResult:
+    if arg:
+        return CommandResult(output="Usage: /journal")
+    ctx.session.reset()
+    ctx.conversation_mode = "journal"
+    ctx.current_name = None
+    ctx.pending_skill = None
+    return CommandResult(output="Journal mode. Write in your own way, at your own pace. /new returns to regular conversation.")
 
 
 def _interactive() -> bool:
@@ -212,6 +225,7 @@ def _status(ctx: CommandContext, arg: str) -> CommandResult:
         f"Approval: {approval}",
         f"Context: {context}",
         f"Session: {ctx.current_name or 'unsaved'}",
+        f"Conversation mode: {ctx.conversation_mode}",
         f"Scheduler: {worker}",
         f"Workspace: {config.workspace_root}",
     ]))
@@ -449,9 +463,10 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
                 output=f"A session named '{name}' already exists — choose another name."
             )
         if ctx.current_name and ctx.current_name != name:
-            session_store.rename_session(ctx.current_name, name, ctx.session.messages)
+            session_store.rename_session(ctx.current_name, name, ctx.session.messages,
+                                         conversation_mode=ctx.conversation_mode)
         else:
-            session_store.save_session(name, ctx.session.messages)
+            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode)
     except db.StoreError as exc:
         return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
@@ -466,6 +481,7 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output="Usage: /sessions <name>")
     try:
         messages = session_store.load_session(name)
+        conversation_mode = session_store.load_session_mode(name)
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
@@ -479,9 +495,11 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         # exception would take the whole session down over one bad row.
         return CommandResult(output=f"Could not resume '{name}': {exc}")
     ctx.current_name = name
+    ctx.conversation_mode = conversation_mode
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
         output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
+               + (" Journal mode." if conversation_mode == "journal" else "")
     )
 
 

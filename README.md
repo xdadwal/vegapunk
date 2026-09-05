@@ -143,6 +143,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
 | `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
+| `/journal` | Start a fresh journal entry with a gentle, user-led conversation style. |
 | `/exit` | Quit Vegapunk. Alias: `/quit`; `Ctrl-D` also quits. |
 
 ## Model providers
@@ -174,6 +175,29 @@ backends when you need a supported integration.
 
 Switching models preserves the conversation. Reasoning state encoded by the previous provider is
 removed when necessary so it is not replayed to an incompatible backend.
+
+## Journal mode
+
+Use `/journal` to start a fresh entry, then write however you like: narrate your day, vent, think
+aloud, or leave a thought unfinished. Vegapunk responds with brief acknowledgments or gentle
+reflections. It avoids routine follow-up questions, unsolicited advice, diagnoses, exercises, and
+action plans. Ask directly when you want questions, a summary, or help exploring something.
+
+```text
+/journal
+Today felt busy, but sitting outside for a few minutes was nice. I just want to write for a bit.
+/save a-quiet-moment
+```
+
+The toolbar and `/status` show journal mode. Entries auto-save just like conversations, and
+`/sessions a-quiet-moment` restores both the entry and its journal mode. `/journal` starts another
+fresh entry; `/new` returns to regular conversation. Model and approval changes preserve the
+current conversation mode.
+
+Journal mode has its own system prompt and does not advertise task-oriented skills. Tools remain
+available for explicit requests under the existing approval rules. Journal entries use the same
+hourly memory-processing and review settings as other conversations; the extractor is instructed
+to omit transient feelings and status. Use `/memory review` and `/memory jobs` to inspect its work.
 
 ## Tools and approvals
 
