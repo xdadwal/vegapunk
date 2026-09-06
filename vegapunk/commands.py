@@ -190,7 +190,7 @@ def _install_backend(ctx: CommandContext, backend: Backend, *, agent_id: str | N
     ctx.agent_id = selected
 
 
-@command("agent", "Select an agent and its defaults: /agent [name]; /model and /effort override", "profile")
+@command("agent", "Select an agent and its defaults: /agent [name]; /model and /effort override")
 def _agent(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg:
         listing = "\n".join(

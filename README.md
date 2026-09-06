@@ -143,7 +143,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
 | `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
-| `/agent [name]` | List or select a Vegapunk agent and apply its model/effort defaults. Alias: `/profile`. |
+| `/agent [name]` | List or select a Vegapunk agent and apply its model/effort defaults. |
 | `/journal` | Start a fresh journal entry with a gentle, user-led conversation style. |
 | `/exit` | Quit Vegapunk. Alias: `/quit`; `Ctrl-D` also quits. |
 
@@ -180,7 +180,7 @@ removed when necessary so it is not replayed to an incompatible backend.
 ## Vegapunk agents
 
 Use `/agent` to see the definitions and execution defaults; `/agent edison` selects one.
-`/profile` remains an alias. The satellites retain their anime-inspired personalities and
+The satellites retain their anime-inspired personalities and
 scientific strengths, with these initial settings:
 
 | Agent | Voice and strengths | Default model | Effort |

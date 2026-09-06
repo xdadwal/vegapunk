@@ -41,6 +41,9 @@ def test_agent_switch_applies_defaults_and_keeps_history():
     assert ctx.session.messages == [user_turn('An earlier thought')]
     assert 'Lilith' in _status_line(ctx)
     assert 'lilith' in _argument_options('agent', [''])
+    assert 'Unknown command /profile' in dispatch('/profile shaka', ctx).output
+    assert _argument_options('profile', ['']) == []
+    assert ctx.agent_id == 'lilith'
     dispatch('/journal', ctx)
     assert ctx.agent_id == 'lilith'
     dispatch('/new', ctx)
@@ -143,7 +146,7 @@ def test_corrupt_saved_agent_does_not_replace_current_conversation():
     ('shaka', 'high'), ('pythagoras', 'high'), ('edison', 'medium'),
     ('lilith', 'medium'), ('atlas', 'low'), ('york', 'low'),
 ])
-def test_agent_defaults_and_profile_alias(name, effort):
+def test_agent_defaults_and_reset(name, effort):
     ctx = CommandContext(session_for())
     dispatch(f'/agent {name}', ctx)
     assert ctx.agent_id == name
@@ -151,7 +154,7 @@ def test_agent_defaults_and_profile_alias(name, effort):
     assert ctx.session.model_label == 'gpt-5.5'
     assert current_effort(ctx.session.backend) == effort
     dispatch('/effort xhigh', ctx)
-    dispatch(f'/profile {name}', ctx)
+    dispatch(f'/agent {name}', ctx)
     assert current_effort(ctx.session.backend) == effort
 
 
