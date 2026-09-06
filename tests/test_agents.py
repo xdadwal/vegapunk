@@ -271,3 +271,46 @@ def test_invalid_messages_do_not_install_saved_backend(monkeypatch):
     assert 'Could not resume' in dispatch('/sessions broken-messages', ctx).output
     assert ctx.session.backend is original
     assert ctx.session.messages == [user_turn('Keep this')]
+
+
+def test_interactive_agent_picker_marks_active_and_applies_selection(monkeypatch):
+    ctx = CommandContext(session_for())
+    dispatch('/agent shaka', ctx)
+    dispatch('/save selected', ctx)
+    def choose(title, options):
+        assert 'defaults' in title
+        assert [item.value for item in options if item.active] == ['shaka']
+        york = next(item for item in options if item.value == 'york')
+        assert 'codex:gpt-5.5' in york.detail and 'low' in york.detail
+        assert {item.value for item in options} == {'default', *NAMES}
+        return 'york'
+    monkeypatch.setattr('vegapunk.commands._interactive', lambda: True)
+    monkeypatch.setattr('vegapunk.commands.menu.choose', choose)
+    assert 'Agent: York' in dispatch('/agent', ctx).output
+    assert ctx.agent_id == session_store.load_session_agent('selected') == 'york'
+    assert current_effort(ctx.session.backend) == 'low'
+
+
+def test_agent_picker_cancel_preserves_overrides_and_direct_selection_skips_picker(monkeypatch):
+    ctx = CommandContext(session_for())
+    dispatch('/agent shaka', ctx)
+    dispatch('/effort low', ctx)
+    backend = ctx.session.backend
+    calls = []
+    def cancel(*args):
+        calls.append(args)
+        return None
+    monkeypatch.setattr('vegapunk.commands._interactive', lambda: True)
+    monkeypatch.setattr('vegapunk.commands.menu.choose', cancel)
+    assert dispatch('/agent', ctx).output == '(unchanged)'
+    assert ctx.session.backend is backend and ctx.agent_id == 'shaka'
+    dispatch('/agent edison', ctx)
+    assert ctx.agent_id == 'edison' and len(calls) == 1
+
+
+def test_noninteractive_agent_lists_without_picker(monkeypatch):
+    monkeypatch.setattr('vegapunk.commands._interactive', lambda: False)
+    def unexpected(*args):
+        pytest.fail('picker opened without a terminal')
+    monkeypatch.setattr('vegapunk.commands.menu.choose', unexpected)
+    assert 'shaka' in dispatch('/agent', CommandContext(session_for())).output
