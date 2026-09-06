@@ -156,8 +156,9 @@ def test_build_agent_uses_the_complete_shared_prompt(monkeypatch):
     monkeypatch.setattr("vegapunk.scheduler_worker.Agent", CapturedAgent)
     seen: dict = {}
 
-    def composed_prompt(cfg, *, mode):
+    def composed_prompt(cfg, *, mode, delegation=True):
         seen["mode"] = mode
+        seen["delegation"] = delegation
         return "BASE\nMEMORY\nSKILLS\nUNATTENDED"
 
     monkeypatch.setattr("vegapunk.scheduler_worker.prompt.system_prompt", composed_prompt)
@@ -166,6 +167,7 @@ def test_build_agent_uses_the_complete_shared_prompt(monkeypatch):
 
     assert captured["system"] == "BASE\nMEMORY\nSKILLS\nUNATTENDED"
     assert seen["mode"] == "unattended"
+    assert seen["delegation"] is False
 
 
 def test_watch_parent_stops_when_reparented(monkeypatch):

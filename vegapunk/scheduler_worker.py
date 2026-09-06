@@ -97,7 +97,7 @@ def build_agent(backend: Backend) -> Agent:
     """
     return Agent(
         backend.provider,
-        system=prompt.system_prompt(config, mode="unattended"),
+        system=prompt.system_prompt(config, mode="unattended", delegation=False),
         tools=ALL_TOOLS,
         max_iterations=config.max_steps,
         extra=backend.extra,
@@ -153,7 +153,7 @@ def main() -> None:
         memory_thread.start()
 
     def current_agent() -> Agent:
-        agent.system = prompt.system_prompt(config, mode="unattended")
+        agent.system = prompt.system_prompt(config, mode="unattended", delegation=False)
         return agent
 
     try:
