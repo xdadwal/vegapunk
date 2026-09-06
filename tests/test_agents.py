@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from vegapunk import db, prompt, session_store
+from vegapunk import agents, db, prompt, session_store
 from vegapunk.backend import Backend, current_effort
 from tests.fake_provider import FakeProvider
 from vegapunk.cli import _autosave_turn, _status_line, main
@@ -93,6 +93,7 @@ def test_failed_agent_write_keeps_active_agent(monkeypatch):
 def test_agent_prompt_keeps_policies_and_journal_boundaries(agent_id):
     regular = prompt.system_prompt(config, mode='manual', agent_id=agent_id)
     assert f'Agent: {agent_id.title()}' in regular
+    assert f'Role: {agents.AGENTS[agent_id].role}.' in regular
     assert config.system_prompt in regular
     assert 'Approval mode: manual' in regular
     journal = prompt.system_prompt(config, mode='manual', conversation_mode='journal', agent_id=agent_id)

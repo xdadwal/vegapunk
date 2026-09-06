@@ -194,7 +194,8 @@ def _install_backend(ctx: CommandContext, backend: Backend, *, agent_id: str | N
 def _agent(ctx: CommandContext, arg: str) -> CommandResult:
     if not arg:
         listing = "\n".join(
-            f"  {name}: {item.description} [{item.model or 'launch configuration'}"
+            f"  {name}: {item.role}; {item.description} "
+            f"[{item.model or 'launch configuration'}"
             f"{(' · ' + item.effort) if item.effort else ''}]"
             for name, item in agents.AGENTS.items()
         )
@@ -209,6 +210,7 @@ def _agent(ctx: CommandContext, arg: str) -> CommandResult:
     except (ValueError, db.StoreError) as exc:
         return CommandResult(output=f"Could not select agent: {exc}")
     return CommandResult(output=f"Agent: {selected.name} — {selected.description}.\n"
+                                f"Role: {selected.role}.\n"
                                 f"Model: {backend.selector} · Effort: {current_effort(backend) or 'API default'}")
 
 
