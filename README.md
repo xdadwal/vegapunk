@@ -183,20 +183,28 @@ Use `/agent` to see the definitions and execution defaults; `/agent edison` sele
 The satellites retain their anime-inspired personalities and
 scientific strengths, with these initial settings:
 
-| Agent | Voice and strengths | Default model | Effort |
-| --- | --- | --- | --- |
-| `shaka` | Calm and principled; logical analysis and careful judgment. | Codex / GPT-5.5 | `high` |
-| `lilith` | Bold, crafty, competitive; inventive engineering and resourcefulness. | Codex / GPT-5.5 | `medium` |
-| `edison` | Energetic and curious; invention, ideas, and experiments. | Codex / GPT-5.5 | `medium` |
-| `pythagoras` | Patient and analytical; observation, evidence, and synthesis. | Codex / GPT-5.5 | `high` |
-| `atlas` | Fiery and direct; hands-on explanations and troubleshooting. | Codex / GPT-5.5 | `low` |
-| `york` | Relaxed and comfort-loving; convenience, clever shortcuts, and less wasted effort. | Codex / GPT-5.5 | `low` |
+| Agent | Role | Voice and strengths | Default model | Effort |
+| --- | --- | --- | --- | --- |
+| `shaka` | Planning and review | Calm and principled; logical analysis and careful judgment. | Codex / GPT-5.5 | `high` |
+| `lilith` | Implementation | Bold, crafty, competitive; inventive engineering and resourcefulness. | Codex / GPT-5.5 | `medium` |
+| `edison` | Ideation and experiments | Energetic and curious; invention, ideas, and experiments. | Codex / GPT-5.5 | `medium` |
+| `pythagoras` | Research and synthesis | Patient and analytical; observation, evidence, and synthesis. | Codex / GPT-5.5 | `high` |
+| `atlas` | Debugging | Fiery and direct; hands-on explanations and troubleshooting. | Codex / GPT-5.5 | `low` |
+| `york` | Simplification and optimization | Relaxed and comfort-loving; convenience, clever shortcuts, and less wasted effort. | Codex / GPT-5.5 | `low` |
 
 These are starting points, not benchmarked optima. GPT-5.5 remains the common model default;
 reasoning effort allocates more time to analysis or favors responsiveness. See
 [OpenAI's effort guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.5).
 Character instructions adapt [Vegapunk's satellites](https://onepiece.fandom.com/wiki/Vegapunk);
 they do not grant fictional abilities or exclusive tools. Accuracy and tool approvals remain in force.
+
+The primary conversation can also call `delegate` when a specialist role would materially improve
+the result. Roles divide responsibility, not capability: every delegate receives the same complete
+tool registry and an isolated conversation on a separately spawned provider for the live model.
+Independent delegate calls requested together run concurrently in background threads, and the
+primary agent waits for every result before it can synthesize and finish its reply. An interrupted
+turn also drains active delegate work before returning to the prompt. Delegates run unattended, so
+approval-gated actions, `ask_user`, and recursive delegation fail closed.
 
 Override the active choice with `/model codex gpt-5.4` or `/effort medium` (other supported
 providers work too). Overrides belong to the current conversation and are saved immediately for
@@ -261,6 +269,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
 | `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and inline Ctrl+N notes. | — |
+| `delegate` | Run a bounded specialist role in a background thread and wait for its result. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers

@@ -19,7 +19,7 @@ from logpose import ToolGateResult, ToolUseBlock
 
 from .approval import Approver
 from . import questions
-from .tools import GUARDED
+from .tools.registry import GUARDED
 
 # Results fed back when a guarded tool is not allowed to run. Both are worded to
 # steer a small model away from immediately re-requesting the same tool.
@@ -29,9 +29,18 @@ NO_GATE = (
     "Do not retry it; tell the user it can't run in this context."
 )
 QUESTION_TOOL = "ask_user"
+DELEGATION_TOOL = "delegate"
 INVALID_QUESTION = (
     "ask_user needs a non-empty question, 1 to 5 distinct non-empty options, "
     "and a preferred_option that exactly matches one option."
+)
+QUESTION_UNAVAILABLE = (
+    "Blocked: ask_user is unavailable in a delegated background role. "
+    "Continue with the supplied task context or report what the primary agent must clarify."
+)
+NESTED_DELEGATION = (
+    "Blocked: delegated roles cannot delegate again. Complete this bounded task yourself "
+    "or report the limitation to the primary agent."
 )
 
 
@@ -55,7 +64,12 @@ def denied_with_feedback(feedback: str) -> str:
     )
 
 
-def make_gate(approver: Approver | None):
+def make_gate(
+    approver: Approver | None,
+    *,
+    allow_questions: bool = True,
+    allow_delegation: bool = True,
+):
     """Build the gate logpose consults before running each requested tool.
 
     Returns ``None`` to let a call through, or the result to hand the model in
@@ -64,6 +78,8 @@ def make_gate(approver: Approver | None):
 
     async def gate(call: ToolUseBlock) -> str | ToolGateResult | None:
         if call.name == QUESTION_TOOL:
+            if not allow_questions:
+                return ToolGateResult(QUESTION_UNAVAILABLE, is_error=True)
             # A question is deliberately answered in the pre-execution gate:
             # logpose applies tool deadlines only to handlers, and cancelling a
             # timed-out sync PromptSession would leave it reading the terminal
@@ -80,6 +96,8 @@ def make_gate(approver: Approver | None):
             except KeyboardInterrupt as exc:
                 raise ApprovalCancelled("cancelled at question prompt") from exc
             return ToolGateResult(result, is_error=False)
+        if call.name == DELEGATION_TOOL and not allow_delegation:
+            return ToolGateResult(NESTED_DELEGATION, is_error=True)
         if call.name not in GUARDED:
             return None  # read-only, or a name that doesn't exist — runs freely
         if approver is None:
