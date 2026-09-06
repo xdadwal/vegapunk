@@ -179,7 +179,9 @@ removed when necessary so it is not replayed to an incompatible backend.
 
 ## Vegapunk agents
 
-Use `/agent` to see the definitions and execution defaults; `/agent edison` selects one.
+Use `/agent` to open an arrow-key picker showing each agent and its execution defaults.
+Press Enter to select, or Esc to cancel. `/agent edison` selects directly; without an
+interactive terminal, `/agent` prints the definitions and defaults.
 The satellites retain their anime-inspired personalities and
 scientific strengths, with these initial settings:
 
