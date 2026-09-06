@@ -161,6 +161,7 @@ class _InterruptThenReplySession:
     that the renderer's _spoke/_line_open don't leak across the interrupt —
     see Renderer.reply_abort's docstring."""
 
+    backend = backend_for(model_label="stub-model")
     model_label = "stub-model"  # main() reads these for the banner and toolbar
     context_window = 0
     messages: list = []  # empty history is fine — autosave only needs it iterable
@@ -435,7 +436,7 @@ def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsy
         policies.append(policy)
         return RealCLIApprover(policy)
 
-    def compose_prompt(cfg, *, mode, conversation_mode="conversation", profile="default"):
+    def compose_prompt(cfg, *, mode, conversation_mode="conversation", agent_id="default"):
         prompt_modes.append(mode)
         return f"SYS {mode}"
 
@@ -455,7 +456,7 @@ def test_main_auto_wires_the_live_policy_and_prints_a_warning(monkeypatch, capsy
 def test_shift_tab_refreshes_the_model_facing_approval_mode(monkeypatch, capsys):
     prompt_modes = []
 
-    def compose_prompt(cfg, *, mode, conversation_mode="conversation", profile="default"):
+    def compose_prompt(cfg, *, mode, conversation_mode="conversation", agent_id="default"):
         prompt_modes.append(mode)
         return f"SYS {mode}"
 

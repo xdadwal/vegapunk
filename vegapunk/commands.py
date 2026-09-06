@@ -18,10 +18,11 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import db, memory, memory_jobs, menu, profiles, scheduler, session_store, skills, transcript
+from . import agents, db, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
+    Backend,
     EFFORT_LEVELS,
     available_models,
     create_backend,
@@ -54,7 +55,7 @@ class CommandContext:
     scheduler_log: str | None = None
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
     conversation_mode: session_store.SessionMode = "conversation"
-    profile: str = "default"
+    agent_id: str = "default"
 
 
 @dataclass
@@ -144,24 +145,71 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="(new conversation)")
 
 
-@command("profile", "Choose a personality: /profile [default|shaka|lilith|edison|pythagoras|atlas|york]")
-def _profile(ctx: CommandContext, arg: str) -> CommandResult:
-    if not arg:
-        listing = "\n".join(f"  {name}: {item.description}" for name, item in profiles.PROFILES.items())
-        return CommandResult(output=f"Active profile: {ctx.profile}\n{listing}\nUse /profile <name> to switch.")
-    name = arg.lower()
-    try:
-        selected = profiles.get_profile(name)
-    except ValueError as exc:
-        return CommandResult(output=str(exc))
+def _execution_backend(ctx: CommandContext, selector: str, effort: str) -> Backend:
+    """Resolve saved/agent defaults without network discovery or inherited live effort."""
+    if selector == ctx.session.backend.selector:
+        backend = ctx.session.backend
+    else:
+        provider, separator, model = selector.partition(":")
+        if not provider or not separator or not model:
+            raise ValueError("Expected a saved model in provider:model form")
+        cfg = replace(config, codex_effort="", claude_effort="")
+        backend = create_backend(provider, with_model(cfg, provider, model))
+    if backend.supports_effort:
+        return with_effort(backend, effort)
+    if effort:
+        _discard_backend(ctx, backend)
+        raise ValueError(f"{backend.model_label} has no effort setting")
+    return backend
+
+
+def _agent_backend(ctx: CommandContext, agent_id: str) -> Backend:
+    definition = agents.get_agent(agent_id)
+    if not definition.model:
+        return create_backend(config.provider, config)
+    return _execution_backend(ctx, definition.model, definition.effort)
+
+
+def _discard_backend(ctx: CommandContext, backend: Backend) -> None:
+    # An uninstalled provider has never been used on an agent's event loop.
+    close = getattr(backend.provider, "aclose", None)
+    if backend.provider is not ctx.session.backend.provider and callable(close):
+        asyncio.run(close())
+
+
+def _install_backend(ctx: CommandContext, backend: Backend, *, agent_id: str | None = None) -> None:
+    selected = ctx.agent_id if agent_id is None else agent_id
     try:
         if ctx.current_name:
-            # A voice change has no new source text for the memory scanner.
-            db.execute("UPDATE sessions SET profile=? WHERE slug=?", (name, ctx.current_name))
-    except db.StoreError as exc:
-        return CommandResult(output=f"Could not save profile: {exc}")
-    ctx.profile = name
-    return CommandResult(output=f"Profile: {selected.name} — {selected.description}.")
+            session_store.update_session_execution(ctx.current_name, selected, backend.selector,
+                                                   current_effort(backend))
+    except db.StoreError:
+        _discard_backend(ctx, backend)
+        raise
+    ctx.session.swap_backend(backend)
+    ctx.agent_id = selected
+
+
+@command("agent", "Select an agent and its defaults: /agent [name]; /model and /effort override", "profile")
+def _agent(ctx: CommandContext, arg: str) -> CommandResult:
+    if not arg:
+        listing = "\n".join(
+            f"  {name}: {item.description} [{item.model or 'launch configuration'}"
+            f"{(' · ' + item.effort) if item.effort else ''}]"
+            for name, item in agents.AGENTS.items()
+        )
+        return CommandResult(output=f"Active agent: {ctx.agent_id} · {ctx.session.backend.selector} · "
+                                    f"{current_effort(ctx.session.backend) or 'API default'}\n{listing}\n"
+                                    "Use /agent <name> to apply defaults; /model and /effort override them.")
+    name = arg.lower()
+    try:
+        selected = agents.get_agent(name)
+        backend = _agent_backend(ctx, name)
+        _install_backend(ctx, backend, agent_id=name)
+    except (ValueError, db.StoreError) as exc:
+        return CommandResult(output=f"Could not select agent: {exc}")
+    return CommandResult(output=f"Agent: {selected.name} — {selected.description}.\n"
+                                f"Model: {backend.selector} · Effort: {current_effort(backend) or 'API default'}")
 
 
 @command("journal", "Start a fresh journal entry; /new returns to regular conversation")
@@ -247,7 +295,7 @@ def _status(ctx: CommandContext, arg: str) -> CommandResult:
         f"Context: {context}",
         f"Session: {ctx.current_name or 'unsaved'}",
         f"Conversation mode: {ctx.conversation_mode}",
-        f"Profile: {profiles.get_profile(ctx.profile).name}",
+        f"Agent: {agents.get_agent(ctx.agent_id).name}",
         f"Scheduler: {worker}",
         f"Workspace: {config.workspace_root}",
     ]))
@@ -329,7 +377,10 @@ def _switch(ctx: CommandContext, provider: str, model: str) -> CommandResult:
             backend = with_effort(backend, effort)
     except ValueError as exc:
         return CommandResult(output=str(exc))
-    ctx.session.swap_backend(backend)
+    try:
+        _install_backend(ctx, backend)
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not save model: {exc}")
     return CommandResult(
         output=f"(model switched to {backend.model_label} — the conversation continues)"
     )
@@ -429,7 +480,9 @@ def _effort(ctx: CommandContext, arg: str) -> CommandResult:
         # own default rather than one we picked.
         return CommandResult(output=f"Effort: {current_effort(backend) or 'the API default'}")
     try:
-        ctx.session.set_effort(arg.lower())
+        _install_backend(ctx, with_effort(backend, arg.lower()))
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not save effort: {exc}")
     except ValueError as exc:
         return CommandResult(output=str(exc))  # names the valid levels
     return CommandResult(output=f"(effort set to {arg.lower()})")
@@ -486,10 +539,14 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
             )
         if ctx.current_name and ctx.current_name != name:
             session_store.rename_session(ctx.current_name, name, ctx.session.messages,
-                                         conversation_mode=ctx.conversation_mode, profile=ctx.profile)
+                                         conversation_mode=ctx.conversation_mode, agent_id=ctx.agent_id,
+                                         model_selector=ctx.session.backend.selector,
+                                         effort=current_effort(ctx.session.backend))
         else:
             session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode,
-                                       profile=ctx.profile)
+                                       agent_id=ctx.agent_id,
+                                         model_selector=ctx.session.backend.selector,
+                                         effort=current_effort(ctx.session.backend))
     except db.StoreError as exc:
         return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
@@ -505,14 +562,22 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     try:
         messages = session_store.load_session(name)
         conversation_mode = session_store.load_session_mode(name)
-        profile = session_store.load_session_profile(name)
+        agent_id = session_store.load_session_agent(name)
+        model_selector, effort = session_store.load_session_execution(name)
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
         return CommandResult(output=f"Could not load '{name}': {exc}")
+    backend = None
     try:
-        ctx.session.restore(messages)
+        if model_selector:
+            backend = _execution_backend(ctx, model_selector, effort)
+        elif agent_id != "default":
+            backend = _agent_backend(ctx, agent_id)
+        ctx.session.restore(messages, backend=backend)
     except ValueError as exc:
+        if backend is not None:
+            _discard_backend(ctx, backend)
         # A blob that got past the format check but still won't parse — a
         # half-written row, or a block type this version doesn't know. Commands
         # are dispatched outside the REPL's error handler, so an escaping
@@ -520,12 +585,12 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not resume '{name}': {exc}")
     ctx.current_name = name
     ctx.conversation_mode = conversation_mode
-    ctx.profile = profile
+    ctx.agent_id = agent_id
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
         output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
                + (" Journal mode." if conversation_mode == "journal" else "")
-               + (f" Profile: {profiles.get_profile(profile).name}." if profile != "default" else "")
+               + (f" Agent: {agents.get_agent(agent_id).name}." if agent_id != "default" else "")
     )
 
 

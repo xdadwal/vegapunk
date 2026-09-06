@@ -15,8 +15,9 @@ import sys
 from datetime import datetime
 from typing import Literal
 
-from . import db, profiles
+from . import agents, db
 from .transcript import count_user_turns
+from .backend import validate_effort
 
 SessionMode = Literal["conversation", "journal"]
 
@@ -98,32 +99,60 @@ def choose_name(suggested: str, fallback_text: str = "") -> str:
 
 
 def save_session(name: str, messages: list[dict], *, conversation_mode: SessionMode = "conversation",
-                 profile: str = "default") -> None:
+                 agent_id: str = "default", model_selector: str = "", effort: str = "") -> None:
     """Persist ``messages`` under ``name`` (insert or overwrite). Raises
     ``db.StoreError`` on failure; ``created_at`` is preserved across overwrites."""
     turns = count_user_turns(messages)
     conversation_mode = validate_session_mode(conversation_mode)
-    profiles.get_profile(profile)
+    agents.get_agent(agent_id)
+    if effort:
+        validate_effort(effort)
     now = db.utcnow()
     db.execute(
-        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, profile) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, agent_id, model_selector, effort) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(slug) DO UPDATE SET "
         "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at, "
-        "conversation_mode = excluded.conversation_mode, profile = excluded.profile",
-        (name, json.dumps(messages), turns, now, now, conversation_mode, profile),
+        "conversation_mode = excluded.conversation_mode, agent_id = excluded.agent_id, "
+        "model_selector = excluded.model_selector, effort = excluded.effort",
+        (name, json.dumps(messages), turns, now, now, conversation_mode, agent_id, model_selector, effort),
     )
 
 
-def load_session_profile(name: str) -> str:
+def load_session_execution(name: str) -> tuple[str, str]:
+    """Read a saved model selector and effort; empty values denote a legacy session."""
+    rows = db.query("SELECT model_selector,effort FROM sessions WHERE slug=?", (name,))
+    if not rows:
+        raise SessionNotFound(name)
+    model, effort = rows[0]
+    if not isinstance(model, str) or not isinstance(effort, str):
+        raise db.StoreError(f"session '{name}' has invalid execution settings")
+    try:
+        if effort:
+            validate_effort(effort)
+    except ValueError as exc:
+        raise db.StoreError(f"session '{name}' has invalid reasoning effort") from exc
+    return model, effort
+
+
+def update_session_execution(name: str, agent_id: str, model_selector: str, effort: str) -> None:
+    """Persist a selection without making unchanged messages eligible for another scan."""
+    agents.get_agent(agent_id)
+    if effort:
+        validate_effort(effort)
+    db.execute("UPDATE sessions SET agent_id=?,model_selector=?,effort=? WHERE slug=?",
+               (agent_id, model_selector, effort, name))
+
+
+def load_session_agent(name: str) -> str:
     """Read and validate the saved voice before replacing the current conversation."""
-    rows = db.query("SELECT profile FROM sessions WHERE slug = ?", (name,))
+    rows = db.query("SELECT agent_id FROM sessions WHERE slug = ?", (name,))
     if not rows:
         raise SessionNotFound(name)
     try:
-        profiles.get_profile(rows[0][0])
+        agents.get_agent(rows[0][0])
     except ValueError as exc:
-        raise db.StoreError(f"session '{name}' has an unsupported profile") from exc
+        raise db.StoreError(f"session '{name}' has an unsupported agent") from exc
     return rows[0][0]
 
 
@@ -169,26 +198,36 @@ def delete_session(name: str) -> None:
 
 
 def rename_session(old: str, new: str, messages: list[dict], *, conversation_mode: SessionMode | None = None,
-                   profile: str | None = None) -> None:
+                   agent_id: str | None = None, model_selector: str | None = None,
+                   effort: str | None = None) -> None:
     """Rename atomically, preserving extraction progress and source attribution."""
     if old == new:
         mode = conversation_mode or (load_session_mode(old) if exists(old) else "conversation")
-        selected = profile if profile is not None else (load_session_profile(old) if exists(old) else "default")
-        save_session(new, messages, conversation_mode=mode, profile=selected)
+        selected = agent_id if agent_id is not None else (load_session_agent(old) if exists(old) else "default")
+        saved_model, saved_effort = load_session_execution(old) if exists(old) else ("", "")
+        save_session(new, messages, conversation_mode=mode, agent_id=selected,
+                     model_selector=model_selector if model_selector is not None else saved_model,
+                     effort=effort if effort is not None else saved_effort)
         return
     encoded, stamp = json.dumps(messages), db.utcnow()
     with db.transaction(immediate=True) as conn:
         if conn.execute("SELECT 1 FROM sessions WHERE slug=?", (new,)).fetchone():
             raise db.StoreError(f"A session named '{new}' already exists")
-        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode,profile FROM sessions WHERE slug=?",
+        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode,agent_id,model_selector,effort FROM sessions WHERE slug=?",
                               (old,)).fetchone()
         mode = validate_session_mode(conversation_mode or (source[3] if source else "conversation"))
-        selected = profile if profile is not None else (source[4] if source else "default")
-        profiles.get_profile(selected)
+        selected = agent_id if agent_id is not None else (source[4] if source else "default")
+        agents.get_agent(selected)
+        selected_model = model_selector if model_selector is not None else (source[5] if source else "")
+        selected_effort = effort if effort is not None else (source[6] if source else "")
+        if selected_effort:
+            validate_effort(selected_effort)
         created = source[0] if source else stamp
         updated = source[1] if source and source[2] == encoded else stamp
-        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode,profile) "
-                     "VALUES (?,?,?,?,?,?,?)", (new, encoded, count_user_turns(messages), created, updated, mode, selected))
+        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode,agent_id,model_selector,effort) "
+                     "VALUES (?,?,?,?,?,?,?,?,?)",
+                     (new, encoded, count_user_turns(messages), created, updated, mode, selected,
+                      selected_model, selected_effort))
         conn.execute("DELETE FROM sessions WHERE slug=?", (old,))
         conn.execute("UPDATE memory_candidates SET session_slug=? WHERE session_slug=?", (new, old))
         # An in-flight result uses the old slug and must not commit after rename.

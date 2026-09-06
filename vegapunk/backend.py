@@ -214,6 +214,11 @@ class Backend:
     effort_key: str = ""
 
     @property
+    def selector(self) -> str:
+        """Resolved provider and model, suitable for restoring this execution choice."""
+        return f"{self.provider.name}:{self.model_label}"
+
+    @property
     def supports_effort(self) -> bool:
         """Whether this backend takes an effort level at all.
 

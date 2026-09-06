@@ -245,8 +245,8 @@ class Session:
         """Change the model's effort level (the /effort command).
 
         Raises ``ValueError`` on a bad level, or on a backend that has no such
-        setting. Rebuilds the agent — effort rides on every request — but keeps
-        the same provider, so the connection underneath survives.
+        setting. Updates request parameters in place, keeping the provider and
+        its event loop alive.
         """
         self.swap_backend(with_effort(self._backend, level))
 
@@ -261,18 +261,19 @@ class Session:
         self.context_tokens = None  # a fresh conversation has no footprint yet
         self._last_reasoning = ""
 
-    def restore(self, messages: list[dict]) -> None:
+    def restore(self, messages: list[dict], *, backend: Backend | None = None) -> None:
         """Replace the conversation with a saved one (resume).
 
         Raises ``ValueError`` if a message doesn't parse — the caller has
         already checked the format, so this is the backstop, not the gate.
         """
         # Thinking is stripped for the same reason as in swap_backend: a saved
-        # conversation carries no record of which model produced it, so its
-        # thinking blocks cannot be assumed replayable to whatever is live now.
-        self._conversation = Conversation(
-            _portable([Message.model_validate(m) for m in messages])
-        )
+        # conversation can contain turns from several models; the saved active
+        # model does not establish which provider produced each thinking block.
+        restored = Conversation(_portable([Message.model_validate(m) for m in messages]))
+        if backend is not None:
+            self.swap_backend(backend)
+        self._conversation = restored
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None
