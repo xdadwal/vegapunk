@@ -15,7 +15,7 @@ from collections.abc import Generator
 
 from logpose import TextDelta
 
-from . import db, embedding, prompt, session_store, style, transcript, worker
+from . import db, embedding, profiles, prompt, session_store, style, transcript, worker
 from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend
 from .commands import CommandContext, dispatch
@@ -56,6 +56,8 @@ def _status_line(ctx: CommandContext) -> str:
     left = f" {approval} · {ctx.session.model_label} · {ctx.current_name or 'unsaved'}"
     if ctx.conversation_mode == "journal":
         left += " · journal"
+    if ctx.profile != "default":
+        left += f" · {profiles.get_profile(ctx.profile).name}"
     right = _context_gauge(ctx.session.context_tokens, ctx.session.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
@@ -123,13 +125,15 @@ def main(
 
     def refresh_prompt() -> None:
         nonlocal provided_prompt
-        if not owns_session and ctx.conversation_mode == "journal" and provided_prompt is None:
+        custom_mode = ctx.conversation_mode == "journal" or ctx.profile != "default"
+        if not owns_session and custom_mode and provided_prompt is None:
             # Explicit journal mode also works with caller-supplied sessions;
             # their custom regular prompt returns when they leave the mode.
             provided_prompt = session.system_prompt
-        if owns_session or ctx.conversation_mode == "journal":
+        if owns_session or custom_mode:
             session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode,
-                                                          conversation_mode=ctx.conversation_mode))
+                                                          conversation_mode=ctx.conversation_mode,
+                                                          profile=ctx.profile))
         elif provided_prompt is not None:
             session.set_system_prompt(provided_prompt)
             provided_prompt = None
@@ -304,12 +308,13 @@ def _autosave_turn(ctx: CommandContext) -> None:
                 "",
             )
             name = session_store.choose_name(ctx.session.suggest_name(), first)
-            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode)
+            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode,
+                                       profile=ctx.profile)
             ctx.current_name = name
             print(style.paint(f"(saved as '{name}')", style.DIM, sys.stdout))
         else:
             session_store.save_session(ctx.current_name, ctx.session.messages,
-                                       conversation_mode=ctx.conversation_mode)
+                                       conversation_mode=ctx.conversation_mode, profile=ctx.profile)
     except KeyboardInterrupt:
         print(
             style.paint("  [session] autosave skipped (interrupted).", style.YELLOW, sys.stderr),

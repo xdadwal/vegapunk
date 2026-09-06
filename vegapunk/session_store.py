@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from typing import Literal
 
-from . import db
+from . import db, profiles
 from .transcript import count_user_turns
 
 SessionMode = Literal["conversation", "journal"]
@@ -97,20 +97,34 @@ def choose_name(suggested: str, fallback_text: str = "") -> str:
     return unique_name(base)
 
 
-def save_session(name: str, messages: list[dict], *, conversation_mode: SessionMode = "conversation") -> None:
+def save_session(name: str, messages: list[dict], *, conversation_mode: SessionMode = "conversation",
+                 profile: str = "default") -> None:
     """Persist ``messages`` under ``name`` (insert or overwrite). Raises
     ``db.StoreError`` on failure; ``created_at`` is preserved across overwrites."""
     turns = count_user_turns(messages)
     conversation_mode = validate_session_mode(conversation_mode)
+    profiles.get_profile(profile)
     now = db.utcnow()
     db.execute(
-        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, profile) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(slug) DO UPDATE SET "
         "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at, "
-        "conversation_mode = excluded.conversation_mode",
-        (name, json.dumps(messages), turns, now, now, conversation_mode),
+        "conversation_mode = excluded.conversation_mode, profile = excluded.profile",
+        (name, json.dumps(messages), turns, now, now, conversation_mode, profile),
     )
+
+
+def load_session_profile(name: str) -> str:
+    """Read and validate the saved voice before replacing the current conversation."""
+    rows = db.query("SELECT profile FROM sessions WHERE slug = ?", (name,))
+    if not rows:
+        raise SessionNotFound(name)
+    try:
+        profiles.get_profile(rows[0][0])
+    except ValueError as exc:
+        raise db.StoreError(f"session '{name}' has an unsupported profile") from exc
+    return rows[0][0]
 
 
 def load_session_mode(name: str) -> SessionMode:
@@ -154,23 +168,27 @@ def delete_session(name: str) -> None:
         conn.execute("DELETE FROM memory_jobs WHERE session_slug=?", (name,))
 
 
-def rename_session(old: str, new: str, messages: list[dict], *, conversation_mode: SessionMode | None = None) -> None:
+def rename_session(old: str, new: str, messages: list[dict], *, conversation_mode: SessionMode | None = None,
+                   profile: str | None = None) -> None:
     """Rename atomically, preserving extraction progress and source attribution."""
     if old == new:
         mode = conversation_mode or (load_session_mode(old) if exists(old) else "conversation")
-        save_session(new, messages, conversation_mode=mode)
+        selected = profile if profile is not None else (load_session_profile(old) if exists(old) else "default")
+        save_session(new, messages, conversation_mode=mode, profile=selected)
         return
     encoded, stamp = json.dumps(messages), db.utcnow()
     with db.transaction(immediate=True) as conn:
         if conn.execute("SELECT 1 FROM sessions WHERE slug=?", (new,)).fetchone():
             raise db.StoreError(f"A session named '{new}' already exists")
-        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode FROM sessions WHERE slug=?",
+        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode,profile FROM sessions WHERE slug=?",
                               (old,)).fetchone()
         mode = validate_session_mode(conversation_mode or (source[3] if source else "conversation"))
+        selected = profile if profile is not None else (source[4] if source else "default")
+        profiles.get_profile(selected)
         created = source[0] if source else stamp
         updated = source[1] if source and source[2] == encoded else stamp
-        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode) "
-                     "VALUES (?,?,?,?,?,?)", (new, encoded, count_user_turns(messages), created, updated, mode))
+        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode,profile) "
+                     "VALUES (?,?,?,?,?,?,?)", (new, encoded, count_user_turns(messages), created, updated, mode, selected))
         conn.execute("DELETE FROM sessions WHERE slug=?", (old,))
         conn.execute("UPDATE memory_candidates SET session_slug=? WHERE session_slug=?", (new, old))
         # An in-flight result uses the old slug and must not commit after rename.

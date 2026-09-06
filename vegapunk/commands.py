@@ -18,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import db, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
+from . import db, memory, memory_jobs, menu, profiles, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -54,6 +54,7 @@ class CommandContext:
     scheduler_log: str | None = None
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
     conversation_mode: session_store.SessionMode = "conversation"
+    profile: str = "default"
 
 
 @dataclass
@@ -143,6 +144,26 @@ def _new(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output="(new conversation)")
 
 
+@command("profile", "Choose a personality: /profile [default|shaka|lilith|edison|pythagoras|atlas|york]")
+def _profile(ctx: CommandContext, arg: str) -> CommandResult:
+    if not arg:
+        listing = "\n".join(f"  {name}: {item.description}" for name, item in profiles.PROFILES.items())
+        return CommandResult(output=f"Active profile: {ctx.profile}\n{listing}\nUse /profile <name> to switch.")
+    name = arg.lower()
+    try:
+        selected = profiles.get_profile(name)
+    except ValueError as exc:
+        return CommandResult(output=str(exc))
+    try:
+        if ctx.current_name:
+            # A voice change has no new source text for the memory scanner.
+            db.execute("UPDATE sessions SET profile=? WHERE slug=?", (name, ctx.current_name))
+    except db.StoreError as exc:
+        return CommandResult(output=f"Could not save profile: {exc}")
+    ctx.profile = name
+    return CommandResult(output=f"Profile: {selected.name} — {selected.description}.")
+
+
 @command("journal", "Start a fresh journal entry; /new returns to regular conversation")
 def _journal(ctx: CommandContext, arg: str) -> CommandResult:
     if arg:
@@ -226,6 +247,7 @@ def _status(ctx: CommandContext, arg: str) -> CommandResult:
         f"Context: {context}",
         f"Session: {ctx.current_name or 'unsaved'}",
         f"Conversation mode: {ctx.conversation_mode}",
+        f"Profile: {profiles.get_profile(ctx.profile).name}",
         f"Scheduler: {worker}",
         f"Workspace: {config.workspace_root}",
     ]))
@@ -464,9 +486,10 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
             )
         if ctx.current_name and ctx.current_name != name:
             session_store.rename_session(ctx.current_name, name, ctx.session.messages,
-                                         conversation_mode=ctx.conversation_mode)
+                                         conversation_mode=ctx.conversation_mode, profile=ctx.profile)
         else:
-            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode)
+            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode,
+                                       profile=ctx.profile)
     except db.StoreError as exc:
         return CommandResult(output=f"Could not save: {exc}")
     ctx.current_name = name
@@ -482,6 +505,7 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     try:
         messages = session_store.load_session(name)
         conversation_mode = session_store.load_session_mode(name)
+        profile = session_store.load_session_profile(name)
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
@@ -496,10 +520,12 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not resume '{name}': {exc}")
     ctx.current_name = name
     ctx.conversation_mode = conversation_mode
+    ctx.profile = profile
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
         output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
                + (" Journal mode." if conversation_mode == "journal" else "")
+               + (f" Profile: {profiles.get_profile(profile).name}." if profile != "default" else "")
     )
 
 

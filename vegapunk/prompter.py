@@ -22,7 +22,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
-from . import skills, style
+from . import profiles, skills, style
 from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
@@ -34,6 +34,7 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 
 # Sub-commands that take a fixed vocabulary of their own.
 _SUBCOMMANDS = {
+    "profile": list(profiles.PROFILES),
     "sessions": ["remove"],
     "schedule": ["list", "add", "remove"],
 }

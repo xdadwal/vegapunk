@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from . import memory, skills
+from . import memory, profiles, skills
 from .config import Config, config
 from .session_store import SessionMode, validate_session_mode
 
@@ -62,12 +62,14 @@ _MODE_STANZAS: dict[PromptMode, str] = {
 }
 
 
-def system_prompt(cfg: Config = config, *, mode: PromptMode, conversation_mode: SessionMode = "conversation") -> str:
+def system_prompt(cfg: Config = config, *, mode: PromptMode, conversation_mode: SessionMode = "conversation",
+                  profile: str = "default") -> str:
     """Return the complete system prompt with current memory and skills."""
     validate_session_mode(conversation_mode)
     journal = conversation_mode == "journal"
     return (
         (_JOURNAL_PROMPT if journal else cfg.system_prompt)
+        + profiles.system_block(profile)
         + "\n\n"
         + _MODE_STANZAS[mode]
         + memory.as_system_block()

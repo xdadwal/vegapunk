@@ -143,6 +143,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
 | `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
+| `/profile [name]` | List or select a Vegapunk satellite personality; `default` restores the regular voice. |
 | `/journal` | Start a fresh journal entry with a gentle, user-led conversation style. |
 | `/exit` | Quit Vegapunk. Alias: `/quit`; `Ctrl-D` also quits. |
 
@@ -175,6 +176,31 @@ backends when you need a supported integration.
 
 Switching models preserves the conversation. Reasoning state encoded by the previous provider is
 removed when necessary so it is not replayed to an incompatible backend.
+
+## Personality profiles
+
+Use `/profile` to see the available voices and `/profile edison` to select one. Profiles shape the
+same agent's tone and approach using the satellites' anime personalities and scientific strengths:
+
+| Profile | Voice and strengths |
+| --- | --- |
+| `shaka` | Calm and principled; logical analysis and careful judgment. |
+| `lilith` | Bold, crafty, competitive; inventive engineering and resourcefulness. |
+| `edison` | Energetic and curious; invention, ideas, and experiments. |
+| `pythagoras` | Patient and analytical; observation, evidence, and synthesis. |
+| `atlas` | Fiery and direct; hands-on explanations and troubleshooting. |
+| `york` | Relaxed and comfort-loving; convenience, clever shortcuts, and less wasted effort. |
+
+These are adaptations of [Vegapunk's satellites](https://onepiece.fandom.com/wiki/Vegapunk), with
+character expressed through voice and problem-solving. Profiles use the existing model and tools;
+they do not create additional agents or grant fictional abilities. Accuracy and tool approvals
+remain in force.
+
+Switching keeps your conversation. The toolbar and `/status` show the selected profile; saved
+sessions restore it. `/new` and `/journal` keep your selection. Journal mode retains its gentle,
+user-led rules with any profile. `/profile default` returns to the regular Vegapunk voice. Existing
+sessions receive the default profile when the database upgrades to schema v4. Background memory
+extraction and scheduled jobs keep their existing prompts.
 
 ## Journal mode
 

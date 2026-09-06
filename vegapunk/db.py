@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     turns INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    conversation_mode TEXT NOT NULL DEFAULT 'conversation'
+    conversation_mode TEXT NOT NULL DEFAULT 'conversation',
+    profile TEXT NOT NULL DEFAULT 'default'
 );
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
@@ -279,6 +280,10 @@ def _check_version(conn: turso.Connection) -> None:
             if "conversation_mode" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN conversation_mode "
                              "TEXT NOT NULL DEFAULT 'conversation'")
+        if found < 4:
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "profile" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'")
         if found < SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO meta (key,value) VALUES ('schema_version',?) "
