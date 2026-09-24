@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
+from copy import copy
 from dataclasses import replace
 from typing import Any
 
@@ -19,7 +21,7 @@ from logpose import (
     TurnEnd,
 )
 
-from .gate import QUESTION_TOOL
+from .gate import DELEGATION_TOOL, QUESTION_TOOL
 
 QUESTION_BATCH_BLOCKED = (
     "Blocked: ask_user must be the only tool call in a step. Read the user's answer, "
@@ -49,6 +51,31 @@ def _final_answer(text: str) -> str | None:
 
 class InteractiveAgent(Agent):
     """An Agent that turns a user question into a barrier between tool steps."""
+
+    async def _invoke(
+        self, call: ToolUseBlock, queued_at: float, turn_context: Any
+    ) -> ToolResultBlock:
+        """Keep delegated work joined instead of detaching it at the generic timeout."""
+        if call.name != DELEGATION_TOOL:
+            return await super()._invoke(call, queued_at, turn_context)
+
+        # Agent._invoke reads tool_timeout from self. A shallow execution view
+        # keeps every shared runtime object (tool map, semaphore, observers)
+        # while overriding only this call's deadline, without racing sibling
+        # tools by mutating the live agent. Stream cancellation still reaches
+        # this wrapper, but the shield and cancellation handler drain the role
+        # before propagating that cancellation. A delegate therefore cannot
+        # outlive even an interrupted primary turn.
+        untimed = copy(self)
+        untimed.tool_timeout = None
+        invocation = asyncio.create_task(Agent._invoke(untimed, call, queued_at, turn_context))
+        try:
+            return await asyncio.shield(invocation)
+        except asyncio.CancelledError:
+            try:
+                await invocation
+            finally:
+                raise
 
     async def _execute(
         self, calls: Sequence[ToolUseBlock], turn_context: Any

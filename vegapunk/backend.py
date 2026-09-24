@@ -228,6 +228,11 @@ class Backend:
         return bool(self.effort_key)
 
 
+def spawn_backend(backend: Backend) -> Backend:
+    """Clone an execution choice with a provider safe for a separate agent loop."""
+    return replace(backend, provider=backend.spawn_provider())
+
+
 def _no_spawn() -> Provider:
     """Default for a Backend built by hand (tests) rather than by name."""
     raise RuntimeError("this backend cannot spawn a second provider")
