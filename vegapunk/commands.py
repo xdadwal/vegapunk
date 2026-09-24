@@ -192,6 +192,18 @@ def _install_backend(ctx: CommandContext, backend: Backend, *, agent_id: str | N
 
 @command("agent", "Select an agent and its defaults: /agent [name]; /model and /effort override")
 def _agent(ctx: CommandContext, arg: str) -> CommandResult:
+    if not arg and _interactive():
+        options = [
+            menu.Option(value=name, label=item.name,
+                        detail=f"{item.description} · {item.model or 'launch configuration'}"
+                               + (f" · {item.effort}" if item.effort else ""),
+                        active=name == ctx.agent_id)
+            for name, item in agents.AGENTS.items()
+        ]
+        chosen = _pick("choose an agent (applies its defaults)", options)
+        if chosen is None:
+            return CommandResult(output="(unchanged)")
+        arg = chosen
     if not arg:
         listing = "\n".join(
             f"  {name}: {item.description} [{item.model or 'launch configuration'}"
