@@ -33,7 +33,7 @@ def platform(tmp_path, monkeypatch):
 
 
 def task(prompt="explore"):
-    scheduler.add_task(prompt, 1800)
+    scheduler.add_task(prompt, 1800, profile="moltbook")
     return scheduler.list_tasks()[-1]
 
 
@@ -113,7 +113,8 @@ def test_followup_returns_in_next_run_as_untrusted_context(platform, monkeypatch
     note(scheduled, source, kind="follow_up", text="Revisit the receipt discussion.", follow_up_on="2026-01-01")
     seen = []
     monkeypatch.setattr("vegapunk.loop.run", lambda agent, prompt, **kwargs: seen.append(prompt) or "done")
-    scheduler.run_task(scheduled, None)
+    agent, _ = agent_for(says("unused"))
+    scheduler.run_task(scheduled, agent)
     assert "Revisit the receipt discussion." in seen[0]
     assert "untrusted model interpretations" in seen[0]
 
@@ -317,7 +318,11 @@ def test_indirect_and_expired_execution_cannot_persist(platform):
         contexts.append(copy_context())
         return lookup()
     agent, provider = agent_for([wants(call("indirect_notebook")), says("done")], tools=[indirect_notebook])
-    scheduler.run_task(scheduled, agent)
+    from vegapunk import loop, task_history
+    run_id = task_history.begin(scheduled)
+    with actions.execution(scheduled.id, run_id):
+        loop.run(agent, scheduled.prompt)
+    task_history.finish(scheduled, run_id, "completed", "done")
     assert tool_result(provider).startswith("Blocked:")
     with pytest.raises(actions.ActionBlocked):
         contexts[0].run(actions.task_execution, "indirect_notebook")
@@ -330,7 +335,7 @@ def test_schema_seven_upgrade_keeps_existing_data():
     db.execute("DROP TABLE moltbook_notes")
     scheduled = task()
     db.close_connection()
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'") == [("8",)]
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'") == [(str(db.SCHEMA_VERSION),)]
     assert scheduler.list_tasks()[0].id == scheduled.id
     assert db.query("SELECT COUNT(*) FROM moltbook_sources") == [(0,)]
 

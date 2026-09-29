@@ -294,7 +294,8 @@ def test_run_task_records_error_when_the_run_raises(monkeypatch):
 
     monkeypatch.setattr("vegapunk.loop.run", _boom)
 
-    result = run_task(task, None)
+    from tests.fake_provider import agent_for, says
+    result = run_task(task, agent_for(says("unused"))[0])
 
     assert "provider exploded" in result  # surfaced in the result, not raised
     updated = list_tasks()[0]
@@ -313,7 +314,8 @@ def test_run_task_does_not_swallow_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr("vegapunk.loop.run", _interrupt)
 
     with pytest.raises(KeyboardInterrupt):
-        run_task(task, None)
+        from tests.fake_provider import agent_for, says
+        run_task(task, agent_for(says("unused"))[0])
 
 
 def test_record_run_advances_schedule_from_recorded_stamp():

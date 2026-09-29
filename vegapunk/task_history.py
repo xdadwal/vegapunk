@@ -37,8 +37,9 @@ def begin(task: ScheduledTask) -> str:
     """Commit a run before any provider/tool work; at most one open run per task."""
     run_id = db.new_id()
     with db.transaction(immediate=True) as conn:
-        if not conn.execute("SELECT id FROM scheduled_tasks WHERE id = ?", (task.id,)).fetchone():
-            raise db.StoreError("scheduled task was removed")
+        row = conn.execute("SELECT profile,profile_since FROM scheduled_tasks WHERE id=? AND enabled=1", (task.id,)).fetchone()
+        if not row or tuple(row) != (task.profile, task.profile_since):
+            raise db.StoreError("scheduled task was removed, disabled, or its profile changed")
         conn.execute(
             "INSERT INTO scheduled_runs (id, task_id, prompt, started_at, status) "
             "VALUES (?, ?, ?, ?, 'running')",
@@ -69,7 +70,9 @@ def events(run_id: str) -> list[RunEvent]:
 
 def context(task_id: str) -> str:
     """Small task-local continuity packet; prior summaries never grant authority."""
-    runs = [r for r in list_runs(task_id, 4) if r.status != "running"][:3]
+    row = db.query("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
+    cutoff = row[0][1] if row and row[0][0] == "moltbook" else ""
+    runs = [r for r in list_runs(task_id, 4) if r.status != "running" and r.started_at >= cutoff][:3]
     if not runs:
         return ""
     data = [{"run_id": r.id, "at": r.started_at, "status": r.status,

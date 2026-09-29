@@ -88,7 +88,7 @@ def capture(path: str, data: Any, key: str) -> list[dict[str, str]]:
         author = author.get("name", "") if isinstance(author, dict) else ""
         author = author[:120] if isinstance(author, str) else ""
         endpoint = path.replace(key, "[redacted]")
-        digest = _tag(json.dumps([endpoint, author, excerpt], ensure_ascii=False))
+        digest = _tag(json.dumps([scope.profile_since, endpoint, author, excerpt], ensure_ascii=False))
         snapshots.append((kind, remote, endpoint, author, excerpt, digest))
         if len(snapshots) == 10:
             break
@@ -124,8 +124,8 @@ def _text(value: str, name: str, maximum: int, key: str) -> str:
 
 
 def _evidence(conn, scope: actions.Execution, tag: str, source_id: str, quote: str) -> None:
-    row = conn.execute("SELECT excerpt FROM moltbook_sources WHERE id=? AND task_id=? AND credential_tag=?",
-                       (source_id, scope.task_id, tag)).fetchone()
+    row = conn.execute("SELECT excerpt FROM moltbook_sources WHERE id=? AND task_id=? AND credential_tag=? AND created_at>=?",
+                       (source_id, scope.task_id, tag, scope.profile_since)).fetchone()
     if not row or quote not in row[0]:
         raise actions.ActionBlocked("source must belong to this task/credential and contain the exact quote")
 
@@ -159,13 +159,13 @@ def save(scope: actions.Execution, kind: str, subject: str, text: str, source_id
         if conn.execute("SELECT COUNT(*) FROM moltbook_notes WHERE run_id=?", (scope.run_id,)).fetchone()[0] >= 5:
             raise actions.ActionBlocked("at most five new notes per run")
         if supersedes:
-            old = conn.execute("SELECT status FROM moltbook_notes WHERE id=? AND task_id=? AND credential_tag=?",
-                               (supersedes, scope.task_id, tag)).fetchone()
+            old = conn.execute("SELECT status FROM moltbook_notes WHERE id=? AND task_id=? AND credential_tag=? AND created_at>=?",
+                               (supersedes, scope.task_id, tag, scope.profile_since)).fetchone()
             if not old or old[0] != "active":
                 raise actions.ActionBlocked("supersedes must name an active entry in this notebook")
             conn.execute("UPDATE moltbook_notes SET status='superseded',updated_at=? WHERE id=?", (stamp, supersedes))
-        if conn.execute("SELECT COUNT(*) FROM moltbook_notes WHERE task_id=? AND credential_tag=? AND status='active'",
-                        (scope.task_id, tag)).fetchone()[0] >= 100:
+        if conn.execute("SELECT COUNT(*) FROM moltbook_notes WHERE task_id=? AND credential_tag=? AND status='active' AND created_at>=?",
+                        (scope.task_id, tag, scope.profile_since)).fetchone()[0] >= 100:
             raise actions.ActionBlocked("at most 100 active notes; revise or complete existing entries")
         conn.execute(
             "INSERT INTO moltbook_notes (id,task_id,credential_tag,run_id,kind,subject,text,confidence,source_id,quote,"
@@ -184,7 +184,8 @@ def complete(scope: actions.Execution, note_id: str, resolution: str, source_id:
         actions.check_task(conn, scope)
         _evidence(conn, scope, tag, source_id, quote)
         row = conn.execute("SELECT kind,status,resolution,completion_source_id,completion_quote FROM moltbook_notes "
-                           "WHERE id=? AND task_id=? AND credential_tag=?", (note_id, scope.task_id, tag)).fetchone()
+                           "WHERE id=? AND task_id=? AND credential_tag=? AND created_at>=?",
+                           (note_id, scope.task_id, tag, scope.profile_since)).fetchone()
         if not row or row[0] not in ("question", "follow_up"):
             raise actions.ActionBlocked("only this notebook's questions/follow-ups can be completed")
         if row[1] == "completed" and tuple(row[2:]) == (resolution, source_id, quote):
@@ -202,6 +203,7 @@ def _rows(task_id: str, tag: str, query: str, status: str, limit: int) -> list[d
         "n.supersedes,n.resolution,n.completion_source_id,n.completion_quote,s.kind,s.remote_id,s.endpoint,s.author,"
         "n.created_at,n.run_id FROM moltbook_notes n JOIN moltbook_sources s ON s.id=n.source_id "
         "WHERE n.task_id=? AND n.credential_tag=? AND (?='all' OR n.status=?) "
+        "AND n.created_at>=(SELECT profile_since FROM scheduled_tasks WHERE id=n.task_id) "
         "AND (instr(lower(n.subject || ' ' || n.text),lower(?))>0 OR n.id=?) "
         "ORDER BY CASE WHEN n.follow_up_on<>'' AND n.follow_up_on<=? THEN 0 ELSE 1 END,"
         "n.follow_up_on,n.created_at DESC LIMIT ?",
@@ -223,8 +225,8 @@ def lookup(scope: actions.Execution, query: str, status: str, limit: int, includ
     result = {"notes": [] if source_id else _rows(scope.task_id, tag, query[:200], status, limit)}
     if include_sources or source_id:
         rows = db.query("SELECT id,kind,remote_id,endpoint,author,excerpt,created_at,last_seen_at,first_run_id,last_run_id "
-                        "FROM moltbook_sources WHERE task_id=? AND credential_tag=? AND (?='' OR id=?) "
-                        "ORDER BY last_seen_at DESC LIMIT ?", (scope.task_id, tag, source_id, source_id, limit))
+                        "FROM moltbook_sources WHERE task_id=? AND credential_tag=? AND (?='' OR id=?) AND created_at>=? "
+                        "ORDER BY last_seen_at DESC LIMIT ?", (scope.task_id, tag, source_id, source_id, scope.profile_since, limit))
         fields = ("source_id", "kind", "remote_id", "endpoint", "author", "excerpt", "first_seen_at", "last_seen_at",
                   "first_run_id", "last_run_id")
         result["sources"] = [dict(zip(fields, row)) for row in rows]

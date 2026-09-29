@@ -62,9 +62,19 @@ def _redact(value: Any, api_key: str) -> Any:
 
 
 def _read(path: str, params: dict[str, object] | None = None) -> str:
+    from logpose import current_runtime_context
+    from .. import moltbook_actions
+
+    runtime = current_runtime_context()
+    scope = None
+    if runtime is not None:
+        try:
+            scope = moltbook_actions.optional_task_execution(runtime.tool_name)
+        except moltbook_actions.ActionBlocked as exc:
+            return f"Blocked: {exc}"
     api_key, error = _load_api_key(config.moltbook_credentials_file)
     if error:
-        return error
+        return "Moltbook credentials unavailable; ask the human to check the configured credential file." if scope else error
     assert api_key is not None
     url = f"{_API_BASE}{path}"
     try:
@@ -101,6 +111,8 @@ def _read(path: str, params: dict[str, object] | None = None) -> str:
         response.raise_for_status()
     except requests.HTTPError:
         if response.status_code in (401, 403):
+            if scope:
+                return f"Moltbook authentication failed (HTTP {response.status_code}); ask the human to check account credentials."
             return (
                 f"Moltbook authentication failed (HTTP {response.status_code}). Check the "
                 f"credential at {config.moltbook_credentials_file}."

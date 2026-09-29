@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -110,7 +110,9 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     last_status TEXT,
     last_result TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    profile TEXT NOT NULL DEFAULT 'general',
+    profile_since TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(enabled, next_run_at);
 CREATE TABLE IF NOT EXISTS scheduled_runs (
@@ -383,6 +385,11 @@ def _check_version(conn: turso.Connection) -> None:
                 if column not in columns:
                     conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if found < SCHEMA_VERSION:
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
+            if "profile" not in columns:
+                conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile TEXT NOT NULL DEFAULT 'general'")
+            if "profile_since" not in columns:
+                conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile_since TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "INSERT INTO meta (key,value) VALUES ('schema_version',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),),

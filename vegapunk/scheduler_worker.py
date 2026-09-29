@@ -90,10 +90,10 @@ def build_backend() -> Backend:
 
 
 def build_agent(backend: Backend) -> Agent:
-    """The agent scheduled runs go through: every tool, and no approver.
+    """General-profile template, owned exclusively by this worker.
 
-    ``make_gate(None)`` blocks guarded tools except the scheduled Moltbook reply
-    operations when an explicit persisted task grant authorizes them.
+    ``run_task`` supplies a separate fixed configuration for Moltbook tasks;
+    both configurations execute on one scheduler runtime/provider loop.
     """
     return Agent(
         backend.provider,
@@ -165,6 +165,9 @@ def main() -> None:
         stop.set()
         if memory_thread is not None:
             memory_thread.join(timeout=1)
+        from .task_profiles import close_scheduled_agent
+
+        close_scheduled_agent(agent)
         close_sync(agent)
     print(f"  [scheduler] worker {os.getpid()} stopped", file=sys.stderr)
 

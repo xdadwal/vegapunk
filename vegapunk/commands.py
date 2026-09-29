@@ -642,17 +642,22 @@ def _format_tasks() -> str:
         status = t.last_status or "pending"
         lines.append(
             f"  {t.id[:8]}  every {t.interval_seconds}s  next {_local_stamp(t.next_run_at)}  "
-            f"[{status}]  {_oneline(t.prompt)}"
+            f"[{status}]  profile={t.profile}  {_oneline(t.prompt)}"
         )
     return "\n".join(lines)
 
 
-@command("schedule", "Manage tasks: list, history, add, remove; Moltbook: notebook, grant, revoke, permissions, actions, resolve-action")
+@command("schedule", "Manage tasks: list, history, add, profile, remove; Moltbook: notebook, grant, revoke, permissions, actions, resolve-action")
 def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
     if sub in ("", "list"):
         return CommandResult(output=_format_tasks())
+    if sub == "profile":
+        parts = rest.split()
+        if len(parts) != 2:
+            return CommandResult(output="Usage: /schedule profile <task-id> general|moltbook")
+        return CommandResult(output=scheduler.set_profile(*parts))
     if sub == "history":
         from .task_history import format_history
 
@@ -678,10 +683,14 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
             return CommandResult(
                 output="Usage: /schedule add <seconds> <prompt>  (seconds must be a whole number)"
             )
-        return CommandResult(output=scheduler.add_task(prompt, interval))
+        profile = "general"
+        if prompt.startswith("--profile "):
+            _, _, options = prompt.partition(" ")
+            profile, _, prompt = options.partition(" ")
+        return CommandResult(output=scheduler.add_task(prompt, interval, profile=profile))
     if sub == "remove":
         return CommandResult(output=scheduler.remove_task(rest))
-    return CommandResult(output="Usage: /schedule [list | history [id] | notebook [id] | add <seconds> <prompt> | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
+    return CommandResult(output="Usage: /schedule [list | history [id] | notebook [id] | add <seconds> [--profile general|moltbook] <prompt> | profile <id> general|moltbook | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")
