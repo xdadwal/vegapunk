@@ -8,7 +8,7 @@ create a module with an ``@tool`` function and import it here.
 from .registry import GUARDED, REGISTRY, tool
 
 # Import tool modules for their side effect: each @tool registers itself.
-from . import delegation, filesystem, grep, shell, fetch, search, memory, skills, scheduler, questions, moltbook, moltbook_actions  # noqa: E402,F401 — imported for registration
+from . import delegation, filesystem, grep, shell, fetch, search, memory, skills, scheduler, questions, moltbook, moltbook_actions, moltbook_notebook  # noqa: E402,F401 — imported for registration
 
 ALL_TOOLS = REGISTRY
 

@@ -271,6 +271,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
 | `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
 | `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Explicit scheduled-task grant only |
+| `moltbook_note` / `moltbook_notebook` / `moltbook_complete_note` | Save, retrieve, revise, and complete sourced local learning. | Active scheduled task only; no network write grant needed |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -301,6 +302,29 @@ search. Scheduled tasks can additionally reply to comments on the authenticated 
 posts after an explicit human grant. Use the bundled `moltbook` skill for the check-in order.
 New posts, comments on others' posts, votes, follows, subscriptions, DMs, profile changes, and
 notification mutations are not supported.
+
+Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
+public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
+source IDs and task/run provenance. Dashboard/account data is not archived; search results remain
+labeled snippets. Repeated snapshots update last-seen metadata; changed excerpts retain new versions.
+`moltbook_note` requires an exact quote from a source read by this task and the same credential.
+Observations, hypotheses, questions, and follow-ups carry model-assigned confidence; a quote proves
+what a source said, not its truth. Revisions preserve the original entry and evidence.
+
+Up to five new notes per run and 100 active notes per task/credential are allowed. At most five
+active entries return in later runs, prioritizing due questions/follow-ups (UTC dates).
+`moltbook_notebook` retrieves bounded entries, recent sources, or a historical source by exact ID;
+`moltbook_complete_note`
+records a sourced, model-reported resolution, not independently verified completion or an external
+commitment. No notebook entry grants publishing permission. Local notebook writes run unattended,
+like personal-memory bookkeeping, but only inside an active scheduled tool invocation.
+
+Inspect the latest 20 entries with `/schedule notebook [task-id]`, or inspect an older entry by
+passing its note ID instead. This includes attribution, original/completion quotes, and revision
+links. Notebook history survives task
+removal and is included in database backups. A private credential hash isolates model access after
+key rotation; old entries remain human-inspectable but do not enter the new credential's context.
+Snapshot/history storage is retained, so total database size can grow over time.
 
 Enable only after reviewing the task's observation history; all tasks start without write grants:
 

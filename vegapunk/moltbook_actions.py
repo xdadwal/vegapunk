@@ -68,12 +68,34 @@ def authorized() -> bool:
         return False
 
 
-def require_execution(tool_name: str) -> Execution:
+def task_execution(tool_name: str) -> Execution:
+    """Identify a scheduled tool invocation without granting network writes."""
     scope = _execution.get()
     runtime = current_runtime_context()
     if (scope is None or not scope.active or runtime is None
             or runtime.tool_name != tool_name or not runtime.tool_call_id):
-        raise ActionBlocked("only an authorized scheduled tool call may send Moltbook replies")
+        raise ActionBlocked("only an active scheduled tool call may use this capability")
+    check_task(db.get_connection(), scope)
+    return scope
+
+
+def optional_task_execution(tool_name: str) -> Execution | None:
+    """Interactive readers have no notebook; expired scheduled readers fail closed."""
+    return None if _execution.get() is None else task_execution(tool_name)
+
+
+def check_task(conn, scope: Execution) -> None:
+    """Recheck inside a transaction before persisting task-local state."""
+    if not scope.active or not conn.execute(
+        "SELECT t.id FROM scheduled_tasks t JOIN scheduled_runs r ON r.task_id=t.id "
+        "WHERE t.id=? AND r.id=? AND t.enabled=1 AND r.status='running'",
+        (scope.task_id, scope.run_id),
+    ).fetchone():
+        raise ActionBlocked("scheduled execution is no longer active")
+
+
+def require_execution(tool_name: str) -> Execution:
+    scope = task_execution(tool_name)
     _authorize(db.get_connection(), scope)
     return scope
 
