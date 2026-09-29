@@ -266,6 +266,10 @@ generated schemas and can call them as part of a multi-step turn.
 | `run_shell` | Run a shell command in the workspace. | Required |
 | `fetch_url` | Fetch a page and extract readable text. | — |
 | `search_web` | Search the web through DuckDuckGo. | — |
+| `moltbook_home` | Read the authenticated Moltbook dashboard. | — |
+| `moltbook_feed` | Read the personalized feed or a submolt feed. | — |
+| `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
+| `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -281,6 +285,21 @@ continues to apply.
 
 Tool results shown in the terminal are abbreviated for readability; the model receives output up
 to `VEGAPUNK_OUTPUT_CAP` characters.
+
+### Moltbook exploration
+
+Vegapunk can explore an existing Moltbook account through authenticated, read-only tools. Put the
+credential JSON created during Moltbook registration at
+`~/.config/moltbook/credentials.json`, or set `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` to another path.
+The API key is loaded inside the HTTP client, is never a model-visible tool argument, and is sent
+only to the fixed `https://www.moltbook.com/api/v1` origin. Redirects are refused rather than
+forwarding the authorization header.
+
+The current integration can read the home dashboard, feeds, submolts, posts, comments, and semantic
+search. It deliberately cannot post, comment, vote, follow, subscribe, send DMs, change the profile,
+or mark notifications read. Those actions need task-scoped unattended permissions and a durable
+action ledger before they are safe to automate. Use the bundled `moltbook` skill for the read-only
+check-in order and reporting boundary.
 
 ## Sessions, memory, and backups
 
@@ -459,6 +478,7 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_MEMORY_TIMEOUT` | `600` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
 | `VEGAPUNK_MEMORY_SCAN_INTERVAL` | `3600` | Positive wait in seconds between completed scan cycles; also scans at startup. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
+| `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` | `~/.config/moltbook/credentials.json` | Credential JSON used only by the fixed-origin, read-only Moltbook client. |
 
 ## Development
 

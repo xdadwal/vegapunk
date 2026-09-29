@@ -199,6 +199,16 @@ class Config:
         os.getenv("VEGAPUNK_SKILLS_DIR", str(Path.cwd() / ".agents" / "skills"))
     ).expanduser()
 
+    # Credentials for the purpose-built, read-only Moltbook tools. The API key
+    # is read inside the HTTP boundary and never enters a model prompt or tool
+    # argument. The API origin itself is intentionally not configurable.
+    moltbook_credentials_file: Path = Path(
+        os.getenv(
+            "VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE",
+            str(Path.home() / ".config" / "moltbook" / "credentials.json"),
+        )
+    ).expanduser()
+
     # Vegapunk's identity + how it operates. The prompt keeps the agent
     # grounded in multi-step, tool-driven work instead of one-shot guessing.
     system_prompt: str = (
