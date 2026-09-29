@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -132,6 +132,37 @@ CREATE TABLE IF NOT EXISTS scheduled_run_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, sequence)
 );
+CREATE TABLE IF NOT EXISTS moltbook_permissions (
+    task_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    granted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS moltbook_backoff (
+    account_id TEXT PRIMARY KEY,
+    until_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS moltbook_actions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    last_run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    remote_id TEXT NOT NULL DEFAULT '',
+    verification_code TEXT NOT NULL DEFAULT '',
+    challenge TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    UNIQUE(account_id, post_id, parent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_moltbook_account ON moltbook_actions(account_id, created_at);
 CREATE TABLE IF NOT EXISTS memory_jobs (
     session_slug TEXT PRIMARY KEY,
     cursor INTEGER NOT NULL DEFAULT 0,

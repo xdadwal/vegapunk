@@ -647,7 +647,7 @@ def _format_tasks() -> str:
     return "\n".join(lines)
 
 
-@command("schedule", "Manage scheduled tasks: /schedule [list | history [id] | add <seconds> <prompt> | remove <id>]")
+@command("schedule", "Manage tasks: list, history, add, remove; Moltbook: grant, revoke, permissions, actions, resolve-action")
 def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
@@ -657,6 +657,10 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
         from .task_history import format_history
 
         return CommandResult(output=format_history(rest))
+    if sub in ("grant", "revoke", "permissions", "actions", "resolve-action"):
+        from .moltbook_actions import command as action_command
+
+        return CommandResult(output=action_command(sub, rest))
     if sub == "add":
         # "<seconds> <prompt>": the first token is the interval, the rest is the
         # prompt. Validation of the interval's floor and the prompt's emptiness
@@ -673,7 +677,7 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=scheduler.add_task(prompt, interval))
     if sub == "remove":
         return CommandResult(output=scheduler.remove_task(rest))
-    return CommandResult(output="Usage: /schedule [list | history [id] | add <seconds> <prompt> | remove <id>]")
+    return CommandResult(output="Usage: /schedule [list | history [id] | add <seconds> <prompt> | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")

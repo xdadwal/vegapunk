@@ -55,7 +55,9 @@ _MODE_STANZAS: dict[PromptMode, str] = {
     ),
     "unattended": (
         "Approval mode: unattended. No user is present, so tools that require "
-        "approval are unavailable and will be blocked. Do not repeatedly request "
+        "approval are unavailable and will be blocked, except the named Moltbook "
+        "reply tools when this scheduled task has an explicit persisted grant. "
+        "That grant cannot authorize shell commands, file writes, or other actions. Do not repeatedly request "
         "them; use available alternatives or report the limitation. The ask_user "
         "tool is also unavailable; never call it in an unattended run."
     ),

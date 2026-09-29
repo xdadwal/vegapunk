@@ -270,6 +270,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `moltbook_feed` | Read the personalized feed or a submolt feed. | — |
 | `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
 | `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
+| `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Explicit scheduled-task grant only |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -278,7 +279,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `delegate` | Run a bounded specialist role in a background thread and wait for its result. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
-directory where Vegapunk was launched. Before a guarded tool runs, an inline approval menu offers
+directory where Vegapunk was launched. Before a workspace write/shell tool runs, an inline approval menu offers
 four choices: allow once, deny, deny with guidance for the agent, or allow that tool for the rest
 of the session. In auto mode those three guarded tools bypass the menu, while workspace confinement
 continues to apply.
@@ -296,10 +297,45 @@ only to the fixed `https://www.moltbook.com/api/v1` origin. Redirects are refuse
 forwarding the authorization header.
 
 The current integration can read the home dashboard, feeds, submolts, posts, comments, and semantic
-search. It deliberately cannot post, comment, vote, follow, subscribe, send DMs, change the profile,
-or mark notifications read. Those actions need task-scoped unattended permissions and a durable
-action ledger before they are safe to automate. Use the bundled `moltbook` skill for the read-only
-check-in order and reporting boundary.
+search. Scheduled tasks can additionally reply to comments on the authenticated account's own
+posts after an explicit human grant. Use the bundled `moltbook` skill for the check-in order.
+New posts, comments on others' posts, votes, follows, subscriptions, DMs, profile changes, and
+notification mutations are not supported.
+
+Enable only after reviewing the task's observation history; all tasks start without write grants:
+
+```text
+/schedule grant <task-id> moltbook.reply_own
+/schedule permissions [task-id]
+/schedule actions [task-id]
+/schedule revoke <task-id> moltbook.reply_own
+```
+
+The grant binds to the account authenticated at grant time. The two write tools work only inside
+that scheduled task; interactive auto-approval cannot bypass this restriction. Code enforces one
+new reply per run, three attempts per account per rolling 24 hours, a six-hour thread cooldown,
+and 60 seconds between account reply attempts. A recorded intent for a parent comment is never
+resent, even if its text changes or the task restarts. Attempts rejected by the server still
+count toward budgets. A reply must have a parent found within the bounded thread preflight.
+
+The ledger records the outgoing text/hash, target, task/run IDs, and remote comment receipt.
+`accepted` means the API accepted the reply or its verification; it does not prove visibility.
+`pending_verification` contains a challenge for `moltbook_verify_reply`; the code stays internal.
+Only one verification attempt is permitted. `unknown`, `sending`, `verifying`, or pending actions
+block additional replies for that account. Timeouts, redirects, and malformed receipts are never
+automatically replayed; 429 backoff is persisted. Revocation cannot recall an already-sent request.
+
+After checking the actual remote outcome, a human can reconcile an unresolved action once its
+latest execution run has ended:
+
+```text
+/schedule resolve-action <action-id> accepted <remote-comment-id>
+/schedule resolve-action <action-id> rejected
+```
+
+Resolution records the human's assessment; it never sends a request or permits resending that
+parent's intent. Review remote state carefully, especially after a timeout. Old receipts survive
+task removal. Credentials and raw server responses are excluded from these records.
 
 ## Sessions, memory, and backups
 
@@ -412,20 +448,21 @@ response bodies are not copied into the event history. History is retained in th
 included in backups; removing a task does not erase its history.
 
 History distinguishes `completed` (turn completed without verified tool success),
-`success` (a Moltbook read returned the client's success envelope),
+`success` (a Moltbook read returned the client's success envelope or a reply has an accepted receipt),
 `blocked`, `partial`, `error`, and `interrupted`. These are operational outcomes, not proof that
 the user's objective was achieved or a post was published. `/schedule list` retains `ok` for
 completed/successful runs, but now exposes blocked and partial outcomes. Moltbook authentication
 and other read failures are recorded as blocked. Generic tools are labeled `returned` because
 legacy tools can return error messages as ordinary strings; only typed tool errors are classified
 as errors. `partial` means mixed return/success evidence and known failures, not partial completion
-of the user's objective. Step/token limits are errors.
+of the user's objective. Pending verification also produces `partial`. Step/token limits and
+unresolved write results are errors; reply outcomes come from durable receipts, not tool prose.
 
 Execution requires a durable start record. If completion cannot be saved, the open run prevents
 another attempt until worker restart. On startup, while holding the scheduler lock, the worker
 marks unfinished runs interrupted and defers their next attempt by one interval. This makes
-interruptions inspectable; it does not provide exactly-once external actions or publishing
-receipts. Moltbook tools remain read-only.
+interruptions inspectable; it does not provide exactly-once external actions. Moltbook's separate
+action ledger suppresses duplicate intents and retains uncertain outcomes across worker restarts.
 
 ## Skills
 
@@ -503,7 +540,7 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_MEMORY_TIMEOUT` | `600` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
 | `VEGAPUNK_MEMORY_SCAN_INTERVAL` | `3600` | Positive wait in seconds between completed scan cycles; also scans at startup. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
-| `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` | `~/.config/moltbook/credentials.json` | Credential JSON used only by the fixed-origin, read-only Moltbook client. |
+| `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` | `~/.config/moltbook/credentials.json` | Credential JSON used by the fixed-origin Moltbook clients. |
 
 ## Development
 

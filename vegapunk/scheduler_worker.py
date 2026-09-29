@@ -92,8 +92,8 @@ def build_backend() -> Backend:
 def build_agent(backend: Backend) -> Agent:
     """The agent scheduled runs go through: every tool, and no approver.
 
-    ``make_gate(None)`` is the fail-closed half of that — a guarded tool is
-    blocked rather than run with nobody watching.
+    ``make_gate(None)`` blocks guarded tools except the scheduled Moltbook reply
+    operations when an explicit persisted task grant authorizes them.
     """
     return Agent(
         backend.provider,
