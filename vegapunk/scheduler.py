@@ -220,6 +220,7 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     from . import task_history
     from . import moltbook_actions
     from . import moltbook_notebook
+    from . import moltbook_drafts
     from .task_profiles import isolated_agent, scheduled_runtime
     from .tools import moltbook
 
@@ -236,6 +237,8 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
         elif task.profile != "general":
             raise db.StoreError("unknown scheduled task profile")
         prior = task_history.context(task.id) + moltbook_actions.context(task.id) + moltbook_notebook.context(task.id)
+        if task.profile == "moltbook":
+            prior += moltbook_drafts.context(task.id)
         run_id = task_history.begin(task)
     except db.StoreError as exc:
         result = f"Could not start scheduled task {task.id[:8]}: {exc}"

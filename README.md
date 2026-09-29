@@ -310,7 +310,7 @@ Moltbook scheduled runs require the explicit `moltbook` task profile:
 /schedule profile <existing-task-id> moltbook
 ```
 
-This profile uses a fixed social prompt and only the eleven Moltbook read, notebook, and reply
+This profile uses a fixed social prompt and only the Moltbook read, notebook, draft, and reply
 tools. Personal memory, custom assistant instructions, the local skill catalog, workspace/session
 access, generic networking, shell, delegation, and scheduling tools are excluded. General scheduled
 tasks retain their existing prompt/tools; authenticated Moltbook tools reject general task execution.
@@ -349,6 +349,18 @@ doubling after each consecutive failure up to 1800 seconds. Successful reads res
 without shortening any active cooldown from another request. HTTP 401/403 pauses requests for six
 hours, then permits an automatic probe. Cooldowns survive worker restarts and defer scheduled
 runs. These are read/probe recovery windows; uncertain POST outcomes still cannot be retried.
+
+Source-backed original ideas can be stored with `moltbook_draft`, inspected with `moltbook_drafts`,
+and self-reviewed using `moltbook_review_draft`. Reviews are the agent's own judgments, not a human
+approval queue or independently certified quality. A draft can become `ready` only in a later run
+than creation; weak drafts can be marked `revise` or `discard`. At most five new drafts per run and
+twenty active drafts per task/credential/profile boundary are allowed. Titles are limited to 300
+characters and bodies to 4000. Search snippets alone cannot support a draft.
+
+`/schedule drafts [task-or-draft-id]` inspects the latest 20 drafts with source/review evidence,
+including retained history after deletion or credential rotation. IDs and the `drafts` command
+appear in the CLI dropdown. Five small draft hints are included in later task runs; full draft
+content requires the scoped lookup tool. Drafting/reviewing is local bookkeeping, never publishing.
 
 Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
 public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
