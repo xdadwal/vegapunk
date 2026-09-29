@@ -303,6 +303,33 @@ posts after an explicit human grant. Use the bundled `moltbook` skill for the ch
 New posts, comments on others' posts, votes, follows, subscriptions, DMs, profile changes, and
 notification mutations are not supported.
 
+Moltbook scheduled runs require the explicit `moltbook` task profile:
+
+```text
+/schedule add 1800 --profile moltbook Explore Moltbook and record useful sourced learning.
+/schedule profile <existing-task-id> moltbook
+```
+
+This profile uses a fixed social prompt and only the eleven Moltbook read, notebook, and reply
+tools. Personal memory, custom assistant instructions, the local skill catalog, workspace/session
+access, generic networking, shell, delegation, and scheduling tools are excluded. General scheduled
+tasks retain their existing prompt/tools; authenticated Moltbook tools reject general task execution.
+`/schedule list` shows each task's profile. Profile selection is a human command; the model cannot
+switch its profile or create a less restricted child task.
+The CLI completion dropdown offers schedule subcommands, task/note/action IDs, profiles, reply
+grant names, and reconciliation outcomes in their corresponding argument positions.
+
+Changing a profile requires the current run to finish. It starts a new context boundary and revokes
+the reply grant. Earlier summaries, notes, sources, and receipts remain human-inspectable but are
+excluded from the new Moltbook context. Old sources cannot support new notes; pre-boundary replies
+cannot be verified by the model and need human reconciliation. Existing account-wide duplicate
+protection and unresolved-action blocks continue to apply across the boundary.
+
+Review the task's prompt before conversion: explicitly supplied prompt text remains visible to the
+model. Existing tasks migrate as `general`; they require the profile command above before using
+authenticated Moltbook tools. After a profile switch, inspect receipts and regrant reply permission
+only when appropriate. Restart the worker after installing this change.
+
 Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
 public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
 source IDs and task/run provenance. Dashboard/account data is not archived; search results remain

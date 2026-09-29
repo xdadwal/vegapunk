@@ -36,7 +36,7 @@ _HEX = frozenset("0123456789abcdef")
 # ``_row``'s unpacking can never drift apart.
 _COLUMNS = (
     "id, prompt, interval_seconds, next_run_at, "
-    "last_run_at, last_status, last_result, enabled, created_at"
+    "last_run_at, last_status, last_result, enabled, created_at, profile, profile_since"
 )
 
 # Cap on a run's stored result. ``last_result`` is overwritten each run and read
@@ -68,6 +68,8 @@ class ScheduledTask:
     last_result: str | None
     enabled: bool
     created_at: str
+    profile: str = "general"
+    profile_since: str = ""
 
 
 def _row(r: tuple) -> ScheduledTask:
@@ -82,10 +84,12 @@ def _row(r: tuple) -> ScheduledTask:
         last_result=r[6],
         enabled=bool(r[7]),
         created_at=r[8],
+        profile=r[9],
+        profile_since=r[10],
     )
 
 
-def add_task(prompt: str, interval_seconds: int) -> str:
+def add_task(prompt: str, interval_seconds: int, *, profile: str = "general") -> str:
     """Schedule ``prompt`` to run every ``interval_seconds``.
 
     The first run lands one interval from now (not immediately), so creating a
@@ -99,18 +103,42 @@ def add_task(prompt: str, interval_seconds: int) -> str:
         return "Nothing to schedule — the prompt was empty."
     if interval_seconds < _MIN_INTERVAL_SECONDS:
         return f"Interval must be at least {_MIN_INTERVAL_SECONDS} seconds."
+    if profile not in ("general", "moltbook"):
+        return "Profile must be general or moltbook."
     now = db.utcnow()
     task_id = db.new_id()
     try:
         db.execute(
             "INSERT INTO scheduled_tasks "
-            "(id, prompt, interval_seconds, next_run_at, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, 1, ?)",
-            (task_id, prompt, interval_seconds, db.utcnow_plus(interval_seconds), now),
+            "(id, prompt, interval_seconds, next_run_at, enabled, created_at, profile, profile_since) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (task_id, prompt, interval_seconds, db.utcnow_plus(interval_seconds), now, profile, now),
         )
     except db.StoreError as exc:
         return f"Could not schedule the task: {exc}"
     return f"Scheduled task {task_id[:8]} — runs every {interval_seconds}s (first run in {interval_seconds}s)."
+
+
+def set_profile(id_prefix: str, profile: str) -> str:
+    """Human-only transition; quarantine earlier context and revoke write grants."""
+    prefix, profile = id_prefix.strip().lower(), profile.strip().lower()
+    if not prefix or any(c not in _HEX for c in prefix) or profile not in ("general", "moltbook"):
+        return "Usage: /schedule profile <task-id> general|moltbook"
+    try:
+        with db.transaction(immediate=True) as conn:
+            rows = conn.execute("SELECT id,profile FROM scheduled_tasks WHERE id LIKE ? || '%'", (prefix,)).fetchall()
+            if len(rows) != 1:
+                return "Task ID not found or ambiguous."
+            task_id, old = rows[0]
+            if old == profile:
+                return f"Task {task_id[:8]} already uses profile {profile}."
+            if conn.execute("SELECT id FROM scheduled_runs WHERE task_id=? AND status='running'", (task_id,)).fetchone():
+                return "Cannot change profile during an active run; try after it finishes."
+            conn.execute("UPDATE scheduled_tasks SET profile=?,profile_since=? WHERE id=?", (profile, db.utcnow(), task_id))
+            conn.execute("DELETE FROM moltbook_permissions WHERE task_id=?", (task_id,))
+        return f"Task {task_id[:8]} now uses profile {profile}. Earlier context quarantined; reply grant revoked."
+    except db.StoreError as exc:
+        return f"Could not change task profile: {exc}"
 
 
 def list_tasks() -> list[ScheduledTask]:
@@ -174,13 +202,11 @@ def due_tasks(now: str | None = None) -> list[ScheduledTask]:
 def run_task(task: ScheduledTask, agent: Agent) -> str:
     """Run one due task's prompt to completion and record the outcome.
 
-    The agent is built with **no approver**, which is fail-closed by
-    construction (see ``gate.make_gate``): read-only tools like
-    ``fetch_url``/``search_web``/``recall``/``remember`` run unattended, while
-    guarded tools (``write_file``/``run_shell``) are auto-blocked because no
-    human is present to approve them. So a polling task that fetches a page and
-    remembers a fact runs fully; one that tries to write the workspace is told
-    it can't in this context and reports that back.
+    ``agent`` is a scheduler-exclusive general-profile template with no human
+    approver. Moltbook tasks replace its private prompt and tool catalog with
+    a fixed public-only configuration; replies still need a persisted grant.
+    Both configurations use one sync runtime so the provider's async clients
+    never cross event loops. Do not reuse an interactive Agent here.
 
     Returns the run's result string. ``task_history`` captures tool evidence,
     then atomically finishes the run and advances the task's latest summary.
@@ -194,8 +220,20 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     from . import task_history
     from . import moltbook_actions
     from . import moltbook_notebook
+    from .task_profiles import isolated_agent, scheduled_runtime
+
+    template = agent  # Exclusively owned by this scheduler, not the REPL.
 
     try:
+        # A task read by the ticker may have changed before this turn begins.
+        rows = db.query(f"SELECT {_COLUMNS} FROM scheduled_tasks WHERE id=?", (task.id,))
+        if not rows:
+            raise db.StoreError("scheduled task was removed")
+        task = _row(rows[0])
+        if task.profile == "moltbook":
+            agent = isolated_agent(agent)
+        elif task.profile != "general":
+            raise db.StoreError("unknown scheduled task profile")
         prior = task_history.context(task.id) + moltbook_actions.context(task.id) + moltbook_notebook.context(task.id)
         run_id = task_history.begin(task)
     except db.StoreError as exc:
@@ -205,8 +243,8 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     observer = task_history.RunObserver(run_id)
     status, result = "interrupted", "Run interrupted before completion."
     try:
-        with moltbook_actions.execution(task.id, run_id):
-            result = loop.run(agent, task.prompt + prior, on_event=observer)
+        with moltbook_actions.execution(task.id, run_id), scheduled_runtime(template, agent) as runtime:
+            result = loop.run(runtime, task.prompt + prior, on_event=observer)
         status = observer.status()
     except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"

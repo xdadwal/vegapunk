@@ -46,7 +46,7 @@ def platform(tmp_path, monkeypatch):
 
 
 def task(prompt="explore"):
-    scheduler.add_task(prompt, 1800)
+    scheduler.add_task(prompt, 1800, profile="moltbook")
     return scheduler.list_tasks()[-1]
 
 
@@ -259,13 +259,13 @@ def test_limits_and_rate_backoff_are_account_wide(platform, monkeypatch):
     for i in range(3):
         stamp = f"2090-01-01T00:0{i}:00.000000Z"
         run_id = task_history.begin(scheduled)
-        scope = actions.Execution(scheduled.id, run_id)
+        scope = actions.Execution(scheduled.id, run_id, profile_since=scheduled.profile_since)
         action_id = actions.reserve(scope, "account", f"post{i}", "parent", "hello")
         actions.complete(action_id, "sending", "accepted", remote_id=f"remote{i}")
         task_history.finish(scheduled, run_id, "success", "done")
     run_id = task_history.begin(scheduled)
     with pytest.raises(actions.ActionBlocked, match="rolling day"):
-        actions.reserve(actions.Execution(scheduled.id, run_id), "account", "post4", "parent", "hello")
+        actions.reserve(actions.Execution(scheduled.id, run_id, profile_since=scheduled.profile_since), "account", "post4", "parent", "hello")
 
 
 def test_cooldown_and_server_backoff(platform, monkeypatch):
@@ -277,7 +277,7 @@ def test_cooldown_and_server_backoff(platform, monkeypatch):
     run_reply(scheduled, tools)
     assert actions.list_actions()[0]["state"] == "rejected"
     run_id = task_history.begin(scheduled)
-    scope = actions.Execution(scheduled.id, run_id)
+    scope = actions.Execution(scheduled.id, run_id, profile_since=scheduled.profile_since)
     with pytest.raises(actions.ActionBlocked, match="rate-limited"):
         actions.reserve(scope, "account", "different-post", "parent", "hello")
     db.execute("DELETE FROM moltbook_backoff")
@@ -290,12 +290,12 @@ def test_account_cooldown_applies_across_threads(platform):
     scheduled = task()
     actions.grant(scheduled.id, "account")
     first = task_history.begin(scheduled)
-    action_id = actions.reserve(actions.Execution(scheduled.id, first), "account", "post", "parent", "hello")
+    action_id = actions.reserve(actions.Execution(scheduled.id, first, profile_since=scheduled.profile_since), "account", "post", "parent", "hello")
     actions.complete(action_id, "sending", "accepted", remote_id="remote")
     task_history.finish(scheduled, first, "success", "done")
     second = task_history.begin(scheduled)
     with pytest.raises(actions.ActionBlocked, match="account cooldown"):
-        actions.reserve(actions.Execution(scheduled.id, second), "account", "another-post", "another-parent", "hello")
+        actions.reserve(actions.Execution(scheduled.id, second, profile_since=scheduled.profile_since), "account", "another-post", "another-parent", "hello")
 
 
 def test_registration_and_interactive_approval_cannot_bypass_scope(platform):
@@ -316,7 +316,7 @@ def test_registration_and_interactive_approval_cannot_bypass_scope(platform):
 
 def test_another_tool_cannot_call_reply_with_inherited_context(platform):
     from logpose import tool
-    from vegapunk import moltbook_actions as actions
+    from vegapunk import loop, moltbook_actions as actions
     tools, sent = platform
 
     @tool
@@ -327,7 +327,11 @@ def test_another_tool_cannot_call_reply_with_inherited_context(platform):
     scheduled = task()
     actions.grant(scheduled.id, "account")
     agent, _ = agent_for([wants(call("indirect_reply")), says("done")], tools=[indirect_reply])
-    scheduler.run_task(scheduled, agent)
+    from vegapunk import task_history
+    run_id = task_history.begin(scheduled)
+    with actions.execution(scheduled.id, run_id):
+        result = loop.run(agent, scheduled.prompt)
+    task_history.finish(scheduled, run_id, "completed", result)
     assert sent == []
     assert actions.list_actions() == []
 
@@ -407,7 +411,7 @@ def test_human_resolution_cannot_change_an_inflight_action(platform):
     scheduled = task()
     actions.grant(scheduled.id, "account")
     run_id = task_history.begin(scheduled)
-    action_id = actions.reserve(actions.Execution(scheduled.id, run_id), "account", "post", "parent", "hello")
+    action_id = actions.reserve(actions.Execution(scheduled.id, run_id, profile_since=scheduled.profile_since), "account", "post", "parent", "hello")
     with pytest.raises(actions.ActionBlocked, match="ended runs"):
         actions.resolve(action_id, "rejected")
 
@@ -417,12 +421,12 @@ def test_resolution_checks_the_active_verification_run(platform):
     scheduled = task()
     actions.grant(scheduled.id, "account")
     first = task_history.begin(scheduled)
-    action_id = actions.reserve(actions.Execution(scheduled.id, first), "account", "post", "parent", "hello")
+    action_id = actions.reserve(actions.Execution(scheduled.id, first, profile_since=scheduled.profile_since), "account", "post", "parent", "hello")
     actions.complete(action_id, "sending", "pending_verification", remote_id="remote",
                      code="code", challenge="20 minus 5", expires="2099-01-01T00:00:00.000000Z")
     task_history.finish(scheduled, first, "partial", "pending")
     second = task_history.begin(scheduled)
-    actions.verification(actions.Execution(scheduled.id, second), action_id, "account")
+    actions.verification(actions.Execution(scheduled.id, second, profile_since=scheduled.profile_since), action_id, "account")
     with pytest.raises(actions.ActionBlocked, match="ended runs"):
         actions.resolve(action_id, "rejected")
 

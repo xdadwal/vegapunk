@@ -72,7 +72,7 @@ def test_next_run_gets_only_its_own_bounded_history(monkeypatch):
         scheduler.run_task(task, agent)
     seen = []
     monkeypatch.setattr("vegapunk.loop.run", lambda agent, prompt, **kwargs: seen.append(prompt) or "done")
-    scheduler.run_task(one, None)
+    scheduler.run_task(one, agent_for(says("unused"))[0])
     assert "own observation" in seen[0]
     assert "private other task" not in seen[0]
     assert "untrusted" in seen[0].lower()
@@ -123,7 +123,7 @@ def test_interrupt_is_recorded_and_still_propagates(monkeypatch):
         raise KeyboardInterrupt
     monkeypatch.setattr("vegapunk.loop.run", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        scheduler.run_task(task, None)
+        scheduler.run_task(task, agent_for(says("unused"))[0])
     assert task_history.list_runs(task.id)[0].status == "interrupted"
 
 
@@ -283,7 +283,8 @@ def test_abrupt_worker_exit_leaves_recoverable_start_record():
         [sys.executable, "-c",
          "import os; from vegapunk import scheduler, loop; "
          "loop.run = lambda *a, **k: os._exit(17); "
-         "scheduler.run_task(scheduler.list_tasks()[0], None)"],
+         "from tests.fake_provider import agent_for, says; "
+         "scheduler.run_task(scheduler.list_tasks()[0], agent_for(says('unused'))[0])"],
         env={**os.environ, "VEGAPUNK_DB_FILE": str(path)},
         capture_output=True, text=True, timeout=30,
     )
@@ -339,6 +340,7 @@ def test_moltbook_success_records_read_without_raw_body(tmp_path, monkeypatch):
     task = _task()
     agent, _ = agent_for([wants(call("moltbook_home")), says("observed account")],
                          tools=[moltbook.moltbook_home])
+    scheduler.set_profile(task.id, "moltbook")
     scheduler.run_task(task, agent)
     run = task_history.list_runs(task.id)[0]
     assert run.status == "success"

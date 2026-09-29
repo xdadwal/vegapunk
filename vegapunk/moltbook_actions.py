@@ -26,6 +26,7 @@ class Execution:
     task_id: str
     run_id: str
     active: bool = True
+    profile_since: str = ""
 
 
 _execution: ContextVar[Execution | None] = ContextVar("moltbook_execution", default=None)
@@ -35,6 +36,8 @@ _execution: ContextVar[Execution | None] = ContextVar("moltbook_execution", defa
 def execution(task_id: str, run_id: str) -> Iterator[None]:
     """Carry scheduler identity across logpose's async and tool threads."""
     scope = Execution(task_id, run_id)
+    row = db.query("SELECT profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
+    scope.profile_since = row[0][0] if row else ""
     token = _execution.set(scope)
     try:
         yield
@@ -49,7 +52,8 @@ def _authorize(conn, scope: Execution, account_id: str | None = None) -> str:
     row = conn.execute(
         "SELECT p.account_id FROM moltbook_permissions p JOIN scheduled_tasks t ON t.id=p.task_id "
         "JOIN scheduled_runs r ON r.task_id=t.id WHERE t.id=? AND r.id=? "
-        "AND t.enabled=1 AND r.status='running'", (scope.task_id, scope.run_id),
+        "AND t.enabled=1 AND r.status='running' AND t.profile='moltbook' AND t.profile_since=?",
+        (scope.task_id, scope.run_id, scope.profile_since),
     ).fetchone()
     if not row or (account_id is not None and row[0] != account_id):
         raise ActionBlocked("no active moltbook.reply_own grant for this task/account")
@@ -88,10 +92,11 @@ def check_task(conn, scope: Execution) -> None:
     """Recheck inside a transaction before persisting task-local state."""
     if not scope.active or not conn.execute(
         "SELECT t.id FROM scheduled_tasks t JOIN scheduled_runs r ON r.task_id=t.id "
-        "WHERE t.id=? AND r.id=? AND t.enabled=1 AND r.status='running'",
-        (scope.task_id, scope.run_id),
+        "WHERE t.id=? AND r.id=? AND t.enabled=1 AND r.status='running' "
+        "AND t.profile='moltbook' AND t.profile_since=?",
+        (scope.task_id, scope.run_id, scope.profile_since),
     ).fetchone():
-        raise ActionBlocked("scheduled execution is no longer active")
+        raise ActionBlocked("scheduled execution requires an active moltbook profile")
 
 
 def require_execution(tool_name: str) -> Execution:
@@ -105,8 +110,8 @@ def grant(task_id: str, account_id: str) -> None:
     if not account_id:
         raise ActionBlocked("missing authenticated account ID")
     with db.transaction(immediate=True) as conn:
-        if not conn.execute("SELECT id FROM scheduled_tasks WHERE id=?", (task_id,)).fetchone():
-            raise ActionBlocked("scheduled task does not exist")
+        if not conn.execute("SELECT id FROM scheduled_tasks WHERE id=? AND profile='moltbook'", (task_id,)).fetchone():
+            raise ActionBlocked("task must use the moltbook profile before receiving a reply grant")
         conn.execute(
             "INSERT INTO moltbook_permissions VALUES (?, ?, ?) ON CONFLICT(task_id) "
             "DO UPDATE SET account_id=excluded.account_id, granted_at=excluded.granted_at",
@@ -186,7 +191,8 @@ def verification(scope: Execution, action_id: str, account: str, call_id: str = 
         _authorize(conn, scope, account)
         row = conn.execute(
             "SELECT state,verification_code,remote_id,expires_at FROM moltbook_actions "
-            "WHERE id=? AND task_id=? AND account_id=?", (action_id, scope.task_id, account),
+            "WHERE id=? AND task_id=? AND account_id=? AND created_at>=?",
+            (action_id, scope.task_id, account, scope.profile_since),
         ).fetchone()
         if not row or row[0] != "pending_verification":
             raise ActionBlocked("no pending verification for this task/account/action")
@@ -227,7 +233,9 @@ def context(task_id: str) -> str:
     grant_row = db.query("SELECT account_id FROM moltbook_permissions WHERE task_id=?", (task_id,))
     policy = ("moltbook.reply_own for account " + grant_row[0][0]) if grant_row else "no write grant"
     prefix = f"\n\nScheduled-task Moltbook permission: {policy}. Tools enforce the scope and budgets.\n"
-    rows = list_actions(task_id)[:5]
+    profile = db.query("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
+    cutoff = profile[0][1] if profile and profile[0][0] == "moltbook" else ""
+    rows = [row for row in list_actions(task_id) if row["created_at"] >= cutoff][:5]
     if not rows:
         return prefix
     fields = ("id", "post_id", "parent_id", "state", "remote_id", "challenge", "expires_at")
