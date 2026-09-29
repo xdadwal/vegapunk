@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -163,6 +163,46 @@ CREATE TABLE IF NOT EXISTS moltbook_actions (
     UNIQUE(account_id, post_id, parent_id)
 );
 CREATE INDEX IF NOT EXISTS idx_moltbook_account ON moltbook_actions(account_id, created_at);
+CREATE TABLE IF NOT EXISTS moltbook_sources (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    credential_tag TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    author TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    first_run_id TEXT NOT NULL,
+    last_run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(task_id, credential_tag, kind, remote_id, content_hash)
+);
+CREATE TABLE IF NOT EXISTS moltbook_notes (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    credential_tag TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    text TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    follow_up_on TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    supersedes TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolution TEXT NOT NULL DEFAULT '',
+    completion_source_id TEXT NOT NULL DEFAULT '',
+    completion_quote TEXT NOT NULL DEFAULT '',
+    UNIQUE(task_id, credential_tag, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_notebook_active ON moltbook_notes(task_id, credential_tag, status);
 CREATE TABLE IF NOT EXISTS memory_jobs (
     session_slug TEXT PRIMARY KEY,
     cursor INTEGER NOT NULL DEFAULT 0,

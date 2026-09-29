@@ -107,6 +107,8 @@ class RunObserver:
             outcome = "blocked"
         elif event.is_error:
             outcome = "error"
+        elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note"):
+            outcome = "returned"  # local bookkeeping, not a successful external action
         elif event.name.startswith("moltbook_"):
             outcome = (
                 "success" if event.content.startswith("Untrusted Moltbook data from GET ")

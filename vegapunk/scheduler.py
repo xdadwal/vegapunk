@@ -193,9 +193,10 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     from . import loop  # lazy: avoids a scheduler <-> loop <-> tools import cycle
     from . import task_history
     from . import moltbook_actions
+    from . import moltbook_notebook
 
     try:
-        prior = task_history.context(task.id) + moltbook_actions.context(task.id)
+        prior = task_history.context(task.id) + moltbook_actions.context(task.id) + moltbook_notebook.context(task.id)
         run_id = task_history.begin(task)
     except db.StoreError as exc:
         result = f"Could not start scheduled task {task.id[:8]}: {exc}"
