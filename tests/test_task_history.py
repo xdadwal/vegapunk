@@ -234,7 +234,7 @@ def test_v5_upgrade_preserves_tasks_and_backup_contains_history(tmp_path):
     db.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
     db.close_connection()
     assert scheduler.list_tasks()[0].prompt == "existing v5 task"
-    assert db.query("SELECT value FROM meta WHERE key = 'schema_version'") == [("6",)]
+    assert db.query("SELECT value FROM meta WHERE key = 'schema_version'") == [(str(db.SCHEMA_VERSION),)]
     agent, _ = agent_for(says("preserved observation"))
     scheduler.run_task(task, agent)
     snapshot = db.backup_now()

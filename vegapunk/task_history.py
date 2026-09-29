@@ -98,7 +98,12 @@ class RunObserver:
             return
         # Approval denials are plain strings in the existing gate contract.
         # Moltbook success has a client-owned envelope; its body is untrusted.
-        if event.content == NO_GATE or event.content.startswith("Blocked:"):
+        if event.name in ("moltbook_reply", "moltbook_verify_reply"):
+            row = db.query("SELECT state FROM moltbook_actions WHERE last_run_id=? AND tool_call_id=?",
+                           (self.run_id, event.id))
+            outcome = ({"accepted": "success", "pending_verification": "pending",
+                        "rejected": "blocked"}.get(row[0][0], "error") if row else "blocked")
+        elif event.content == NO_GATE or event.content.startswith("Blocked:"):
             outcome = "blocked"
         elif event.is_error:
             outcome = "error"
@@ -123,6 +128,12 @@ class RunObserver:
         if self.cut_off:
             return "error"
         kinds = set(self.outcomes)
+        if "pending" in kinds:
+            pending = db.query("SELECT id FROM moltbook_actions WHERE last_run_id=? AND state='pending_verification'",
+                               (self.run_id,))
+            if pending:
+                return "error" if "error" in kinds else "partial"
+            kinds.discard("pending")
         if kinds & {"success", "returned"} and kinds & {"blocked", "error"}:
             return "partial"
         if "error" in kinds:

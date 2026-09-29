@@ -192,9 +192,10 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     """
     from . import loop  # lazy: avoids a scheduler <-> loop <-> tools import cycle
     from . import task_history
+    from . import moltbook_actions
 
     try:
-        prior = task_history.context(task.id)
+        prior = task_history.context(task.id) + moltbook_actions.context(task.id)
         run_id = task_history.begin(task)
     except db.StoreError as exc:
         result = f"Could not start scheduled task {task.id[:8]}: {exc}"
@@ -203,7 +204,8 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     observer = task_history.RunObserver(run_id)
     status, result = "interrupted", "Run interrupted before completion."
     try:
-        result = loop.run(agent, task.prompt + prior, on_event=observer)
+        with moltbook_actions.execution(task.id, run_id):
+            result = loop.run(agent, task.prompt + prior, on_event=observer)
         status = observer.status()
     except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"
