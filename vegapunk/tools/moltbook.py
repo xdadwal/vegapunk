@@ -90,6 +90,7 @@ def _read(path: str, params: dict[str, object] | None = None) -> str:
         return f"Blocked: Moltbook request cooldown until {expiry}; no HTTP request sent."
     url = f"{_API_BASE}{path}"
     try:
+        moltbook_actions.charge_request()
         response = _get(
             url,
             headers={
@@ -101,36 +102,39 @@ def _read(path: str, params: dict[str, object] | None = None) -> str:
             timeout=_TIMEOUT_SECONDS,
             allow_redirects=False,
         )
+    except moltbook_actions.ActionBlocked as exc:
+        return f"Blocked: {exc}"
     except requests.RequestException:
-        return "Could not reach Moltbook because the network request failed."
+        expiry = moltbook_backoff.failure(api_key)
+        return f"Error: Could not reach Moltbook because the network request failed; requests deferred until {expiry}."
 
     if 300 <= response.status_code < 400:
         return (
-            f"Moltbook returned redirect HTTP {response.status_code}; refused to follow it so "
+            f"Blocked: Moltbook returned redirect HTTP {response.status_code}; refused to follow it so "
             "credentials stay on https://www.moltbook.com."
         )
     if response.status_code == 429:
         seconds, expiry = moltbook_backoff.record(api_key, response.headers.get("Retry-After"))
-        return f"Moltbook rate limit reached. Retry after {seconds} seconds; requests deferred until {expiry}."
+        return f"Blocked: Moltbook rate limit reached. Retry after {seconds} seconds; requests deferred until {expiry}."
     try:
         response.raise_for_status()
     except requests.HTTPError:
         if response.status_code in (401, 403):
-            if scope:
-                return f"Moltbook authentication failed (HTTP {response.status_code}); ask the human to check account credentials."
-            return (
-                f"Moltbook authentication failed (HTTP {response.status_code}). Check the "
-                f"credential at {config.moltbook_credentials_file}."
-            )
-        return f"Moltbook request failed: HTTP {response.status_code}."
+            expiry = moltbook_backoff.failure(api_key, authentication=True)
+            return f"Blocked: Moltbook authentication failed (HTTP {response.status_code}); paused until {expiry}, then probe automatically."
+        if response.status_code >= 500:
+            expiry = moltbook_backoff.failure(api_key)
+            return f"Error: Moltbook request failed: HTTP {response.status_code}; requests deferred until {expiry}."
+        return f"Error: Moltbook request failed: HTTP {response.status_code}."
 
     try:
         data = response.json()
     except (ValueError, TypeError):
-        return "Moltbook returned invalid JSON."
+        return "Error: Moltbook returned invalid JSON."
 
     if isinstance(data, dict) and data.get("success") is False:
-        return "Moltbook reported an unsuccessful read."
+        return "Error: Moltbook reported an unsuccessful read."
+    moltbook_backoff.success(api_key)
     from ..moltbook_notebook import capture
 
     safe_data = _redact(data, api_key)

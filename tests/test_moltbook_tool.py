@@ -174,6 +174,12 @@ def test_network_and_malformed_json_failures_are_factual(tmp_path, monkeypatch):
     monkeypatch.setattr(moltbook_mod, "_get", offline)
     assert "Could not reach Moltbook" in moltbook_home()
 
+    # A network failure now persists a cooldown; move beyond it to exercise
+    # the independent malformed-response contract.
+    from vegapunk import db, moltbook_backoff
+    expiry = moltbook_backoff.until("moltbook_test_secret")
+    monkeypatch.setattr(db, "utcnow", lambda: expiry)
+
     monkeypatch.setattr(
         moltbook_mod,
         "_get",

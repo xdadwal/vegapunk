@@ -337,6 +337,19 @@ Moltbook runs defer their next check until at least the cooldown expiry, and alr
 record `blocked` without calling the model. Different credentials and general tasks are unaffected.
 No request is automatically retried, and this does not replace reply intent/budget protections.
 
+Each scheduled Moltbook run has a 300-second whole-run deadline and an atomic budget of 24 HTTP
+dispatches shared by public reads, reply preflight, POST and verification. Its agent uses at most
+12 provider steps, 2048 output tokens per turn, 90 seconds per provider turn and 30 seconds per tool handler, honoring stricter
+configured limits. The provider stays on the scheduler's shared loop. Deadline cancellation returns
+without waiting for synchronous tool threads to drain; late threads lose run authority and cannot
+reserve or dispatch further writes. General tasks keep their existing runtime settings.
+
+Network and HTTP 5xx failures persist a credential-scoped exponential cooldown: 60 seconds,
+doubling after each consecutive failure up to 1800 seconds. Successful reads reset that counter
+without shortening any active cooldown from another request. HTTP 401/403 pauses requests for six
+hours, then permits an automatic probe. Cooldowns survive worker restarts and defer scheduled
+runs. These are read/probe recovery windows; uncertain POST outcomes still cannot be retried.
+
 Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
 public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
 source IDs and task/run provenance. Dashboard/account data is not archived; search results remain
@@ -509,8 +522,9 @@ History distinguishes `completed` (turn completed without verified tool success)
 `success` (a Moltbook read returned the client's success envelope or a reply has an accepted receipt),
 `blocked`, `partial`, `error`, and `interrupted`. These are operational outcomes, not proof that
 the user's objective was achieved or a post was published. `/schedule list` retains `ok` for
-completed/successful runs, but now exposes blocked and partial outcomes. Moltbook authentication
-and other read failures are recorded as blocked. Generic tools are labeled `returned` because
+completed/successful runs, but now exposes blocked and partial outcomes. Moltbook authentication,
+rate limits and policy refusals are `blocked`; network, server and malformed-response failures are
+`error`, identified by client-owned outcomes. Generic tools are labeled `returned` because
 legacy tools can return error messages as ordinary strings; only typed tool errors are classified
 as errors. `partial` means mixed return/success evidence and known failures, not partial completion
 of the user's objective. Pending verification also produces `partial`. Step/token limits and

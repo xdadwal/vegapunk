@@ -1,5 +1,6 @@
 """Explicit social execution policy, independent of private assistant context."""
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -12,6 +13,7 @@ from .gate import make_gate
 _ISOLATED: WeakKeyDictionary[Agent, Agent] = WeakKeyDictionary()
 _RUNTIMES: WeakKeyDictionary[Agent, Agent] = WeakKeyDictionary()
 _SELECTED: ContextVar[Agent | None] = ContextVar("scheduled_profile_agent", default=None)
+MOLTBOOK_RUN_SECONDS = 300.0
 
 
 class _ScheduledRuntime(Agent):
@@ -22,9 +24,37 @@ class _ScheduledRuntime(Agent):
         selected = _SELECTED.get()
         if selected is None or selected.provider is not self.provider:
             raise RuntimeError("scheduled execution profile is missing")
-        # Capture the immutable configuration before crossing the thread boundary.
-        # Return its generator directly so Logpose retains cancellation ownership.
-        return selected.stream(prompt, conversation=conversation)
+        # Capture configuration before crossing the thread boundary; Logpose
+        # retains ownership of the stream and its cancellation.
+        events = selected.stream(prompt, conversation=conversation)
+        from .moltbook_actions import remaining_seconds
+        remaining = remaining_seconds()
+        if remaining is None:
+            return events
+
+        async def bounded() -> AsyncIterator[Event]:
+            try:
+                # This executes on Logpose's persistent sync-owned loop. A
+                # cancelled synchronous handler may finish later, but no run
+                # timeout waits for the loop's executor to drain.
+                while True:
+                    # stream_sync advances each event in a separate asyncio
+                    # task; a timeout must wrap anext, never span a yield.
+                    seconds = remaining_seconds()
+                    if seconds is not None and seconds <= 0:
+                        raise TimeoutError("scheduled Moltbook run deadline expired")
+                    async with asyncio.timeout(seconds):
+                        try:
+                            event = await anext(events)
+                        except StopAsyncIteration:
+                            return
+                    yield event
+            except TimeoutError:
+                raise TimeoutError("scheduled Moltbook run deadline expired") from None
+            finally:
+                await events.aclose()
+
+        return bounded()
 
     async def aclose(self) -> None:
         closer = getattr(self.provider, "aclose", None)
@@ -88,6 +118,9 @@ def isolated_agent(template: Agent) -> Agent:
     from .backend import EFFORT_LEVELS
 
     extra = {}
+    provider_timeout = template.provider_turn_timeout
+    if provider_timeout == "default":
+        provider_timeout = getattr(template.provider, "turn_timeout", None)
     for key in ("reasoning", "output_config"):
         value = template.extra.get(key)
         if isinstance(value, dict) and value.get("effort") in EFFORT_LEVELS:
@@ -95,10 +128,12 @@ def isolated_agent(template: Agent) -> Agent:
             if key == "reasoning":
                 extra[key]["summary"] = "auto"
     agent = Agent(template.provider, model=template.model, system=_MOLTBOOK_PROMPT,
-                 tools=tools, max_iterations=template.max_iterations, max_tokens=template.max_tokens,
+                 tools=tools, max_iterations=min(template.max_iterations, 12),
+                 max_tokens=min(template.max_tokens or 2048, 2048),
                  extra=extra, retry_policy=template.retry_policy,
-                 provider_turn_timeout=template.provider_turn_timeout,
-                 max_concurrent_tools=template.max_concurrent_tools, tool_timeout=template.tool_timeout,
+                 provider_turn_timeout=(min(provider_timeout, 90)
+                                        if isinstance(provider_timeout, (int, float)) and provider_timeout > 0 else 90),
+                 max_concurrent_tools=template.max_concurrent_tools, tool_timeout=min(template.tool_timeout or 30, 30),
                  tool_error_mode="safe", on_tool_call=make_gate(None, allow_questions=False, allow_delegation=False))
     # Cache configuration only. Both profiles execute on scheduled_runtime's
     # loop, never on separate loops sharing an async HTTP client.
