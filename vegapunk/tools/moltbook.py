@@ -10,6 +10,7 @@ from urllib.parse import quote
 import requests
 
 from ..config import config
+from .. import moltbook_backoff
 from .registry import tool
 
 _API_BASE = "https://www.moltbook.com/api/v1"
@@ -26,6 +27,8 @@ _get = requests.get
 def _load_api_key(path: Path) -> tuple[str | None, str | None]:
     try:
         raw = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None, f"Moltbook credentials at {path} are not valid UTF-8."
     except OSError as exc:
         return None, f"Could not read Moltbook credentials at {path}: {exc}"
     try:
@@ -61,6 +64,12 @@ def _redact(value: Any, api_key: str) -> Any:
     return value
 
 
+def _cooldown() -> str | None:
+    """Scheduler preflight only; missing credentials remain a tool-visible error."""
+    key, _ = _load_api_key(config.moltbook_credentials_file)
+    return moltbook_backoff.until(key) if key else None
+
+
 def _read(path: str, params: dict[str, object] | None = None) -> str:
     from logpose import current_runtime_context
     from .. import moltbook_actions
@@ -76,6 +85,9 @@ def _read(path: str, params: dict[str, object] | None = None) -> str:
     if error:
         return "Moltbook credentials unavailable; ask the human to check the configured credential file." if scope else error
     assert api_key is not None
+    expiry = moltbook_backoff.until(api_key)
+    if expiry:
+        return f"Blocked: Moltbook request cooldown until {expiry}; no HTTP request sent."
     url = f"{_API_BASE}{path}"
     try:
         response = _get(
@@ -98,15 +110,8 @@ def _read(path: str, params: dict[str, object] | None = None) -> str:
             "credentials stay on https://www.moltbook.com."
         )
     if response.status_code == 429:
-        retry_after = str(response.headers.get("Retry-After", "unknown")).replace(
-            api_key, "[redacted]"
-        )
-        suffix = (
-            f"{retry_after} seconds"
-            if retry_after.isascii() and retry_after.isdigit()
-            else "unknown"
-        )
-        return f"Moltbook rate limit reached. Retry after {suffix}."
+        seconds, expiry = moltbook_backoff.record(api_key, response.headers.get("Retry-After"))
+        return f"Moltbook rate limit reached. Retry after {seconds} seconds; requests deferred until {expiry}."
     try:
         response.raise_for_status()
     except requests.HTTPError:

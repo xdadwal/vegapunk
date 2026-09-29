@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import requests
 from logpose import current_runtime_context
 
-from .. import db, moltbook_actions as ledger
+from .. import db, moltbook_backoff, moltbook_actions as ledger
 from ..config import config
 from .moltbook import _API_BASE, _TIMEOUT_SECONDS, _load_api_key, _redact
 from .registry import tool
@@ -36,12 +36,20 @@ def _headers(key: str) -> dict[str, str]:
 
 
 def _read(path: str, key: str, params: dict | None = None) -> dict:
+    expiry = moltbook_backoff.until(key)
+    if expiry:
+        raise ledger.ActionBlocked(f"Moltbook request cooldown until {expiry}; no HTTP request sent")
     try:
         response = _get(_API_BASE + path, headers=_headers(key), params=params,
                         timeout=_TIMEOUT_SECONDS, allow_redirects=False)
+        if response.status_code == 429:
+            _, expiry = moltbook_backoff.record(key, response.headers.get("Retry-After"))
+            raise ledger.ActionBlocked(f"Moltbook rate limit reached; requests deferred until {expiry}")
         if not 200 <= response.status_code < 300:
             raise ledger.ActionBlocked(f"Moltbook preflight failed (HTTP {response.status_code})")
         data = response.json()
+    except ledger.ActionBlocked:
+        raise
     except (requests.RequestException, ValueError):
         raise ledger.ActionBlocked("Moltbook preflight could not be completed") from None
     if not isinstance(data, dict) or data.get("success") is False:

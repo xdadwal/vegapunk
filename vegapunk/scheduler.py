@@ -221,6 +221,7 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     from . import moltbook_actions
     from . import moltbook_notebook
     from .task_profiles import isolated_agent, scheduled_runtime
+    from .tools import moltbook
 
     template = agent  # Exclusively owned by this scheduler, not the REPL.
 
@@ -244,14 +245,19 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     status, result = "interrupted", "Run interrupted before completion."
     try:
         with moltbook_actions.execution(task.id, run_id), scheduled_runtime(template, agent) as runtime:
-            result = loop.run(runtime, task.prompt + prior, on_event=observer)
-        status = observer.status()
+            cooldown = moltbook._cooldown() if task.profile == "moltbook" else None
+            if cooldown:
+                status, result = "blocked", f"Moltbook request cooldown until {cooldown}; no model or HTTP request sent."
+            else:
+                result = loop.run(runtime, task.prompt + prior, on_event=observer)
+                status = observer.status()
     except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"
         status = "error"
     finally:
         try:
-            task_history.finish(task, run_id, status, result)
+            cooldown = moltbook._cooldown() if task.profile == "moltbook" else None
+            task_history.finish(task, run_id, status, result, not_before=cooldown or "")
         except db.StoreError as exc:
             # Leave the open row in place: a later tick must not silently rerun
             # work whose completion could not be persisted.

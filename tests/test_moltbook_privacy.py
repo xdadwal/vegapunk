@@ -207,7 +207,7 @@ def test_v8_migration_retains_legacy_tasks_without_enabling_social_access():
     db.close_connection()
     task = scheduler.list_tasks()[0]
     assert task.id == "legacy" and task.profile == "general" and task.profile_since == ""
-    assert db.query("SELECT value FROM meta WHERE key='schema_version'") == [("9",)]
+    assert db.query("SELECT value FROM meta WHERE key='schema_version'") == [(str(db.SCHEMA_VERSION),)]
 
 
 def test_credential_errors_do_not_expose_local_paths(tmp_path, monkeypatch):
