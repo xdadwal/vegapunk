@@ -22,7 +22,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
-from . import agents, skills, style
+from . import agents, db, skills, style
 from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
@@ -36,7 +36,8 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 _SUBCOMMANDS = {
     "agent": list(agents.AGENTS),
     "sessions": ["remove"],
-    "schedule": ["list", "add", "remove"],
+    "schedule": ["list", "history", "notebook", "add", "profile", "remove",
+                 "grant", "revoke", "permissions", "actions", "resolve-action"],
 }
 
 
@@ -56,6 +57,49 @@ def _skill_names() -> list[str]:
         return []
 
 
+def _schedule_options(words: list[str]) -> list[str]:
+    """Local-only argument suggestions; free-form content is never completed."""
+    position = len(words) - 1
+    sub = words[0]
+    if position == 0:
+        return _SUBCOMMANDS["schedule"]
+    if sub == "add":
+        if position == 2:
+            return ["--profile"]
+        if position == 3 and words[2] == "--profile":
+            return ["general", "moltbook"]
+        return []
+    if position == 2:
+        if sub == "profile":
+            return ["general", "moltbook"]
+        if sub in ("grant", "revoke"):
+            return ["moltbook.reply_own"]
+        if sub == "resolve-action":
+            return ["accepted", "rejected"]
+    if position != 1:
+        return []
+    if sub == "resolve-action":
+        sql = "SELECT id FROM moltbook_actions ORDER BY id"
+    elif sub in ("profile", "remove", "grant", "revoke", "permissions", "history", "actions", "notebook"):
+        sql = "SELECT id FROM scheduled_tasks"
+        if sub == "history":
+            sql += " UNION SELECT task_id FROM scheduled_runs"
+        elif sub == "actions":
+            sql += " UNION SELECT task_id FROM moltbook_actions"
+        elif sub == "notebook":
+            sql += (" UNION SELECT task_id FROM moltbook_sources"
+                    " UNION SELECT task_id FROM moltbook_notes UNION SELECT id FROM moltbook_notes")
+        sql += " ORDER BY 1"
+    else:
+        return []
+    try:
+        # Full IDs avoid ambiguous eight-character prefixes and make individual
+        # note selections usable by the human inspection command.
+        return [row[0] for row in db.query(sql)]
+    except db.StoreError:
+        return []  # Completion must not interrupt input when the store is down.
+
+
 def _argument_options(command: str, words: list[str]) -> list[str]:
     """What can follow ``/command`` given the words already typed.
 
@@ -73,6 +117,8 @@ def _argument_options(command: str, words: list[str]) -> list[str]:
         return _session_names() if position == 0 else []
     if command == "skill":
         return _skill_names() if position == 0 else []
+    if command == "schedule":
+        return _schedule_options(words)
     if command == "sessions":
         if position == 0:
             return [*_SUBCOMMANDS["sessions"], *_session_names()]

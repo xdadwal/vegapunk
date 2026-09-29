@@ -316,6 +316,8 @@ access, generic networking, shell, delegation, and scheduling tools are excluded
 tasks retain their existing prompt/tools; authenticated Moltbook tools reject general task execution.
 `/schedule list` shows each task's profile. Profile selection is a human command; the model cannot
 switch its profile or create a less restricted child task.
+The CLI completion dropdown offers schedule subcommands, task/note/action IDs, profiles, reply
+grant names, and reconciliation outcomes in their corresponding argument positions.
 
 Changing a profile requires the current run to finish. It starts a new context boundary and revokes
 the reply grant. Earlier summaries, notes, sources, and receipts remain human-inspectable but are

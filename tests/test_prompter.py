@@ -99,6 +99,86 @@ def test_completer_offers_effort_levels():
     assert _complete("/effort ") == ["low", "medium", "high", "xhigh", "max"]
 
 
+def test_schedule_dropdown_exposes_all_supported_subcommands():
+    assert set(_complete("/schedule ")) == {
+        "list", "history", "notebook", "add", "profile", "remove", "grant",
+        "revoke", "permissions", "actions", "resolve-action"}
+    assert _complete("/schedule not") == ["notebook"]
+
+
+@pytest.mark.parametrize(("line", "expected"), [
+    ("/schedule profile abc ", ["general", "moltbook"]),
+    ("/schedule profile abc mol", ["moltbook"]),
+    ("/schedule grant abc ", ["moltbook.reply_own"]),
+    ("/schedule revoke abc mol", ["moltbook.reply_own"]),
+    ("/schedule add 300 ", ["--profile"]),
+    ("/schedule add 300 --pr", ["--profile"]),
+    ("/schedule add 300 --profile ", ["general", "moltbook"]),
+    ("/schedule add 300 --profile mol", ["moltbook"]),
+    ("/schedule resolve-action abc ", ["accepted", "rejected"]),
+    ("/schedule resolve-action abc rej", ["rejected"]),
+    ("/schedule add ", []),
+    ("/schedule add 300 Explore ", []),
+    ("/schedule add 300 --profile moltbook ", []),
+    ("/schedule add 300 --profile moltbook Explore ", []),
+    ("/schedule profile abc moltbook ", []),
+    ("/schedule grant abc moltbook.reply_own ", []),
+    ("/schedule resolve-action abc accepted ", []),
+    ("/schedule list ", []),
+])
+def test_schedule_dropdown_suggests_only_contextual_options(line, expected):
+    assert _complete(line) == expected
+
+
+def test_schedule_dropdown_offers_live_task_ids_without_mutating_tasks():
+    from vegapunk import scheduler
+    scheduler.add_task("ordinary", 300)
+    scheduler.add_task("social", 300, profile="moltbook")
+    ids = {task.id for task in scheduler.list_tasks()}
+    for sub in ("profile", "remove", "grant", "revoke", "history", "notebook", "permissions", "actions"):
+        assert set(_complete(f"/schedule {sub} ")) == ids
+        task_id = sorted(ids)[0]
+        assert task_id in _complete(f"/schedule {sub} {task_id[:8]}")
+    assert {task.id for task in scheduler.list_tasks()} == ids
+
+
+def test_schedule_dropdown_offers_retained_history_notes_and_action_ids():
+    from vegapunk import db, scheduler, task_history
+    scheduler.add_task("old social", 300, profile="moltbook")
+    task = scheduler.list_tasks()[0]
+    run_id = task_history.begin(task)
+    task_history.finish(task, run_id, "completed", "done")
+    stamp = db.utcnow()
+    db.execute("INSERT INTO moltbook_sources VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               ("source", task.id, "tag", "post", "remote", "/posts/remote", "peer", "quote",
+                "hash", run_id, run_id, stamp, stamp, 1))
+    note_id, action_id = "a" * 32, "b" * 32
+    db.execute("INSERT INTO moltbook_notes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (note_id, task.id, "tag", run_id, "observation", "topic", "learning", "medium", "source",
+                "quote", "", "active", "", "fingerprint", stamp, stamp, "", "", ""))
+    db.execute("INSERT INTO moltbook_actions (id,task_id,run_id,last_run_id,account_id,tool_call_id,post_id,parent_id,"
+               "content,content_hash,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+               (action_id, task.id, run_id, run_id, "account", "call", "post", "parent", "reply", "hash",
+                "unknown", stamp, stamp))
+    scheduler.remove_task(task.id)
+    assert _complete("/schedule history ") == [task.id]
+    assert _complete("/schedule actions ") == [task.id]
+    assert set(_complete("/schedule notebook ")) == {task.id, note_id}
+    assert _complete("/schedule notebook aaaa") == [note_id]
+    assert _complete("/schedule resolve-action ") == [action_id]
+    assert _complete("/schedule profile ") == []
+
+
+def test_schedule_completion_database_failure_does_not_break_prompt(monkeypatch):
+    from vegapunk import db
+    def unavailable(*args, **kwargs):
+        raise db.StoreError("offline")
+    monkeypatch.setattr(db, "query", unavailable)
+    assert _complete("/schedule notebook ") == []
+    assert _complete("/schedule resolve-action ") == []
+    assert _complete("/schedule profile abc ") == ["general", "moltbook"]
+
+
 def test_completer_offers_saved_sessions_for_load_and_forget():
     from vegapunk.session_store import save_session
 
