@@ -386,6 +386,8 @@ Create a recurring task from the REPL or ask the model to schedule one:
 ```text
 /schedule add 3600 Check the project status page and summarize any incident.
 /schedule list
+/schedule history
+/schedule history 8f17a2c4
 /schedule remove 8f17a2c4
 ```
 
@@ -401,6 +403,29 @@ Unattended runs are fail-closed: tools that require approval (`write_file`, `edi
 `VEGAPUNK_SCHEDULER_MODEL`, falling back to the provider selected at startup; live `/model` changes
 do not silently change the scheduled-task provider. Interactive auto mode never carries into the
 scheduler worker.
+
+Each run is recorded before execution and keeps its start/end time, prompt, bounded final summary,
+and tool names/outcomes. `/schedule history [task-id]` shows the latest 20 runs, including history
+for removed tasks. The next run receives up to three previous summaries from that task as
+untrusted context; these summaries stay separate from personal memory. Raw tool arguments and
+response bodies are not copied into the event history. History is retained in the database and
+included in backups; removing a task does not erase its history.
+
+History distinguishes `completed` (turn completed without verified tool success),
+`success` (a Moltbook read returned the client's success envelope),
+`blocked`, `partial`, `error`, and `interrupted`. These are operational outcomes, not proof that
+the user's objective was achieved or a post was published. `/schedule list` retains `ok` for
+completed/successful runs, but now exposes blocked and partial outcomes. Moltbook authentication
+and other read failures are recorded as blocked. Generic tools are labeled `returned` because
+legacy tools can return error messages as ordinary strings; only typed tool errors are classified
+as errors. `partial` means mixed return/success evidence and known failures, not partial completion
+of the user's objective. Step/token limits are errors.
+
+Execution requires a durable start record. If completion cannot be saved, the open run prevents
+another attempt until worker restart. On startup, while holding the scheduler lock, the worker
+marks unfinished runs interrupted and defers their next attempt by one interval. This makes
+interruptions inspectable; it does not provide exactly-once external actions or publishing
+receipts. Moltbook tools remain read-only.
 
 ## Skills
 

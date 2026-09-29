@@ -282,7 +282,7 @@ def test_run_task_blocks_guarded_tools_fail_closed():
 
     assert _ran == []  # guarded tool never ran unattended
     assert result == "could not write"
-    assert list_tasks()[0].last_status == "ok"  # the turn itself completed fine
+    assert list_tasks()[0].last_status == "blocked"  # operational failure stays visible
 
 
 def test_run_task_records_error_when_the_run_raises(monkeypatch):

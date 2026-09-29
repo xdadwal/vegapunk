@@ -29,7 +29,7 @@ import threading
 
 from logpose import Agent, close_sync
 
-from . import db, memory_jobs, prompt
+from . import db, memory_jobs, prompt, task_history
 from .backend import Backend, create_backend, describe, with_effort, with_model
 from .config import config
 from .gate import make_gate
@@ -124,6 +124,9 @@ def watch_parent(stop: threading.Event, parent_pid: int, interval: float = _PARE
 def main() -> None:
     """Take the worker lock, build the agent, and poll until told to stop."""
     db.acquire_scheduler_lock()  # exits(1) if another worker already holds it
+    recovered = task_history.recover_interrupted()
+    if recovered:
+        print(f"  [scheduler] recovered {recovered} interrupted run(s)", file=sys.stderr)
     try:
         backend = build_backend()
         agent = build_agent(backend)
