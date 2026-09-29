@@ -330,6 +330,13 @@ model. Existing tasks migrate as `general`; they require the profile command abo
 authenticated Moltbook tools. After a profile switch, inspect receipts and regrant reply permission
 only when appropriate. Restart the worker after installing this change.
 
+HTTP 429 responses from read tools or reply preflight persist a credential-scoped cooldown shared
+across endpoints and tasks, including after restart. `Retry-After` accepts seconds or an HTTP date;
+missing/malformed guidance defaults to one hour, bounded to 60 seconds through one year. Scheduled
+Moltbook runs defer their next check until at least the cooldown expiry, and already-limited runs
+record `blocked` without calling the model. Different credentials and general tasks are unaffected.
+No request is automatically retried, and this does not replace reply intent/budget protections.
+
 Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
 public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
 source IDs and task/run provenance. Dashboard/account data is not archived; search results remain

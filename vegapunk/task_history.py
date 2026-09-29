@@ -148,7 +148,7 @@ class RunObserver:
         return "success" if "success" in kinds else "completed"
 
 
-def finish(task: ScheduledTask, run_id: str, status: str, result: str) -> None:
+def finish(task: ScheduledTask, run_id: str, status: str, result: str, *, not_before: str = "") -> None:
     """Atomically finish history and advance the schedule; failure stays visible."""
     stamp = db.utcnow()
     trimmed = result if len(result) <= 2000 else result[:2000] + "…[truncated]"
@@ -163,7 +163,7 @@ def finish(task: ScheduledTask, run_id: str, status: str, result: str) -> None:
         conn.execute(
             "UPDATE scheduled_tasks SET last_run_at = ?, last_status = ?, last_result = ?, "
             "next_run_at = ? WHERE id = ?",
-            (stamp, last_status, trimmed, db.stamp_plus(stamp, task.interval_seconds), task.id),
+            (stamp, last_status, trimmed, max(db.stamp_plus(stamp, task.interval_seconds), not_before), task.id),
         )
 
 
