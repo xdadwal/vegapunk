@@ -62,16 +62,40 @@ _MODE_STANZAS: dict[PromptMode, str] = {
 }
 
 
-def system_prompt(cfg: Config = config, *, mode: PromptMode, conversation_mode: SessionMode = "conversation",
-                  agent_id: str = "default") -> str:
+def system_prompt(
+    cfg: Config = config,
+    *,
+    mode: PromptMode,
+    conversation_mode: SessionMode = "conversation",
+    agent_id: str = "default",
+    delegation: bool = True,
+    include_memory: bool = True,
+) -> str:
     """Return the complete system prompt with current memory and skills."""
     validate_session_mode(conversation_mode)
     journal = conversation_mode == "journal"
     return (
         (_JOURNAL_PROMPT if journal else cfg.system_prompt)
         + agents.system_block(agent_id)
+        + (
+            ""
+            if journal or mode == "unattended" or not delegation
+            else (
+                "\n\nDelegation:\n"
+                "- The primary conversation decides whether specialist work is useful. "
+                "Use delegate only when it materially improves the result; keep simple work here.\n"
+                "- Roles are separate responsibilities, not separate tool sets. Every role receives "
+                "the same universal tools. Available roles: "
+                + agents.delegation_catalog()
+                + ".\n"
+                "- Give each role a self-contained task. For independent work, issue multiple "
+                "delegate calls in one tool step so they run concurrently. Each call returns only "
+                "after its background role finishes, and you must synthesize all results before "
+                "ending your response."
+            )
+        )
         + "\n\n"
         + _MODE_STANZAS[mode]
-        + memory.as_system_block()
+        + (memory.as_system_block() if include_memory else "")
         + ("" if journal else skills.as_system_block())
     )

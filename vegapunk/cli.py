@@ -21,6 +21,7 @@ from .backend import create_backend, current_effort
 from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
+from .delegation import RoleRunner, set_runner
 from .prompter import Prompter, PromptToolkitPrompter
 from .questions import CLIQuestioner, set_questioner
 from .render import Renderer, RichRenderer
@@ -188,6 +189,11 @@ def main(
     # database — /schedule writes rows, the worker polls them.
     scheduler, scheduler_log = worker.start()
     ctx.scheduler, ctx.scheduler_log = scheduler, str(scheduler_log)
+    # Delegates clone whatever backend is live when the tool is called, so a
+    # later /model or /effort change applies without reinstalling the runner.
+    # ALL_TOOLS is intentionally shared: roles differ by responsibility and
+    # isolated context, never by a hidden capability subset.
+    set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS))
     warned_worker_died = False
     try:
         while True:
@@ -285,6 +291,7 @@ def main(
         # is what lets the interpreter exit promptly rather than at daemon-thread
         # teardown.
         worker.stop(scheduler)
+        set_runner(None)
         session.close()
         set_questioner(None)
 
