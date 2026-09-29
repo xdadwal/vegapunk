@@ -206,12 +206,14 @@ def test_main_takes_the_scheduler_lock_not_the_repl_one(monkeypatch):
         "vegapunk.scheduler_worker.db.acquire_process_lock", lambda: taken.append("repl")
     )
     monkeypatch.setattr("vegapunk.scheduler_worker.build_backend", _local_backend)
+    monkeypatch.setattr("vegapunk.scheduler_worker.task_history.recover_interrupted",
+                        lambda: taken.append("recover") or 0)
     # serve() returns at once so main() doesn't block the test.
-    monkeypatch.setattr("vegapunk.scheduler_worker.Scheduler.serve", lambda self: None)
+    monkeypatch.setattr("vegapunk.scheduler_worker.Scheduler.serve", lambda self: taken.append("serve"))
 
     scheduler_worker.main()
 
-    assert taken == ["scheduler"]
+    assert taken == ["scheduler", "recover", "serve"]
 
 
 def test_main_exits_cleanly_on_a_bad_model_spec(monkeypatch, capsys):

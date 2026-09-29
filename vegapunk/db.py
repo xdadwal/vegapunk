@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -113,6 +113,25 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_due ON scheduled_tasks(enabled, next_run_at);
+CREATE TABLE IF NOT EXISTS scheduled_runs (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_runs_task ON scheduled_runs(task_id, started_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_open ON scheduled_runs(task_id) WHERE status = 'running';
+CREATE TABLE IF NOT EXISTS scheduled_run_events (
+    run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, sequence)
+);
 CREATE TABLE IF NOT EXISTS memory_jobs (
     session_slug TEXT PRIMARY KEY,
     cursor INTEGER NOT NULL DEFAULT 0,

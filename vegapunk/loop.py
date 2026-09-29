@@ -26,7 +26,7 @@ import itertools
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 from logpose import (
     Agent,
@@ -51,7 +51,8 @@ from .render import Renderer
 STEP_LIMIT_NOTICE = "(Stopped after hitting the step limit without a final answer.)"
 
 
-def run(agent: Agent, user_input: str, renderer: Renderer | None = None) -> str:
+def run(agent: Agent, user_input: str, renderer: Renderer | None = None,
+        *, on_event: Callable[[Event | MaxIterationsError], None] | None = None) -> str:
     """One-shot: run a single request to completion and return the reply.
 
     Drains the turn stream internally (no live rendering by the caller), so
@@ -60,6 +61,7 @@ def run(agent: Agent, user_input: str, renderer: Renderer | None = None) -> str:
     turns = trace(
         stream_sync(agent, user_input, conversation=Conversation()),
         renderer or render.pick(),
+        on_event=on_event,
     )
     while True:
         try:
@@ -70,7 +72,8 @@ def run(agent: Agent, user_input: str, renderer: Renderer | None = None) -> str:
 
 
 def trace(
-    events: Generator[Event, None, None], renderer: Renderer
+    events: Generator[Event, None, None], renderer: Renderer,
+    *, on_event: Callable[[Event | MaxIterationsError], None] | None = None,
 ) -> Generator[TextDelta, None, tuple[str, int | None]]:
     """Render one run's event stream, and stream the reply back up.
 
@@ -123,14 +126,19 @@ def trace(
                 event = next(stream)
             except StopIteration:
                 break
-            except MaxIterationsError:
+            except MaxIterationsError as exc:
                 # The runaway backstop. Say so on both channels: the model's
                 # answer is missing, and pretending otherwise would be a lie.
+                if on_event is not None:
+                    on_event(exc)
                 spinner.stop()
                 renderer.reasoning_end()
                 yield TextDelta(STEP_LIMIT_NOTICE)
                 return STEP_LIMIT_NOTICE, context_tokens
             spinner.stop()
+
+            if on_event is not None:
+                on_event(event)
 
             if not turn_open and isinstance(event, (ThinkingDelta, TextDelta, TurnEnd)):
                 turn_open = True

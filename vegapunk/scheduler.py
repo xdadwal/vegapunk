@@ -13,9 +13,9 @@ string comparison in SQL with no datetime parsing. The runner advances
 ``next_run_at`` by one interval after each run (see ``record_run``, added with the
 runner).
 
-Everything here is best-effort against the database, mirroring ``memory``: a
-``StoreError`` degrades to a stderr note and an empty/failure result rather than
-crashing the REPL or the worker process.
+Store failures are reported without crashing the worker. Execution additionally
+requires a durable start record in ``task_history``; a failed completion write
+leaves the run open so the next tick cannot silently repeat it.
 """
 
 from __future__ import annotations
@@ -182,7 +182,8 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     remembers a fact runs fully; one that tries to write the workspace is told
     it can't in this context and reports that back.
 
-    Returns the run's result string (also stored on the row via ``record_run``).
+    Returns the run's result string. ``task_history`` captures tool evidence,
+    then atomically finishes the run and advances the task's latest summary.
     A failure inside the loop is caught here and recorded as an ``"error"`` run
     rather than raised, mirroring the tool boundary's posture: the worker runs
     unattended, so one bad task must not take it — or the sibling tasks in the
@@ -190,14 +191,32 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     ``Exception``), so a Ctrl-C still propagates out to stop the worker.
     """
     from . import loop  # lazy: avoids a scheduler <-> loop <-> tools import cycle
+    from . import task_history
 
     try:
-        result = loop.run(agent, task.prompt)
-        status = "ok"
+        prior = task_history.context(task.id)
+        run_id = task_history.begin(task)
+    except db.StoreError as exc:
+        result = f"Could not start scheduled task {task.id[:8]}: {exc}"
+        print(f"  [scheduler] {result}", file=sys.stderr)
+        return result
+    observer = task_history.RunObserver(run_id)
+    status, result = "interrupted", "Run interrupted before completion."
+    try:
+        result = loop.run(agent, task.prompt + prior, on_event=observer)
+        status = observer.status()
     except Exception as exc:  # noqa: BLE001 — boundary: an unattended run must not crash the worker
         result = f"Error running scheduled task: {exc}"
         status = "error"
-    record_run(task, status, result)
+    finally:
+        try:
+            task_history.finish(task, run_id, status, result)
+        except db.StoreError as exc:
+            # Leave the open row in place: a later tick must not silently rerun
+            # work whose completion could not be persisted.
+            note = f"Could not persist scheduled run {run_id[:8]}: {exc}"
+            print(f"  [scheduler] {note}", file=sys.stderr)
+            result += f"\n{note}"
     return result
 
 
