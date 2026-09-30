@@ -101,7 +101,7 @@ def test_completer_offers_effort_levels():
 
 def test_schedule_dropdown_exposes_all_supported_subcommands():
     assert set(_complete("/schedule ")) == {
-        "list", "history", "notebook", "add", "profile", "remove", "grant",
+        "list", "history", "notebook", "drafts", "add", "profile", "remove", "grant",
         "revoke", "permissions", "actions", "resolve-action"}
     assert _complete("/schedule not") == ["notebook"]
 
