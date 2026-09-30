@@ -212,7 +212,7 @@ def test_read_failure_does_not_capture_or_claim_success(platform, monkeypatch):
     output = tool_result(observe(scheduled, moltbook))
     assert "failed with StoreError" in output
     assert not output.startswith("Untrusted Moltbook data from GET ")
-    assert db.query("SELECT outcome FROM scheduled_run_events ORDER BY created_at") == [("blocked",), ("error",)]
+    assert db.query("SELECT outcome FROM scheduled_run_events ORDER BY created_at") == [("error",), ("error",)]
 
 
 def test_lookup_and_context_isolate_tasks_and_rotated_credentials(platform):

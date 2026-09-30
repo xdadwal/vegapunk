@@ -25,7 +25,8 @@ def test_social_run_replaces_private_prompt_and_tools():
     assert "PRIVATE PERSONAL CONTEXT" not in request.system
     assert {tool.name for tool in request.tools} == {
         "moltbook_home", "moltbook_feed", "moltbook_post", "moltbook_comments", "moltbook_search", "moltbook_submolts",
-        "moltbook_note", "moltbook_notebook", "moltbook_complete_note", "moltbook_reply", "moltbook_verify_reply"}
+        "moltbook_note", "moltbook_notebook", "moltbook_complete_note", "moltbook_reply", "moltbook_verify_reply",
+        "moltbook_draft", "moltbook_drafts", "moltbook_review_draft"}
     assert db.query("SELECT COUNT(*) FROM memory") == [(0,)]
     assert len(scheduler.list_tasks()) == 1
     assert agent.system == "PRIVATE PERSONAL CONTEXT"

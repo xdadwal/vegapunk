@@ -73,6 +73,88 @@ def test_default_denied_then_scoped_reply_runs_through_real_gate(platform):
     assert "test-secret" not in repr(receipt)
 
 
+def test_read_preflight_and_post_share_request_budget(platform, monkeypatch):
+    from tests.test_moltbook_tool import _FakeResponse
+    from vegapunk import moltbook_actions as actions, task_history
+    from vegapunk.tools import moltbook
+    tools, sent = platform
+    scheduled = task()
+    actions.grant(scheduled.id, "account")
+    monkeypatch.setattr(moltbook, "config", tools.config)
+    reads = []
+    def get(*a, **k):
+        reads.append(a[0])
+        return _FakeResponse({"success": True})
+    monkeypatch.setattr(moltbook, "_get", get)
+    agent, _ = agent_for([
+        wants(*(call("moltbook_home") for _ in range(20))),
+        wants(call("moltbook_reply", {"post_id": "post", "parent_id": "parent", "content": "hello"})),
+        wants(call("moltbook_home")), says("done")])
+    scheduler.run_task(scheduled, agent)
+    assert len(reads) == 20 and len(sent) == 1
+    assert task_history.list_runs(scheduled.id)[0].status == "partial"
+    assert db.query("SELECT COUNT(*) FROM scheduled_run_events WHERE outcome='success'") == [(21,)]
+    assert db.query("SELECT outcome FROM scheduled_run_events ORDER BY sequence")[-1] == ("blocked",)
+
+
+def test_request_budget_refusal_after_intent_records_definitely_unsent(platform, monkeypatch):
+    from tests.test_moltbook_tool import _FakeResponse
+    from vegapunk import moltbook_actions as actions
+    from vegapunk.tools import moltbook
+    tools, sent = platform
+    scheduled = task()
+    actions.grant(scheduled.id, "account")
+    monkeypatch.setattr(moltbook, "config", tools.config)
+    monkeypatch.setattr(moltbook, "_get", lambda *a, **k: _FakeResponse({"success": True}))
+    agent, _ = agent_for([
+        wants(*(call("moltbook_home") for _ in range(21))),
+        wants(call("moltbook_reply", {"post_id": "post", "parent_id": "parent", "content": "hello"})),
+        says("done")])
+    scheduler.run_task(scheduled, agent)
+    assert sent == []
+    receipt = actions.list_actions(scheduled.id)[0]
+    assert receipt["state"] == "rejected"
+    assert "no HTTP request sent" in receipt["note"]
+
+
+def test_preflight_operational_failure_is_error_and_auth_is_finite_pause(platform, monkeypatch):
+    from vegapunk import moltbook_backoff, task_history
+    from vegapunk import moltbook_actions as actions
+    tools, sent = platform
+    scheduled = task()
+    actions.grant(scheduled.id, "account")
+    monkeypatch.setattr(tools, "_get", lambda *a, **k: Response({}, 503))
+    run_reply(scheduled, tools)
+    assert task_history.list_runs(scheduled.id)[0].status == "error"
+    assert moltbook_backoff.until("test-secret")
+    assert sent == [] and actions.list_actions() == []
+
+
+@pytest.mark.parametrize("failure", ["network", "server", "json"])
+def test_grant_command_operational_failure_returns_error_without_grant(platform, monkeypatch, failure):
+    from vegapunk import moltbook_actions as actions
+    from vegapunk.commands import CommandContext, dispatch
+    from tests.fake_provider import session_for
+    tools, sent = platform
+    scheduled = task()
+    def broken(*a, **k):
+        if failure == "network":
+            raise requests.ConnectionError("private secret failure")
+        if failure == "server":
+            return Response({}, 503)
+        class InvalidJSON(Response):
+            def json(self):
+                raise ValueError("private secret failure")
+        return InvalidJSON({})
+    monkeypatch.setattr(tools, "_get", broken)
+    session = session_for(says("unused"))
+    result = dispatch(f"/schedule grant {scheduled.id} moltbook.reply_own", CommandContext(session)).output
+    assert "Could not grant" in result
+    assert "private secret failure" not in result
+    assert db.query("SELECT * FROM moltbook_permissions") == []
+    assert sent == []
+
+
 def test_scope_does_not_leak_to_next_task_or_direct_calls(platform):
     from vegapunk import moltbook_actions as actions
     tools, sent = platform

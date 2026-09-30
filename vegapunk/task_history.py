@@ -105,12 +105,14 @@ class RunObserver:
             row = db.query("SELECT state FROM moltbook_actions WHERE last_run_id=? AND tool_call_id=?",
                            (self.run_id, event.id))
             outcome = ({"accepted": "success", "pending_verification": "pending",
-                        "rejected": "blocked"}.get(row[0][0], "error") if row else "blocked")
+                        "rejected": "blocked"}.get(row[0][0], "error") if row else
+                       "error" if event.is_error or event.content.startswith("Error:") else "blocked")
         elif event.content == NO_GATE or event.content.startswith("Blocked:"):
             outcome = "blocked"
-        elif event.is_error:
+        elif event.is_error or (event.name.startswith("moltbook_") and event.content.startswith("Error:")):
             outcome = "error"
-        elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note"):
+        elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note",
+                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft"):
             outcome = "returned"  # local bookkeeping, not a successful external action
         elif event.name.startswith("moltbook_"):
             outcome = (

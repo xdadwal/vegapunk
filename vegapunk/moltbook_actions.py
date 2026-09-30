@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Lock
 from typing import Iterator
 
 from logpose import current_runtime_context
@@ -21,12 +23,19 @@ class ActionBlocked(ValueError):
     """A policy or unresolved receipt prevents sending."""
 
 
+class ActionError(RuntimeError):
+    """A client-owned operational failure, rather than a policy refusal."""
+
+
 @dataclass
 class Execution:
     task_id: str
     run_id: str
     active: bool = True
     profile_since: str = ""
+    deadline: float | None = None
+    requests: int = 0
+    lock: Lock = field(default_factory=Lock, repr=False)
 
 
 _execution: ContextVar[Execution | None] = ContextVar("moltbook_execution", default=None)
@@ -36,19 +45,52 @@ _execution: ContextVar[Execution | None] = ContextVar("moltbook_execution", defa
 def execution(task_id: str, run_id: str) -> Iterator[None]:
     """Carry scheduler identity across logpose's async and tool threads."""
     scope = Execution(task_id, run_id)
-    row = db.query("SELECT profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
+    row = db.query("SELECT profile_since,profile FROM scheduled_tasks WHERE id=?", (task_id,))
     scope.profile_since = row[0][0] if row else ""
+    if row and row[0][1] == "moltbook":
+        from .task_profiles import MOLTBOOK_RUN_SECONDS
+        scope.deadline = time.monotonic() + MOLTBOOK_RUN_SECONDS
     token = _execution.set(scope)
     try:
         yield
     finally:
-        scope.active = False  # copied contexts in late threads lose authority too
+        with scope.lock:
+            scope.active = False  # copied contexts in late threads lose authority too
         _execution.reset(token)
 
 
-def _authorize(conn, scope: Execution, account_id: str | None = None) -> str:
+def _check_active(scope: Execution) -> None:
     if not scope.active:
         raise ActionBlocked("scheduled execution has ended")
+    if scope.deadline is not None and time.monotonic() >= scope.deadline:
+        raise ActionBlocked("scheduled Moltbook run deadline expired")
+
+
+def remaining_seconds() -> float | None:
+    """Return the scheduler's remaining deadline on its shared provider loop."""
+    scope = _execution.get()
+    return None if scope is None or scope.deadline is None else max(0, scope.deadline - time.monotonic())
+
+
+def charge_request() -> None:
+    """Atomically consume one HTTP dispatch immediately before GET or POST.
+
+    Interactive calls have no scope. Copied late-thread contexts retain the same
+    mutable scope and cannot dispatch after run completion or deadline expiry.
+    """
+    scope = _execution.get()
+    if scope is None:
+        return
+    with scope.lock:
+        _check_active(scope)
+        check_task(db.get_connection(), scope)
+        if scope.requests >= 24:
+            raise ActionBlocked("scheduled Moltbook HTTP request budget exhausted (24 per run)")
+        scope.requests += 1
+
+
+def _authorize(conn, scope: Execution, account_id: str | None = None) -> str:
+    _check_active(scope)
     row = conn.execute(
         "SELECT p.account_id FROM moltbook_permissions p JOIN scheduled_tasks t ON t.id=p.task_id "
         "JOIN scheduled_runs r ON r.task_id=t.id WHERE t.id=? AND r.id=? "
@@ -90,7 +132,8 @@ def optional_task_execution(tool_name: str) -> Execution | None:
 
 def check_task(conn, scope: Execution) -> None:
     """Recheck inside a transaction before persisting task-local state."""
-    if not scope.active or not conn.execute(
+    _check_active(scope)
+    if not conn.execute(
         "SELECT t.id FROM scheduled_tasks t JOIN scheduled_runs r ON r.task_id=t.id "
         "WHERE t.id=? AND r.id=? AND t.enabled=1 AND r.status='running' "
         "AND t.profile='moltbook' AND t.profile_since=?",
@@ -304,5 +347,5 @@ def command(sub: str, rest: str) -> str:
             resolve(rows[0][0], parts[1], remote)
             return f"Reconciled {rows[0][0][:8]} as {parts[1]}; no request replayed."
         return "Unknown Moltbook schedule command."
-    except (ActionBlocked, db.StoreError) as exc:
+    except (ActionBlocked, ActionError, db.StoreError) as exc:
         return f"Could not {sub}: {exc}"

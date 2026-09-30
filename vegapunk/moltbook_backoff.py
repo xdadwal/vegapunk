@@ -45,3 +45,27 @@ def record(key: str, retry_after: str | None) -> tuple[int, str]:
         expiry = conn.execute("SELECT until_at FROM moltbook_request_backoff WHERE credential_tag=?", (tag,)).fetchone()[0]
     remaining = math.ceil((datetime.fromisoformat(expiry) - datetime.fromisoformat(stamp)).total_seconds())
     return remaining, expiry
+
+
+def failure(key: str, *, authentication: bool = False) -> str:
+    """Persist an automatic auth pause or capped consecutive failure backoff."""
+    tag = hashlib.sha256(key.encode()).hexdigest()
+    stamp = db.utcnow()
+    with db.transaction(immediate=True) as conn:
+        if authentication:
+            seconds = 21600
+        else:
+            row = conn.execute("SELECT consecutive_failures FROM moltbook_request_health WHERE credential_tag=?", (tag,)).fetchone()
+            count = min((row[0] if row else 0) + 1, 6)
+            seconds = min(60 * 2 ** (count - 1), 1800)
+            conn.execute("INSERT INTO moltbook_request_health VALUES (?,?) ON CONFLICT(credential_tag) "
+                         "DO UPDATE SET consecutive_failures=excluded.consecutive_failures", (tag, count))
+        conn.execute("INSERT INTO moltbook_request_backoff VALUES (?,?) ON CONFLICT(credential_tag) "
+                     "DO UPDATE SET until_at=MAX(until_at,excluded.until_at)", (tag, db.stamp_plus(stamp, seconds)))
+        return conn.execute("SELECT until_at FROM moltbook_request_backoff WHERE credential_tag=?", (tag,)).fetchone()[0]
+
+
+def success(key: str) -> None:
+    """Reset consecutive failures without shortening any concurrent cooldown."""
+    tag = hashlib.sha256(key.encode()).hexdigest()
+    db.execute("UPDATE moltbook_request_health SET consecutive_failures=0 WHERE credential_tag=?", (tag,))

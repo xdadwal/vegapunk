@@ -40,20 +40,30 @@ def _read(path: str, key: str, params: dict | None = None) -> dict:
     if expiry:
         raise ledger.ActionBlocked(f"Moltbook request cooldown until {expiry}; no HTTP request sent")
     try:
+        ledger.charge_request()
         response = _get(_API_BASE + path, headers=_headers(key), params=params,
                         timeout=_TIMEOUT_SECONDS, allow_redirects=False)
         if response.status_code == 429:
             _, expiry = moltbook_backoff.record(key, response.headers.get("Retry-After"))
             raise ledger.ActionBlocked(f"Moltbook rate limit reached; requests deferred until {expiry}")
         if not 200 <= response.status_code < 300:
-            raise ledger.ActionBlocked(f"Moltbook preflight failed (HTTP {response.status_code})")
+            if response.status_code in (401, 403):
+                expiry = moltbook_backoff.failure(key, authentication=True)
+                raise ledger.ActionBlocked(f"Moltbook authentication failed; paused until {expiry}, then probe automatically")
+            if response.status_code >= 500:
+                moltbook_backoff.failure(key)
+            raise ledger.ActionError(f"Moltbook preflight failed (HTTP {response.status_code})")
         data = response.json()
     except ledger.ActionBlocked:
         raise
-    except (requests.RequestException, ValueError):
-        raise ledger.ActionBlocked("Moltbook preflight could not be completed") from None
+    except requests.RequestException:
+        moltbook_backoff.failure(key)
+        raise ledger.ActionError("Moltbook preflight network request failed") from None
+    except ValueError:
+        raise ledger.ActionError("Moltbook preflight returned invalid JSON") from None
     if not isinstance(data, dict) or data.get("success") is False:
-        raise ledger.ActionBlocked("Moltbook preflight returned no usable data")
+        raise ledger.ActionError("Moltbook preflight returned no usable data")
+    moltbook_backoff.success(key)
     return data
 
 
@@ -113,14 +123,28 @@ def _receipt(action_id: str, state: str, remote_id: str = "", challenge: str = "
 def _send(scope: ledger.Execution, action_id: str, account: str, key: str,
           path: str, payload: dict, *, verifying: bool = False, remote_id: str = "") -> str:
     expected = "verifying" if verifying else "sending"
-    ledger.check_send(scope, account)
+    try:
+        ledger.check_send(scope, account)
+        ledger.charge_request()
+    except ledger.ActionBlocked:
+        # A create denied before dispatch is definitely unsent. Verification
+        # cannot reject the already-created remote content; retain uncertainty.
+        state = "unknown" if verifying else "rejected"
+        ledger.complete(action_id, expected, state, remote_id=remote_id,
+                        note="Dispatch refused; no HTTP request sent.")
+        raise
     try:
         response = _post(_API_BASE + path, headers=_headers(key), json=payload,
                          timeout=_TIMEOUT_SECONDS, allow_redirects=False)
     except requests.RequestException:
         ledger.complete(action_id, expected, "unknown", remote_id=remote_id, note="Network result uncertain; do not resend.")
+        moltbook_backoff.failure(key)
         return _receipt(action_id, "unknown", remote_id)
     status = response.status_code
+    if status in (401, 403):
+        moltbook_backoff.failure(key, authentication=True)
+    elif status >= 500:
+        moltbook_backoff.failure(key)
     if not 200 <= status < 300:
         # Only a definitive create rejection is safe to classify as rejected.
         state = "rejected" if 400 <= status < 500 and not verifying else "unknown"
@@ -201,7 +225,9 @@ def moltbook_reply(post_id: str, parent_id: str, content: str) -> str:
         action_id = ledger.reserve(scope, account, post_id, parent_id, content, runtime.tool_call_id)
         return _send(scope, action_id, account, key, f"/posts/{post_id}/comments",
                      {"parent_id": parent_id, "content": content})
-    except (ledger.ActionBlocked, db.StoreError) as exc:
+    except (ledger.ActionError, db.StoreError) as exc:
+        return f"Error: {exc}. Inspect /schedule actions; do not resend."
+    except ledger.ActionBlocked as exc:
         return f"Blocked: {exc}. Inspect /schedule actions; do not bypass the boundary."
 
 
@@ -224,5 +250,7 @@ def moltbook_verify_reply(action_id: str, answer: str) -> str:
         code, remote_id = ledger.verification(scope, action_id, account, runtime.tool_call_id)
         return _send(scope, action_id, account, key, "/verify",
                      {"verification_code": code, "answer": answer}, verifying=True, remote_id=remote_id)
-    except (ledger.ActionBlocked, db.StoreError) as exc:
+    except (ledger.ActionError, db.StoreError) as exc:
+        return f"Error: {exc}. Inspect /schedule actions; do not resend."
+    except ledger.ActionBlocked as exc:
         return f"Blocked: {exc}. Inspect /schedule actions; do not resend."
