@@ -9,6 +9,7 @@ the original singleton, so the reload is invisible to them).
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -184,6 +185,58 @@ def test_db_file_env_override(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch, VEGAPUNK_DB_FILE="/tmp/custom/vega.db")
         assert str(cfg.db_file) == "/tmp/custom/vega.db"
+    finally:
+        _restore(monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("organized_exists", "legacy_exists", "expected"),
+    [
+        (False, False, ".vegapunk/state/vegapunk.db"),
+        (True, False, ".vegapunk/state/vegapunk.db"),
+        (False, True, "vegapunk.db"),
+        (True, True, ".vegapunk/state/vegapunk.db"),
+    ],
+)
+def test_database_selection_preserves_organized_and_legacy_state(
+    monkeypatch, tmp_path, organized_exists, legacy_exists, expected,
+):
+    organized = tmp_path / ".vegapunk/state/vegapunk.db"
+    legacy = tmp_path / "vegapunk.db"
+    if organized_exists:
+        organized.parent.mkdir(parents=True)
+        organized.write_bytes(b"organized database placeholder")
+    if legacy_exists:
+        legacy.write_bytes(b"legacy database placeholder")
+    monkeypatch.chdir(tmp_path)
+    try:
+        cfg = _reloaded_config(monkeypatch)
+        assert cfg.db_file == tmp_path / expected
+        from vegapunk.runtime import runtime_log_path
+
+        assert runtime_log_path(cfg, "scheduler") == cfg.db_file.parent / "scheduler-runtime.jsonl"
+        assert organized.exists() == organized_exists
+        assert legacy.exists() == legacy_exists
+        if organized_exists:
+            assert organized.read_bytes() == b"organized database placeholder"
+        if legacy_exists:
+            assert legacy.read_bytes() == b"legacy database placeholder"
+    finally:
+        _restore(monkeypatch)
+
+
+@pytest.mark.parametrize("override", ["custom.db", "/tmp/custom/vega.db"])
+def test_explicit_database_override_wins_over_both_existing_databases(
+    monkeypatch, tmp_path, override,
+):
+    organized = tmp_path / ".vegapunk/state/vegapunk.db"
+    organized.parent.mkdir(parents=True)
+    organized.touch()
+    (tmp_path / "vegapunk.db").touch()
+    monkeypatch.chdir(tmp_path)
+    try:
+        cfg = _reloaded_config(monkeypatch, VEGAPUNK_DB_FILE=override)
+        assert cfg.db_file == Path(override)
     finally:
         _restore(monkeypatch)
 

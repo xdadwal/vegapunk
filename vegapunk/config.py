@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import Literal
 
 
+def _database_file() -> Path:
+    """Select storage without moving, opening, or merging existing databases."""
+    configured = os.getenv("VEGAPUNK_DB_FILE")
+    if configured is not None:
+        return Path(configured).expanduser()
+    organized = Path.cwd() / ".vegapunk" / "state" / "vegapunk.db"
+    legacy = Path.cwd() / "vegapunk.db"
+    # A relocated database takes precedence over a newly recreated root file.
+    # Keep legacy-only workspaces on their existing store until explicitly moved.
+    if organized.exists() or not legacy.exists():
+        return organized
+    return legacy
+
+
 def _positive_int(name: str, default: int) -> int:
     """Read an integer environment setting that must be at least one."""
     try:
@@ -176,13 +190,11 @@ class Config:
     memory_scan_interval: int = _positive_int("VEGAPUNK_MEMORY_SCAN_INTERVAL", 3600)
 
     # The embedded database holding sessions, long-term memory, and REPL input
-    # history. Defaults to vegapunk.db at the project root (the launch
-    # directory). One Vegapunk process at a time (enforced with a lock file);
+    # history. New/organized workspaces use .vegapunk/state/vegapunk.db; keep a
+    # legacy-only root database in place. One Vegapunk process at a time (lock file);
     # snapshot with /backup. Contents are readable with any sqlite3 client, so
     # the no-secrets posture still applies.
-    db_file: Path = Path(
-        os.getenv("VEGAPUNK_DB_FILE", str(Path.cwd() / "vegapunk.db"))
-    ).expanduser()
+    db_file: Path = _database_file()
 
     # Embedding model for semantic memory recall, served by Docker Model Runner's
     # OpenAI-compatible /embeddings endpoint (e.g. "ai/qwen3-embedding" after

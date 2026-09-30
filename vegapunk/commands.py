@@ -276,7 +276,7 @@ def _catalog_listing() -> str:
     return "\n".join(lines)
 
 
-@command("status", "Show backend, session, scheduler, and workspace status")
+@command("status", "Show backend, session, scheduler, database, and workspace status")
 def _status(ctx: CommandContext, arg: str) -> CommandResult:
     if arg:
         return CommandResult(output="Usage: /status")
@@ -311,6 +311,7 @@ def _status(ctx: CommandContext, arg: str) -> CommandResult:
         f"Conversation mode: {ctx.conversation_mode}",
         f"Agent: {agents.get_agent(ctx.agent_id).name}",
         f"Scheduler: {worker}",
+        f"Database: {db.db_path()}",
         f"Workspace: {config.workspace_root}",
     ]))
 
