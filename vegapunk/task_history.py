@@ -112,7 +112,7 @@ class RunObserver:
         elif event.is_error or (event.name.startswith("moltbook_") and event.content.startswith("Error:")):
             outcome = "error"
         elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note",
-                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft"):
+                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft", "moltbook_insights"):
             outcome = "returned"  # local bookkeeping, not a successful external action
         elif event.name.startswith("moltbook_"):
             outcome = (

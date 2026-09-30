@@ -263,6 +263,7 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     from . import moltbook_actions
     from . import moltbook_notebook
     from . import moltbook_drafts
+    from . import moltbook_insights
     from .task_profiles import isolated_agent, scheduled_runtime
     from .tools import moltbook
 
@@ -290,6 +291,8 @@ def run_task(task: ScheduledTask, agent: Agent) -> str:
     status, result = "interrupted", "Run interrupted before completion."
     try:
         with moltbook_actions.execution(task.id, run_id), scheduled_runtime(template, agent) as runtime:
+            if task.profile == "moltbook":
+                moltbook_insights.record_run(task.id, run_id, task.profile_since)
             cooldown = moltbook._cooldown() if task.profile == "moltbook" else None
             if cooldown:
                 status, result = "blocked", f"Moltbook request cooldown until {cooldown}; no model or HTTP request sent."

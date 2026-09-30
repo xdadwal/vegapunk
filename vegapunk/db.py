@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -173,6 +173,12 @@ CREATE TABLE IF NOT EXISTS moltbook_request_backoff (
 CREATE TABLE IF NOT EXISTS moltbook_request_health (
     credential_tag TEXT PRIMARY KEY,
     consecutive_failures INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS moltbook_run_scopes (
+    run_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    credential_tag TEXT NOT NULL,
+    profile_since TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS moltbook_drafts (
     id TEXT PRIMARY KEY,
