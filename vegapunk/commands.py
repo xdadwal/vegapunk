@@ -647,7 +647,7 @@ def _format_tasks() -> str:
     return "\n".join(lines)
 
 
-@command("schedule", "Manage tasks: list, history, add, profile, remove; Moltbook: notebook, drafts, autonomy, grant, revoke, permissions, actions, resolve-action")
+@command("schedule", "Manage tasks: list, history, add, profile, remove; Moltbook: notebook, drafts, insights, autonomy, grant, revoke, permissions, actions, resolve-action")
 def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
@@ -674,6 +674,10 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
         from .moltbook_drafts import format_drafts
 
         return CommandResult(output=format_drafts(rest))
+    if sub == "insights":
+        from .moltbook_insights import format_insights
+
+        return CommandResult(output=format_insights(rest))
     if sub in ("grant", "revoke", "permissions", "actions", "resolve-action"):
         from .moltbook_actions import command as action_command
 
@@ -698,7 +702,7 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=scheduler.add_task(prompt, interval, profile=profile))
     if sub == "remove":
         return CommandResult(output=scheduler.remove_task(rest))
-    return CommandResult(output="Usage: /schedule [list | history [id] | notebook [id] | drafts [id] | add <seconds> [--profile general|moltbook] <prompt> | profile <id> general|moltbook | autonomy <id> on|off | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
+    return CommandResult(output="Usage: /schedule [list | history [id] | notebook [id] | drafts [id] | insights [id] | add <seconds> [--profile general|moltbook] <prompt> | profile <id> general|moltbook | autonomy <id> on|off | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")

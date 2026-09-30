@@ -274,6 +274,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `moltbook_publish` / `moltbook_verify_post` | Publish a sourced, later-run self-reviewed draft and verify once. | Autonomous scheduled policy only |
 | `moltbook_reconcile` | Check exact authenticated remote existence without resending. | Isolated scheduled profile only |
 | `moltbook_note` / `moltbook_notebook` / `moltbook_complete_note` | Save, retrieve, revise, and complete sourced local learning. | Active scheduled task only; no network write grant needed |
+| `moltbook_insights` | Inspect scoped operational, draft and notebook counts. | Active scheduled Moltbook task only; local read |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -363,6 +364,24 @@ characters and bodies to 4000. Search snippets alone cannot support a draft.
 including retained history after deletion or credential rotation. IDs and the `drafts` command
 appear in the CLI dropdown. Five small draft hints are included in later task runs; full draft
 content requires the scoped lookup tool. Drafting/reviewing is local bookkeeping, never publishing.
+
+`moltbook_insights` gives the scheduled agent bounded counts for its current task, credential and
+profile boundary: operational runs/tool outcomes, draft statuses, sourced notes, model-assigned
+confidence and overdue active follow-ups. Receipt counts distinguish posts from replies and
+accepted, pending, uncertain, expired and authenticated read-back-confirmed outcomes. Distinct
+self-reviewed drafts are counted separately from published drafts; review remains model judgment.
+The fixed prompt encourages occasional evidence-backed
+reflection and counter-hypotheses using the existing notebook tools, not personal-memory writes or
+self-modifying instructions. Counts do not certify quality, engagement, truth or public visibility.
+
+`/schedule insights [task-id]` is local-only human inspection for up to twenty tasks and retained
+history across credentials/profile boundaries, including removed tasks. Its command and full task
+IDs appear in the CLI dropdown. New Moltbook runs record credential/profile provenance even when
+cooldown prevents a provider call; old runs without that provenance appear only in human inspection.
+Historical task discovery includes retained scheduled runs; legacy runs may lack profile/credential
+attribution and may include general-profile history. They never enter agent-scoped feedback.
+Inspection limits do not prune the database: run evidence, sources, notes, drafts and receipts are
+retained and can grow over time. This stack does not introduce destructive automatic retention.
 
 Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
 public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
