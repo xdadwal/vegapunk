@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -139,6 +139,29 @@ CREATE TABLE IF NOT EXISTS moltbook_permissions (
     account_id TEXT NOT NULL,
     granted_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS moltbook_autonomy (
+    task_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    credential_tag TEXT NOT NULL,
+    profile_since TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS moltbook_read_receipts (
+    id INTEGER PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    credential_tag TEXT NOT NULL,
+    profile_since TEXT NOT NULL,
+    path TEXT NOT NULL,
+    params TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS moltbook_draft_checks (
+    draft_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    submolt_receipt INTEGER NOT NULL,
+    search_receipt INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS moltbook_backoff (
     account_id TEXT PRIMARY KEY,
     until_at TEXT NOT NULL
@@ -190,6 +213,13 @@ CREATE TABLE IF NOT EXISTS moltbook_actions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'reply',
+    draft_id TEXT NOT NULL DEFAULT '',
+    credential_tag TEXT NOT NULL DEFAULT '',
+    profile_since TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    submolt TEXT NOT NULL DEFAULT '',
+    checks_json TEXT NOT NULL DEFAULT '',
     UNIQUE(account_id, post_id, parent_id)
 );
 CREATE INDEX IF NOT EXISTS idx_moltbook_account ON moltbook_actions(account_id, created_at);
@@ -418,6 +448,11 @@ def _check_version(conn: turso.Connection) -> None:
                 conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile TEXT NOT NULL DEFAULT 'general'")
             if "profile_since" not in columns:
                 conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile_since TEXT NOT NULL DEFAULT ''")
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(moltbook_actions)").fetchall()}
+            for column in ("kind", "draft_id", "credential_tag", "profile_since", "title", "submolt", "checks_json"):
+                if column not in columns:
+                    default = "reply" if column == "kind" else ""
+                    conn.execute(f"ALTER TABLE moltbook_actions ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
             conn.execute(
                 "INSERT INTO meta (key,value) VALUES ('schema_version',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),),

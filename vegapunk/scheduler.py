@@ -136,6 +136,7 @@ def set_profile(id_prefix: str, profile: str) -> str:
                 return "Cannot change profile during an active run; try after it finishes."
             conn.execute("UPDATE scheduled_tasks SET profile=?,profile_since=? WHERE id=?", (profile, db.utcnow(), task_id))
             conn.execute("DELETE FROM moltbook_permissions WHERE task_id=?", (task_id,))
+            conn.execute("DELETE FROM moltbook_autonomy WHERE task_id=?", (task_id,))
         return f"Task {task_id[:8]} now uses profile {profile}. Earlier context quarantined; reply grant revoked."
     except db.StoreError as exc:
         return f"Could not change task profile: {exc}"
@@ -150,6 +151,47 @@ def list_tasks() -> list[ScheduledTask]:
         print(f"  [scheduler] could not list: {exc}", file=sys.stderr)
         return []
     return [_row(r) for r in rows]
+
+
+def set_autonomy(id_prefix: str, setting: str) -> str:
+    """Human-only, one-time account/key policy; never exposed as a model tool."""
+    from . import moltbook_actions as actions
+    from .tools import moltbook_actions as client
+    import hashlib
+
+    if setting not in ("on", "off"):
+        return "Usage: /schedule autonomy <task-id> on|off"
+    try:
+        task_id = actions._task_id(id_prefix.strip().lower())
+        def idle(conn):
+            row = conn.execute("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,)).fetchone()
+            if not row or row[0] != "moltbook":
+                raise actions.ActionBlocked("autonomy requires a moltbook task")
+            if conn.execute("SELECT id FROM scheduled_runs WHERE task_id=? AND status='running'", (task_id,)).fetchone():
+                raise actions.ActionBlocked("cannot change autonomy during an active run")
+            return row[1]
+        old_epoch = idle(db.get_connection())
+        key = client._key() if setting == "on" else ""
+        account = client._account(key) if key else ""
+        with db.transaction(immediate=True) as conn:
+            if idle(conn) != old_epoch:
+                raise actions.ActionBlocked("task policy changed during account lookup")
+            tag = hashlib.sha256(key.encode()).hexdigest() if key else ""
+            current = conn.execute("SELECT account_id,credential_tag FROM moltbook_autonomy WHERE task_id=?", (task_id,)).fetchone()
+            if setting == "on" and current == (account, tag):
+                return f"Autonomy already enabled for {task_id[:8]}."
+            if setting == "off" and not current:
+                return f"Autonomy already disabled for {task_id[:8]}."
+            stamp = max(db.utcnow(), db.stamp_plus(old_epoch, 0.000001))
+            conn.execute("UPDATE scheduled_tasks SET profile_since=? WHERE id=?", (stamp, task_id))
+            conn.execute("DELETE FROM moltbook_permissions WHERE task_id=?", (task_id,))
+            conn.execute("DELETE FROM moltbook_autonomy WHERE task_id=?", (task_id,))
+            if key:
+                conn.execute("INSERT INTO moltbook_autonomy VALUES (?,?,?,?)", (task_id, account, tag, stamp))
+        state = "enabled" if key else "disabled"
+        return f"Autonomy {state} for {task_id[:8]}. Earlier context/drafts quarantined; legacy grant revoked. No post sent."
+    except (actions.ActionBlocked, actions.ActionError, db.StoreError) as exc:
+        return f"Could not change autonomy: {exc}"
 
 
 def remove_task(id_prefix: str) -> str:

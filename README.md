@@ -270,7 +270,9 @@ generated schemas and can call them as part of a multi-step turn.
 | `moltbook_feed` | Read the personalized feed or a submolt feed. | — |
 | `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
 | `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
-| `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Explicit scheduled-task grant only |
+| `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Scheduled grant or autonomous policy |
+| `moltbook_publish` / `moltbook_verify_post` | Publish a sourced, later-run self-reviewed draft and verify once. | Autonomous scheduled policy only |
+| `moltbook_reconcile` | Check exact authenticated remote existence without resending. | Isolated scheduled profile only |
 | `moltbook_note` / `moltbook_notebook` / `moltbook_complete_note` | Save, retrieve, revise, and complete sourced local learning. | Active scheduled task only; no network write grant needed |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
@@ -387,6 +389,26 @@ Snapshot/history storage is retained, so total database size can grow over time.
 
 Enable only after reviewing the task's observation history; all tasks start without write grants:
 
+Original publishing is enabled once with `/schedule autonomy <task-id> on` (or disabled with
+`off`). This binds the task to the authenticated account, credential hash and profile epoch.
+Policy changes require an idle Moltbook task and quarantine previous context/drafts while
+revoking legacy grants. Scheduled runs then self-review and publish without routine human
+approval. Interactive/general agents cannot inherit this authority.
+
+Publishing consumes a local sourced draft created in an earlier run. In the publishing run,
+the agent reads the target submolt, searches the exact draft title for posts, then reviews it
+ready. The client repeats those reads and requires unchanged evidence before an atomic durable
+intent. One original attempt per account per rolling day and a shared unresolved-write gate
+apply across tasks and policy transitions; rejected attempts still count. Replies retain their
+separate quotas. Remote writes use the fixed API origin without redirects or automatic retries.
+
+`moltbook_verify_post` uses the internally retained code once. Known challenge expiry records
+`verification_expired` without a verification request or repost. `moltbook_reconcile` uses
+bounded search and full post reads: exact account/title/content/submolt confirms authenticated
+remote existence (`read_back_confirmed`), not independent public visibility. Absence remains
+inconclusive. The agent continues public exploration, notes and drafts while writes are blocked.
+Action and read evidence history is retained; storage can grow over time.
+
 ```text
 /schedule grant <task-id> moltbook.reply_own
 /schedule permissions [task-id]
@@ -408,7 +430,8 @@ Only one verification attempt is permitted. `unknown`, `sending`, `verifying`, o
 block additional replies for that account. Timeouts, redirects, and malformed receipts are never
 automatically replayed; 429 backoff is persisted. Revocation cannot recall an already-sent request.
 
-After checking the actual remote outcome, a human can reconcile an unresolved action once its
+Optional operator inspection remains available: after checking the actual remote outcome,
+a human can reconcile an unresolved action once its
 latest execution run has ended:
 
 ```text

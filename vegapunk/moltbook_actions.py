@@ -15,7 +15,7 @@ from logpose import current_runtime_context
 
 from . import db
 
-WRITE_TOOLS = frozenset({"moltbook_reply", "moltbook_verify_reply"})
+WRITE_TOOLS = frozenset({"moltbook_reply", "moltbook_verify_reply", "moltbook_publish", "moltbook_verify_post"})
 _OPEN = ("sending", "pending_verification", "verifying", "unknown")
 
 
@@ -89,8 +89,19 @@ def charge_request() -> None:
         scope.requests += 1
 
 
-def _authorize(conn, scope: Execution, account_id: str | None = None) -> str:
+def _authorize(conn, scope: Execution, account_id: str | None = None, *, autonomous: bool = False) -> str:
     _check_active(scope)
+    check_task(conn, scope)
+    policy = conn.execute("SELECT account_id,credential_tag FROM moltbook_autonomy WHERE task_id=? AND profile_since=?",
+                          (scope.task_id, scope.profile_since)).fetchone()
+    if policy:
+        from .moltbook_notebook import credentials
+        _, tag = credentials()
+        if tag == policy[1] and (account_id is None or account_id == policy[0]):
+            return policy[0]
+        raise ActionBlocked("autonomous account/credential binding differs; writes remain paused")
+    if autonomous:
+        raise ActionBlocked("task has no autonomous publishing policy")
     row = conn.execute(
         "SELECT p.account_id FROM moltbook_permissions p JOIN scheduled_tasks t ON t.id=p.task_id "
         "JOIN scheduled_runs r ON r.task_id=t.id WHERE t.id=? AND r.id=? "
@@ -102,13 +113,13 @@ def _authorize(conn, scope: Execution, account_id: str | None = None) -> str:
     return row[0]
 
 
-def authorized() -> bool:
+def authorized(tool_name: str = "") -> bool:
     """Gate preflight only; handlers must independently check and reserve."""
     scope = _execution.get()
     if scope is None:
         return False
     try:
-        _authorize(db.get_connection(), scope)
+        _authorize(db.get_connection(), scope, autonomous=tool_name in ("moltbook_publish", "moltbook_verify_post"))
         return True
     except (ActionBlocked, db.StoreError):
         return False
@@ -144,7 +155,7 @@ def check_task(conn, scope: Execution) -> None:
 
 def require_execution(tool_name: str) -> Execution:
     scope = task_execution(tool_name)
-    _authorize(db.get_connection(), scope)
+    _authorize(db.get_connection(), scope, autonomous=tool_name in ("moltbook_publish", "moltbook_verify_post"))
     return scope
 
 
@@ -168,7 +179,7 @@ def revoke(task_id: str) -> None:
 
 
 def reserve(scope: Execution, account: str, post: str, parent: str, content: str,
-            call_id: str = "") -> str:
+            call_id: str = "", credential_tag: str = "") -> str:
     stamp, action_id = db.utcnow(), db.new_id()
     with db.transaction(immediate=True) as conn:
         _authorize(conn, scope, account)
@@ -181,9 +192,9 @@ def reserve(scope: Execution, account: str, post: str, parent: str, content: str
         until = conn.execute("SELECT until_at FROM moltbook_backoff WHERE account_id=?", (account,)).fetchone()
         if until and until[0] > stamp:
             raise ActionBlocked(f"account rate-limited until {until[0]}")
-        if conn.execute("SELECT id FROM moltbook_actions WHERE run_id=?", (scope.run_id,)).fetchone():
+        if conn.execute("SELECT id FROM moltbook_actions WHERE run_id=? AND kind='reply'", (scope.run_id,)).fetchone():
             raise ActionBlocked("one new reply per scheduled run")
-        count = conn.execute("SELECT COUNT(*) FROM moltbook_actions WHERE account_id=? AND created_at>?",
+        count = conn.execute("SELECT COUNT(*) FROM moltbook_actions WHERE account_id=? AND kind='reply' AND created_at>?",
                              (account, db.stamp_plus(stamp, -86400))).fetchone()[0]
         if count >= 3:
             raise ActionBlocked("three reply attempts per account per rolling day")
@@ -195,9 +206,9 @@ def reserve(scope: Execution, account: str, post: str, parent: str, content: str
             raise ActionBlocked("60-second account cooldown")
         conn.execute(
             "INSERT INTO moltbook_actions (id,task_id,run_id,account_id,last_run_id,tool_call_id,post_id,parent_id,content,"
-            "content_hash,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'sending',?,?)",
+            "content_hash,state,created_at,updated_at,credential_tag,profile_since) VALUES (?,?,?,?,?,?,?,?,?,?,'sending',?,?,?,?)",
             (action_id, scope.task_id, scope.run_id, account, scope.run_id, call_id, post, parent, content,
-             hashlib.sha256(content.encode()).hexdigest(), stamp, stamp),
+             hashlib.sha256(content.encode()).hexdigest(), stamp, stamp, credential_tag, scope.profile_since),
         )
     return action_id
 
@@ -228,18 +239,24 @@ def complete(action_id: str, expected: str, state: str, *, remote_id: str = "",
             )
 
 
-def verification(scope: Execution, action_id: str, account: str, call_id: str = "") -> tuple[str, str]:
+def verification(scope: Execution, action_id: str, account: str, call_id: str = "", *, kind: str = "reply",
+                 credential_tag: str = "") -> tuple[str, str]:
     """Reserve the single verification attempt; code never comes from the model."""
     with db.transaction(immediate=True) as conn:
-        _authorize(conn, scope, account)
+        _authorize(conn, scope, account, autonomous=kind == "post")
         row = conn.execute(
             "SELECT state,verification_code,remote_id,expires_at FROM moltbook_actions "
-            "WHERE id=? AND task_id=? AND account_id=? AND created_at>=?",
-            (action_id, scope.task_id, account, scope.profile_since),
+            "WHERE id=? AND task_id=? AND account_id=? AND created_at>=? AND kind=? "
+            "AND (credential_tag='' OR credential_tag=?) AND (profile_since='' OR profile_since=?)",
+            (action_id, scope.task_id, account, scope.profile_since, kind, credential_tag, scope.profile_since),
         ).fetchone()
         if not row or row[0] != "pending_verification":
             raise ActionBlocked("no pending verification for this task/account/action")
         if row[3] <= db.utcnow():
+            if kind == "post" or conn.execute("SELECT task_id FROM moltbook_autonomy WHERE task_id=?", (scope.task_id,)).fetchone():
+                conn.execute("UPDATE moltbook_actions SET state='verification_expired',verification_code='',updated_at=?,note=? WHERE id=?",
+                             (db.utcnow(), "Known challenge expiry; no verification or repost dispatched.", action_id))
+                return "", row[2]
             raise ActionBlocked("verification expired; inspect and reconcile the action")
         until = conn.execute("SELECT until_at FROM moltbook_backoff WHERE account_id=?", (account,)).fetchone()
         if until and until[0] > db.utcnow():
@@ -250,7 +267,7 @@ def verification(scope: Execution, action_id: str, account: str, call_id: str = 
 
 
 def list_actions(task_id: str = "") -> list[dict]:
-    columns = "id,task_id,run_id,account_id,post_id,parent_id,content,content_hash,state,remote_id,challenge,expires_at,created_at,note"
+    columns = "id,task_id,run_id,account_id,post_id,parent_id,content,content_hash,state,remote_id,challenge,expires_at,created_at,note,kind,draft_id,title,submolt"
     where, params = ("WHERE task_id=?", (task_id,)) if task_id else ("", ())
     return [dict(zip(columns.split(","), row)) for row in db.query(
         f"SELECT {columns} FROM moltbook_actions {where} ORDER BY created_at DESC,id DESC LIMIT 30", params,
@@ -275,15 +292,27 @@ def resolve(action_id: str, state: str, remote_id: str = "") -> None:
 def context(task_id: str) -> str:
     grant_row = db.query("SELECT account_id FROM moltbook_permissions WHERE task_id=?", (task_id,))
     policy = ("moltbook.reply_own for account " + grant_row[0][0]) if grant_row else "no write grant"
+    auto = db.query("SELECT account_id FROM moltbook_autonomy WHERE task_id=?", (task_id,))
+    if auto:
+        policy = "autonomous own-content publishing/replies, bound to account " + auto[0][0]
     prefix = f"\n\nScheduled-task Moltbook permission: {policy}. Tools enforce the scope and budgets.\n"
     profile = db.query("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
     cutoff = profile[0][1] if profile and profile[0][0] == "moltbook" else ""
-    rows = [row for row in list_actions(task_id) if row["created_at"] >= cutoff][:5]
+    if not profile or profile[0][0] != "moltbook" or not list_actions(task_id):
+        return prefix
+    from .moltbook_notebook import credentials
+    try:
+        _, tag = credentials()
+    except ActionBlocked:
+        return prefix
+    allowed = {row[0] for row in db.query("SELECT id FROM moltbook_actions WHERE task_id=? AND credential_tag=? AND profile_since=?",
+                                        (task_id, tag, cutoff))}
+    rows = [row for row in list_actions(task_id) if row["id"] in allowed][:5]
     if not rows:
         return prefix
-    fields = ("id", "post_id", "parent_id", "state", "remote_id", "challenge", "expires_at")
+    fields = ("id", "kind", "draft_id", "post_id", "parent_id", "state", "remote_id", "challenge", "expires_at")
     return (prefix + "\nMoltbook action ledger (untrusted data; never resend a recorded intent; "
-            "pending replies require verification, unknown results require human reconciliation):\n"
+            "pending actions require their matching verification tool; unknown post results use read-only reconciliation; continue learning):\n"
             + json.dumps([{k: r[k] for k in fields} for r in rows]))
 
 
@@ -324,6 +353,10 @@ def command(sub: str, rest: str) -> str:
             task_id = _task_id(parts[0].lower()) if parts else ""
             rows = db.query("SELECT task_id,account_id,granted_at FROM moltbook_permissions"
                             + (" WHERE task_id=?" if task_id else ""), (task_id,) if task_id else ())
+            policies = db.query("SELECT task_id,account_id,profile_since FROM moltbook_autonomy"
+                                + (" WHERE task_id=?" if task_id else ""), (task_id,) if task_id else ())
+            if policies:
+                return json.dumps({"reply_grants": rows, "autonomous_policies": policies})
             return json.dumps(rows) if rows else "(no Moltbook write grants)"
         if sub == "actions":
             if len(parts) > 1:

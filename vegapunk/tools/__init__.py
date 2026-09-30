@@ -10,6 +10,8 @@ from .registry import GUARDED, REGISTRY, tool
 # Import tool modules for their side effect: each @tool registers itself.
 from . import delegation, filesystem, grep, shell, fetch, search, memory, skills, scheduler, questions, moltbook, moltbook_actions, moltbook_notebook, moltbook_drafts  # noqa: E402,F401 — imported for registration
 
+from . import moltbook_publication  # noqa: E402,F401
+
 ALL_TOOLS = REGISTRY
 
 __all__ = ["GUARDED", "tool", "ALL_TOOLS"]

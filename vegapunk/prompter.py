@@ -36,7 +36,7 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 _SUBCOMMANDS = {
     "agent": list(agents.AGENTS),
     "sessions": ["remove"],
-    "schedule": ["list", "history", "notebook", "drafts", "add", "profile", "remove",
+    "schedule": ["list", "history", "notebook", "drafts", "add", "profile", "autonomy", "remove",
                  "grant", "revoke", "permissions", "actions", "resolve-action"],
 }
 
@@ -70,6 +70,8 @@ def _schedule_options(words: list[str]) -> list[str]:
             return ["general", "moltbook"]
         return []
     if position == 2:
+        if sub == "autonomy":
+            return ["on", "off"]
         if sub == "profile":
             return ["general", "moltbook"]
         if sub in ("grant", "revoke"):
@@ -80,7 +82,7 @@ def _schedule_options(words: list[str]) -> list[str]:
         return []
     if sub == "resolve-action":
         sql = "SELECT id FROM moltbook_actions ORDER BY id"
-    elif sub in ("profile", "remove", "grant", "revoke", "permissions", "history", "actions", "notebook", "drafts"):
+    elif sub in ("profile", "autonomy", "remove", "grant", "revoke", "permissions", "history", "actions", "notebook", "drafts"):
         sql = "SELECT id FROM scheduled_tasks"
         if sub == "history":
             sql += " UNION SELECT task_id FROM scheduled_runs"
