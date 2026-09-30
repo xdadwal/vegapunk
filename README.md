@@ -64,6 +64,18 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+When updating an existing checkout, reinstall the pinned dependency and restart
+Vegapunk:
+
+```bash
+git pull --ff-only
+.venv/bin/pip install --force-reinstall -r requirements.txt
+```
+
+Logpose currently keeps the same package version across commit pins, so an ordinary
+install can leave the previous commit installed. Restarting also clears Vegapunk's
+in-process model catalog cache; `/models codex` then lists the updated catalog.
+
 Sign in through the Codex CLI, then start Vegapunk from the directory you want it to treat as its
 workspace:
 
