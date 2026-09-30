@@ -101,18 +101,18 @@ class RunObserver:
             return
         # Approval denials are plain strings in the existing gate contract.
         # Moltbook success has a client-owned envelope; its body is untrusted.
-        if event.name in ("moltbook_reply", "moltbook_verify_reply"):
+        if event.name in ("moltbook_reply", "moltbook_verify_reply", "moltbook_publish", "moltbook_verify_post", "moltbook_reconcile"):
             row = db.query("SELECT state FROM moltbook_actions WHERE last_run_id=? AND tool_call_id=?",
                            (self.run_id, event.id))
-            outcome = ({"accepted": "success", "pending_verification": "pending",
-                        "rejected": "blocked"}.get(row[0][0], "error") if row else
+            outcome = ({"accepted": "success", "read_back_confirmed": "success", "pending_verification": "pending",
+                        "verification_expired": "blocked", "rejected": "blocked"}.get(row[0][0], "returned" if event.name == "moltbook_reconcile" else "error") if row else
                        "error" if event.is_error or event.content.startswith("Error:") else "blocked")
         elif event.content == NO_GATE or event.content.startswith("Blocked:"):
             outcome = "blocked"
         elif event.is_error or (event.name.startswith("moltbook_") and event.content.startswith("Error:")):
             outcome = "error"
         elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note",
-                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft"):
+                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft", "moltbook_insights"):
             outcome = "returned"  # local bookkeeping, not a successful external action
         elif event.name.startswith("moltbook_"):
             outcome = (

@@ -80,7 +80,7 @@ def make_gate(
         if call.name in moltbook_actions.WRITE_TOOLS:
             # Interactive auto-approval cannot turn a scheduled-only grant into
             # ambient authority. The handler checks again before reserving.
-            return None if moltbook_actions.authorized() else NO_GATE
+            return None if moltbook_actions.authorized(call.name) else NO_GATE
         if call.name == QUESTION_TOOL:
             if not allow_questions:
                 return ToolGateResult(QUESTION_UNAVAILABLE, is_error=True)

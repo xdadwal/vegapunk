@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -121,7 +122,7 @@ def _receipt(action_id: str, state: str, remote_id: str = "", challenge: str = "
 
 
 def _send(scope: ledger.Execution, action_id: str, account: str, key: str,
-          path: str, payload: dict, *, verifying: bool = False, remote_id: str = "") -> str:
+          path: str, payload: dict, *, verifying: bool = False, remote_id: str = "", kind: str = "comment") -> str:
     expected = "verifying" if verifying else "sending"
     try:
         ledger.check_send(scope, account)
@@ -161,11 +162,11 @@ def _send(scope: ledger.Execution, action_id: str, account: str, key: str,
         if not isinstance(data, dict) or data.get("success") is not True:
             raise ValueError("no success receipt")
         if verifying:
-            if data.get("content_type") != "comment" or data.get("content_id") != remote_id:
+            if data.get("content_type") != kind or data.get("content_id") != remote_id:
                 raise ValueError("receipt mismatch")
             ledger.complete(action_id, expected, "accepted", remote_id=remote_id)
             return _receipt(action_id, "accepted", remote_id)
-        comment = data.get("comment")
+        comment = data.get(kind)
         if not isinstance(comment, dict):
             raise ValueError("no comment receipt")
         remote_id = _id(comment.get("id"))
@@ -222,7 +223,8 @@ def moltbook_reply(post_id: str, parent_id: str, content: str) -> str:
         ledger.check_send(scope, account)
         _own_thread(key, account, post_id, parent_id)
         runtime = current_runtime_context()
-        action_id = ledger.reserve(scope, account, post_id, parent_id, content, runtime.tool_call_id)
+        action_id = ledger.reserve(scope, account, post_id, parent_id, content, runtime.tool_call_id,
+                                   hashlib.sha256(key.encode()).hexdigest())
         return _send(scope, action_id, account, key, f"/posts/{post_id}/comments",
                      {"parent_id": parent_id, "content": content})
     except (ledger.ActionError, db.StoreError) as exc:
@@ -247,7 +249,10 @@ def moltbook_verify_reply(action_id: str, answer: str) -> str:
         key = _key()
         account = _account(key)
         runtime = current_runtime_context()
-        code, remote_id = ledger.verification(scope, action_id, account, runtime.tool_call_id)
+        code, remote_id = ledger.verification(scope, action_id, account, runtime.tool_call_id,
+                                              credential_tag=hashlib.sha256(key.encode()).hexdigest())
+        if not code:
+            return _receipt(action_id, "verification_expired", remote_id) + "\nKnown expiry; continue learning, never repost."
         return _send(scope, action_id, account, key, "/verify",
                      {"verification_code": code, "answer": answer}, verifying=True, remote_id=remote_id)
     except (ledger.ActionError, db.StoreError) as exc:

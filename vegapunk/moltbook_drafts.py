@@ -69,6 +69,8 @@ def review(scope: actions.Execution, draft_id: str, verdict: str, rationale: str
             raise actions.ActionBlocked("ready review requires a later run than draft creation")
         conn.execute("UPDATE moltbook_drafts SET status=?,review_run_id=?,review_rationale=?,updated_at=? WHERE id=?",
                      (status, scope.run_id, rationale, db.utcnow(), draft_id))
+        from .moltbook_publication import record_review
+        record_review(conn, scope, draft_id, tag, verdict)
     return "Draft review (model judgment, not publication):\n" + json.dumps({"draft_id": draft_id, "status": status})
 
 
