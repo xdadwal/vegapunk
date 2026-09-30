@@ -144,7 +144,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | Command | Description |
 | --- | --- |
 | `/help` | List available commands. |
-| `/status` | Show backend readiness, model, effort, approval mode, context, session, scheduler, and workspace. |
+| `/status` | Show backend readiness, model, effort, approval mode, context, session, scheduler, database path, and workspace. |
 | `/model [provider [model]]` | Show or switch the active provider and model. With no arguments, open the interactive picker. |
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or change reasoning effort when the active model supports it. |
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
@@ -477,7 +477,16 @@ task removal. Credentials and raw server responses are excluded from these recor
 ## Sessions, memory, and backups
 
 Vegapunk stores sessions, durable memory, scheduled tasks, and REPL input history in a local Turso
-database. The default path is `vegapunk.db` in the launch directory.
+database. New workspaces use `.vegapunk/state/vegapunk.db` under the launch directory.
+An existing database there takes precedence over a root `vegapunk.db`; if only the legacy root
+database exists, Vegapunk keeps using it. `VEGAPUNK_DB_FILE` overrides both choices. Startup never
+moves or merges databases. Logs, locks, and `backups/` follow the selected database path.
+
+To relocate legacy storage, quit the CLI and its scheduler first, then move the database together
+with all its WAL/Turso sidecars, logs, and backups into `.vegapunk/state/`. Do not overwrite an
+existing destination database. Restart from the same launch directory and check the path with
+`/status`. `.env` is not loaded automatically; export or source it when using settings from that
+file.
 
 - A successful first turn is assigned a short model-generated session name, then saved after every
   turn. Use `/sessions` to resume or remove conversations and `/save` to rename the current one.
@@ -670,7 +679,7 @@ Every application setting can be overridden with an environment variable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VEGAPUNK_DB_FILE` | `./vegapunk.db` | Database path. |
+| `VEGAPUNK_DB_FILE` | `./.vegapunk/state/vegapunk.db` | Database path; a legacy root database is retained when no organized database exists. An explicit override wins. |
 | `VEGAPUNK_EMBED_MODEL` | Empty | Embedding model used for semantic memory search. |
 | `VEGAPUNK_MEMORY_ENABLED` | `true` | Enable background conversation extraction (`true` or `false`). |
 | `VEGAPUNK_MEMORY_MODEL` | `codex` | Extraction provider and optional model, using `provider[:model]`. |

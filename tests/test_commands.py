@@ -686,6 +686,15 @@ def test_status_names_every_live_session_fact(monkeypatch):
     assert "Approval: auto · guarded tools run without prompts" in dispatch("/status", ctx).output
 
 
+def test_status_reports_the_selected_database_without_opening_it(monkeypatch, tmp_path):
+    monkeypatch.setattr("vegapunk.commands.provider_status", _fake_status)
+    path = tmp_path / ".vegapunk/state/vegapunk.db"
+    monkeypatch.setattr("vegapunk.db.db_path", lambda: path)
+    out = dispatch("/status", _ctx()).output
+    assert f"Database: {path}" in out
+    assert not path.exists()
+
+
 # ---------------------------------------------------------------------------
 # /model's listing — built from logpose's catalog, not a table here
 # ---------------------------------------------------------------------------
