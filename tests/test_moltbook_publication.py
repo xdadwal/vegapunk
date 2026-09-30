@@ -343,3 +343,69 @@ def test_multiple_exact_remote_matches_remain_unknown(platform, monkeypatch):
     monkeypatch.setattr(moltbook_actions, "_get", get)
     invoke(platform["task"], "moltbook_reconcile", {"action_id": action["id"]})
     assert ledger.list_actions()[0]["state"] == "unknown"
+
+
+def test_reconcile_rejects_echoed_credential_identifier(platform, monkeypatch):
+    from vegapunk.tools import moltbook_actions
+    enable(platform)
+    platform["timeout"] = True
+    publish_run(platform, create_draft(platform))
+    db.execute("DELETE FROM moltbook_request_backoff")
+    key = "moltbook_test_secret"
+    platform["results"] = [{"type": "post", "id": key}]
+    original = moltbook_actions._get
+    def get(url, **kwargs):
+        assert not url.endswith("/posts/" + key), "credential-bearing candidate must not be fetched"
+        return original(url, **kwargs)
+    monkeypatch.setattr(moltbook_actions, "_get", get)
+    result = invoke(platform["task"], "moltbook_reconcile", {"action_id": ledger.list_actions()[0]["id"]})
+    assert key not in result and key not in repr(ledger.list_actions())
+    assert "Blocked:" in result
+
+
+def test_migrated_legacy_reply_challenge_remains_in_scoped_context(platform):
+    task = platform["task"]
+    ledger.grant(task.id, "account")
+    platform["response"] = {"success": True, "comment": {"id": "reply", "verification": {
+        "verification_code": "private-code", "challenge_text": "20 minus 5", "expires_at": db.utcnow_plus(300)}}}
+    invoke(task, "moltbook_reply", {"post_id": "post", "parent_id": "parent", "content": "Useful reply"})
+    # Schema v12 actions had no credential/epoch columns. Reopen a populated v12
+    # table so the real migration supplies those conservative blank defaults.
+    import sqlite3
+    db.close_connection()
+    conn = sqlite3.connect(db.db_path())
+    conn.execute("ALTER TABLE moltbook_actions RENAME TO legacy_actions")
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(legacy_actions)").fetchall()
+               if row[1] not in ("kind", "draft_id", "credential_tag", "profile_since", "title", "submolt", "checks_json")]
+    conn.execute("CREATE TABLE moltbook_actions AS SELECT " + ",".join(columns) + " FROM legacy_actions")
+    conn.execute("UPDATE meta SET value='12' WHERE key='schema_version'")
+    conn.commit()
+    conn.close()
+    db.get_connection()
+    context = ledger.context(task.id)
+    assert "20 minus 5" in context and "private-code" not in context
+    db.execute("UPDATE moltbook_permissions SET account_id='other' WHERE task_id=?", (task.id,))
+    assert "20 minus 5" not in ledger.context(task.id)
+
+
+def test_concurrent_publication_calls_reserve_only_one_post(platform, monkeypatch):
+    from threading import Barrier
+    from vegapunk.tools import moltbook_actions
+    enable(platform)
+    draft_id = create_draft(platform)
+    original = moltbook_actions._get
+    barrier = Barrier(2)
+    def get(url, **kwargs):
+        if url.endswith("/agents/me"):
+            barrier.wait(timeout=5)
+        return original(url, **kwargs)
+    monkeypatch.setattr(moltbook_actions, "_get", get)
+    agent, _ = agent_for([
+        wants(call("moltbook_submolts", {"name": "agents"}),
+              call("moltbook_search", {"query": "Useful learning", "content_type": "posts", "limit": 5})),
+        wants(call("moltbook_review_draft", {"draft_id": draft_id, "verdict": "ready", "rationale": "Reviewed public evidence"})),
+        wants(call("moltbook_publish", {"draft_id": draft_id}),
+              call("moltbook_publish", {"draft_id": draft_id})), says("done")])
+    agent.max_concurrent_tools = 2
+    scheduler.run_task(platform["task"], agent)
+    assert len(platform["sent"]) == 1 and len(ledger.list_actions()) == 1

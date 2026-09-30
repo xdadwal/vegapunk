@@ -85,6 +85,8 @@ def moltbook_reconcile(action_id: str) -> str:
         key = client._key()
         account = client._account(key)
         action = publication.scoped_action(scope, client._id(action_id), account, key)
+        if key in action["remote_id"]:
+            raise ledger.ActionBlocked("unsafe remote identifier")
         candidates = [action["remote_id"]] if action["remote_id"] else []
         if not candidates:
             data = client._read("/search", key, {"q": action["title"], "type": "posts", "limit": 10})
@@ -93,7 +95,10 @@ def moltbook_reconcile(action_id: str) -> str:
                 raise ledger.ActionBlocked("unusable bounded search")
             for item in results:
                 if isinstance(item, dict) and item.get("type") == "post":
-                    candidates.append(client._id(item.get("post_id", item.get("id"))))
+                    candidate = client._id(item.get("post_id", item.get("id")))
+                    if key in candidate:
+                        raise ledger.ActionBlocked("unsafe remote identifier")
+                    candidates.append(candidate)
         matches = []
         for remote_id in dict.fromkeys(candidates):
             post = client._read(f"/posts/{client._id(remote_id)}", key).get("post")
@@ -114,6 +119,8 @@ def moltbook_reconcile(action_id: str) -> str:
                 matches.append((remote_id, post.get("verification_status")))
         if len(matches) == 1:
             remote_id, verification = matches[0]
+            if key in remote_id:
+                raise ledger.ActionBlocked("unsafe remote identifier")
             state = "read_back_confirmed" if verification == "verified" else action["state"]
             with db.transaction(immediate=True) as conn:
                 current = publication.scoped_action(scope, action_id, account, key)

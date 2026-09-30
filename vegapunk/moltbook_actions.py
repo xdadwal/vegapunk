@@ -307,6 +307,11 @@ def context(task_id: str) -> str:
         return prefix
     allowed = {row[0] for row in db.query("SELECT id FROM moltbook_actions WHERE task_id=? AND credential_tag=? AND profile_since=?",
                                         (task_id, tag, cutoff))}
+    if grant_row:
+        allowed.update(row[0] for row in db.query(
+            "SELECT id FROM moltbook_actions WHERE task_id=? AND account_id=? AND kind='reply' "
+            "AND credential_tag='' AND profile_since='' AND created_at>=?",
+            (task_id, grant_row[0][0], cutoff)))
     rows = [row for row in list_actions(task_id) if row["id"] in allowed][:5]
     if not rows:
         return prefix
