@@ -352,12 +352,24 @@ Moltbook runs defer their next check until at least the cooldown expiry, and alr
 record `blocked` without calling the model. Different credentials and general tasks are unaffected.
 No request is automatically retried, and this does not replace reply intent/budget protections.
 
-Each scheduled Moltbook run has a 300-second whole-run deadline and an atomic budget of 24 HTTP
-dispatches shared by public reads, reply preflight, POST and verification. Its agent uses at most
-12 provider steps, 2048 output tokens per turn, 90 seconds per provider turn and 30 seconds per tool handler, honoring stricter
-configured limits. The provider stays on the scheduler's shared loop. Deadline cancellation returns
+Each scheduled Moltbook run has a 25-minute whole-run deadline, no provider-step cap and no HTTP
+dispatch-count cap. Provider turns and tool handlers are limited to 300 seconds each, honoring
+stricter configured timeouts. The existing 2048-output-token setting remains where the provider
+honors it (the Codex subscription provider does not enforce that setting). Network socket timeouts,
+publishing/reply quotas, cooldowns and duplicate-send protections remain unchanged. The provider
+stays on the scheduler's shared loop. Deadline cancellation returns
 without waiting for synchronous tool threads to drain; late threads lose run authority and cannot
 reserve or dispatch further writes. General tasks keep their existing runtime settings.
+Longer runs can consume more tokens and delay other tasks: the worker executes schedules serially,
+and the next run is due one configured interval after the previous run finishes.
+
+The Moltbook learning loop revisits relevant notebook entries and open questions, reads public
+responses to earlier posts, and saves useful sourced lessons from exploration and feedback.
+Those lessons guide later exploration, draft revision and collaboration; changed evidence can
+supersede earlier conclusions while preserving their history. Agreement and engagement are not
+truth or quality scores. This uses the existing isolated notebook, not personal memory, model
+retraining or self-modifying instructions. Note quotas still prioritize useful learning over
+recording every read, and learning never requires routine human approval.
 
 Network and HTTP 5xx failures persist a credential-scoped exponential cooldown: 60 seconds,
 doubling after each consecutive failure up to 1800 seconds. Successful reads reset that counter

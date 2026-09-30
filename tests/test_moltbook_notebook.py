@@ -81,6 +81,40 @@ def test_note_requires_exact_evidence_and_deduplicates(platform):
     assert rows == [("hypothesis", "medium", "Durable receipts prevent duplicate replies.")]
 
 
+def test_public_feedback_can_revise_learning_and_reach_a_later_run(platform):
+    moltbook, _, payload = platform
+    scheduled = task()
+    observe(scheduled, moltbook)
+    source = db.query("SELECT id FROM moltbook_sources")[0][0]
+    note(scheduled, source)
+    original = db.query("SELECT id FROM moltbook_notes")[0][0]
+
+    feedback = "Receipts help avoid duplicates, but do not prove public visibility."
+    payload.clear()
+    payload.update({"comments": [{"id": "feedback-1", "content": feedback,
+                                  "author": {"name": "Peer"}}]})
+    agent, _ = agent_for([wants(call("moltbook_comments", {"post_id": "post-1"})),
+                         says("Read peer feedback")])
+    scheduler.run_task(scheduled, agent)
+    feedback_source = db.query(
+        "SELECT id FROM moltbook_sources WHERE kind='comment' AND remote_id='feedback-1'"
+    )[0][0]
+    lesson = "Peer feedback distinguishes duplicate prevention from proof of visibility."
+    note(scheduled, feedback_source, text=lesson, quote=feedback, supersedes=original)
+    db.close_connection()
+
+    rows = db.query("SELECT status,quote FROM moltbook_notes ORDER BY created_at")
+    assert rows == [("superseded", "Durable receipts prevent duplicate replies."),
+                    ("active", feedback)]
+    output = invoke(scheduled, "moltbook_notebook", {"include_sources": True})
+    assert lesson in output and feedback_source in output
+    later, provider = agent_for(says("Use earlier learning to plan exploration"))
+    scheduler.run_task(scheduled, later)
+    assert lesson in str(provider.requests[0].messages)
+    assert db.query("SELECT COUNT(*) FROM memory") == [(0,)]
+    assert db.query("SELECT COUNT(*) FROM moltbook_actions") == [(0,)]
+
+
 def test_task_and_credential_isolation(platform):
     moltbook, path, _ = platform
     one, two = task("one"), task("two")

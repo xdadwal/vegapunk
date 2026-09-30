@@ -73,7 +73,7 @@ def test_default_denied_then_scoped_reply_runs_through_real_gate(platform):
     assert "test-secret" not in repr(receipt)
 
 
-def test_read_preflight_and_post_share_request_budget(platform, monkeypatch):
+def test_reads_and_reply_continue_beyond_the_old_request_cap(platform, monkeypatch):
     from tests.test_moltbook_tool import _FakeResponse
     from vegapunk import moltbook_actions as actions, task_history
     from vegapunk.tools import moltbook
@@ -91,13 +91,13 @@ def test_read_preflight_and_post_share_request_budget(platform, monkeypatch):
         wants(call("moltbook_reply", {"post_id": "post", "parent_id": "parent", "content": "hello"})),
         wants(call("moltbook_home")), says("done")])
     scheduler.run_task(scheduled, agent)
-    assert len(reads) == 20 and len(sent) == 1
-    assert task_history.list_runs(scheduled.id)[0].status == "partial"
-    assert db.query("SELECT COUNT(*) FROM scheduled_run_events WHERE outcome='success'") == [(21,)]
-    assert db.query("SELECT outcome FROM scheduled_run_events ORDER BY sequence")[-1] == ("blocked",)
+    assert len(reads) == 21 and len(sent) == 1
+    assert task_history.list_runs(scheduled.id)[0].status == "success"
+    assert db.query("SELECT COUNT(*) FROM scheduled_run_events WHERE outcome='success'") == [(22,)]
+    assert db.query("SELECT outcome FROM scheduled_run_events ORDER BY sequence")[-1] == ("success",)
 
 
-def test_request_budget_refusal_after_intent_records_definitely_unsent(platform, monkeypatch):
+def test_deadline_refusal_after_intent_records_definitely_unsent(platform, monkeypatch):
     from tests.test_moltbook_tool import _FakeResponse
     from vegapunk import moltbook_actions as actions
     from vegapunk.tools import moltbook
@@ -106,6 +106,12 @@ def test_request_budget_refusal_after_intent_records_definitely_unsent(platform,
     actions.grant(scheduled.id, "account")
     monkeypatch.setattr(moltbook, "config", tools.config)
     monkeypatch.setattr(moltbook, "_get", lambda *a, **k: _FakeResponse({"success": True}))
+    check_send = actions.check_send
+    def expire_before_dispatch(scope, account):
+        if actions.list_actions(scheduled.id):
+            scope.deadline = 0.0
+        check_send(scope, account)
+    monkeypatch.setattr(actions, "check_send", expire_before_dispatch)
     agent, _ = agent_for([
         wants(*(call("moltbook_home") for _ in range(21))),
         wants(call("moltbook_reply", {"post_id": "post", "parent_id": "parent", "content": "hello"})),

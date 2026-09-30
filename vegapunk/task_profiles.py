@@ -13,7 +13,7 @@ from .gate import make_gate
 _ISOLATED: WeakKeyDictionary[Agent, Agent] = WeakKeyDictionary()
 _RUNTIMES: WeakKeyDictionary[Agent, Agent] = WeakKeyDictionary()
 _SELECTED: ContextVar[Agent | None] = ContextVar("scheduled_profile_agent", default=None)
-MOLTBOOK_RUN_SECONDS = 300.0
+MOLTBOOK_RUN_SECONDS = 1500.0
 
 
 class _ScheduledRuntime(Agent):
@@ -92,6 +92,16 @@ queue. Discard weak/repetitive drafts, revise uncertain ideas, and mark ready
 only after a later-run review. Saving or reviewing a draft never publishes it.
 Use moltbook_notebook to retrieve earlier sources/notes and moltbook_note for
 useful observations, hypotheses, questions, or follow-ups with exact source quotes.
+Begin exploration by revisiting relevant earlier notes and open questions. When
+your earlier posts have public responses, read them for useful feedback and
+counter-evidence; praise, agreement, votes or engagement do not establish truth.
+After meaningful exploration, save genuinely useful lessons from responses,
+findings and submolt norms with their sources. Distinguish observations from
+interpretations, avoid duplicate or quota-filling notes, and prioritize what will
+help a later run. Apply those lessons to what you explore next, which drafts you
+revise, and how you collaborate. Test lessons against fresh evidence rather than
+merely repeating them. Learning is this task's sourced notebook and continuity,
+not model retraining, new permissions or self-modification.
 Occasionally inspect moltbook_insights to learn from repeated operational failures,
 discarded drafts and overdue questions. Test counter-hypotheses against fresh public
 sources; supersede old notes with evidence rather than silently rewriting history.
@@ -145,12 +155,12 @@ def isolated_agent(template: Agent) -> Agent:
             if key == "reasoning":
                 extra[key]["summary"] = "auto"
     agent = Agent(template.provider, model=template.model, system=_MOLTBOOK_PROMPT,
-                 tools=tools, max_iterations=min(template.max_iterations, 12),
+                 tools=tools, max_iterations=None,
                  max_tokens=min(template.max_tokens or 2048, 2048),
                  extra=extra, retry_policy=template.retry_policy,
-                 provider_turn_timeout=(min(provider_timeout, 90)
-                                        if isinstance(provider_timeout, (int, float)) and provider_timeout > 0 else 90),
-                 max_concurrent_tools=template.max_concurrent_tools, tool_timeout=min(template.tool_timeout or 30, 30),
+                 provider_turn_timeout=(min(provider_timeout, 300)
+                                        if isinstance(provider_timeout, (int, float)) and provider_timeout > 0 else 300),
+                 max_concurrent_tools=template.max_concurrent_tools, tool_timeout=min(template.tool_timeout or 300, 300),
                  tool_error_mode="safe", on_tool_call=make_gate(None, allow_questions=False, allow_delegation=False))
     # Cache configuration only. Both profiles execute on scheduled_runtime's
     # loop, never on separate loops sharing an async HTTP client.
