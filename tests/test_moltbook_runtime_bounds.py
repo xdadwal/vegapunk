@@ -1,4 +1,4 @@
-"""Finite scheduled runtime/request budgets and durable operational recovery."""
+"""Scheduled deadlines, uncapped exploration, and durable operational recovery."""
 
 import asyncio
 import time
@@ -15,22 +15,23 @@ from vegapunk.task_profiles import isolated_agent, close_scheduled_agent
 from vegapunk.tools import moltbook
 
 
-def test_social_profile_caps_and_respects_stricter_config():
+def test_social_profile_has_unlimited_steps_and_respects_stricter_timeouts():
     agent = Agent(FakeProvider(says("done")), max_iterations=100,
-                  provider_turn_timeout=200, tool_timeout=100, max_tokens=4000)
+                  provider_turn_timeout=600, tool_timeout=600, max_tokens=4000)
     capped = isolated_agent(agent)
-    assert (capped.max_iterations, capped.provider_turn_timeout, capped.tool_timeout) == (12, 90, 30)
+    assert (capped.max_iterations, capped.provider_turn_timeout, capped.tool_timeout) == (None, 300, 300)
     assert capped.max_tokens == 2048
     assert agent.max_tokens == 4000
     agent = Agent(FakeProvider(says("done")), max_iterations=3,
                   provider_turn_timeout=4, tool_timeout=5, max_tokens=1000)
     capped = isolated_agent(agent)
-    assert (capped.max_iterations, capped.provider_turn_timeout, capped.tool_timeout) == (3, 4, 5)
+    assert (capped.max_iterations, capped.provider_turn_timeout, capped.tool_timeout) == (None, 4, 5)
     assert capped.max_tokens == 1000
     assert isolated_agent(Agent(FakeProvider(says("done")))).max_tokens == 2048
+    assert agent.max_iterations == 3  # general template keeps its own cap
 
 
-def test_request_budget_atomic_and_expired_scope_refuses_threads():
+def test_requests_are_uncapped_but_expired_scope_refuses_threads():
     from contextvars import copy_context
     scheduler.add_task("explore", 300, profile="moltbook")
     task = scheduler.list_tasks()[0]
@@ -45,9 +46,30 @@ def test_request_budget_atomic_and_expired_scope_refuses_threads():
         contexts = [copy_context() for _ in range(40)]
         late = copy_context()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            assert sum(pool.map(lambda ctx: ctx.run(charge), contexts)) == 24
+            assert sum(pool.map(lambda ctx: ctx.run(charge), contexts)) == 40
+        assert ledger._execution.get().requests == 40
     assert late.run(charge) is False
     ledger.charge_request()  # interactive calls have no scheduled budget
+
+
+def test_social_run_can_finish_beyond_25_steps_with_a_small_general_cap():
+    scheduler.add_task("explore", 300, profile="moltbook")
+    scheduler.add_task("ordinary", 300)
+    social, general = scheduler.list_tasks()
+    script = [wants(call("moltbook_notebook")) for _ in range(30)] + [says("learned")]
+    agent, provider = agent_for(script, max_iterations=2)
+    try:
+        assert scheduler.run_task(social, agent) == "learned"
+        assert len(provider.requests) == 31
+    finally:
+        close_scheduled_agent(agent)
+    agent, provider = agent_for(script, max_iterations=2)
+    try:
+        scheduler.run_task(general, agent)
+        assert len(provider.requests) == 2
+        assert task_history.list_runs(general.id)[0].status == "error"
+    finally:
+        close_scheduled_agent(agent)
 
 
 def test_deadline_revokes_scope_before_context_exit(monkeypatch):
@@ -57,7 +79,9 @@ def test_deadline_revokes_scope_before_context_exit(monkeypatch):
     clock = [10.0]
     monkeypatch.setattr(ledger.time, "monotonic", lambda: clock[0])
     with ledger.execution(task.id, run_id):
-        clock[0] = 310.0
+        clock[0] = 1509.0
+        ledger.charge_request()  # still valid just before the 25-minute deadline
+        clock[0] = 1510.0
         with pytest.raises(ledger.ActionBlocked, match="deadline"):
             ledger.charge_request()
 
@@ -71,7 +95,7 @@ def test_expired_run_cannot_yield_even_an_immediate_provider_event(monkeypatch):
     monkeypatch.setattr(ledger.time, "monotonic", lambda: clock[0])
     template, provider = agent_for(says("done"))
     with ledger.execution(task.id, run_id), scheduled_runtime(template, isolated_agent(template)) as runtime:
-        clock[0] = 310.0
+        clock[0] = 1510.0
         with pytest.raises(TimeoutError, match="deadline"):
             asyncio.run(anext(runtime.stream("explore")))
         assert provider.requests == []

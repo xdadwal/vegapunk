@@ -73,7 +73,7 @@ def remaining_seconds() -> float | None:
 
 
 def charge_request() -> None:
-    """Atomically consume one HTTP dispatch immediately before GET or POST.
+    """Atomically account for an HTTP dispatch immediately before GET or POST.
 
     Interactive calls have no scope. Copied late-thread contexts retain the same
     mutable scope and cannot dispatch after run completion or deadline expiry.
@@ -84,8 +84,6 @@ def charge_request() -> None:
     with scope.lock:
         _check_active(scope)
         check_task(db.get_connection(), scope)
-        if scope.requests >= 24:
-            raise ActionBlocked("scheduled Moltbook HTTP request budget exhausted (24 per run)")
         scope.requests += 1
 
 
