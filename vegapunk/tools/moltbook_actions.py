@@ -88,6 +88,10 @@ def _own_thread(key: str, account: str, post_id: str, parent_id: str) -> None:
     if (not isinstance(post, dict) or post.get("id") != post_id
             or not isinstance(post.get("author"), dict) or post["author"].get("id") != account):
         raise ledger.ActionBlocked("replies are limited to the authenticated account's own posts")
+    _parent_in_thread(key, post_id, parent_id)
+
+
+def _parent_in_thread(key: str, post_id: str, parent_id: str) -> None:
     cursor = ""
     for _ in range(3):
         params = {"sort": "new", "limit": 100}
@@ -122,10 +126,14 @@ def _receipt(action_id: str, state: str, remote_id: str = "", challenge: str = "
 
 
 def _send(scope: ledger.Execution, action_id: str, account: str, key: str,
-          path: str, payload: dict, *, verifying: bool = False, remote_id: str = "", kind: str = "comment") -> str:
+          path: str, payload: dict, *, verifying: bool = False, remote_id: str = "", kind: str = "comment",
+          autonomous: bool = False) -> str:
     expected = "verifying" if verifying else "sending"
     try:
-        ledger.check_send(scope, account)
+        if autonomous:
+            ledger.check_send(scope, account, autonomous=True)
+        else:
+            ledger.check_send(scope, account)
         ledger.charge_request()
     except ledger.ActionBlocked:
         # A create denied before dispatch is definitely unsent. Verification
@@ -234,6 +242,71 @@ def moltbook_reply(post_id: str, parent_id: str, content: str) -> str:
 
 
 @tool(guarded=True)
+def moltbook_comment(post_id: str, content: str, parent_id: str = "") -> str:
+    """Join a public discussion under this scheduled task's autonomous policy.
+
+    First read the post, comments and target submolt rules in this run. Add a
+    substantive contribution, not engagement filler. Shares the own-post reply
+    budget: one per run, three per rolling day, six hours per thread. Never resend.
+
+    Args:
+        post_id: Public post to join, including another agent's post.
+        content: Useful comment, between 1 and 2000 characters.
+        parent_id: Existing comment ID for a reply; empty for a top-level comment.
+    """
+    try:
+        scope = ledger.require_execution("moltbook_comment")
+        post_id = _id(post_id.strip())
+        parent_id = _id(parent_id.strip()) if parent_id.strip() else ""
+        content = content.strip()
+        key = _key()
+        if not 1 <= len(content) <= 2000 or key in content:
+            raise ledger.ActionBlocked("comment must be 1 to 2000 characters and contain no credential")
+        account = _account(key)
+        ledger.check_send(scope, account, autonomous=True)
+        post = _read(f"/posts/{post_id}", key).get("post")
+        if not isinstance(post, dict) or post.get("id") != post_id or post.get("is_private") is True:
+            raise ledger.ActionBlocked("public post identity unavailable")
+        submolt = post.get("submolt")
+        if not isinstance(submolt, dict) or submolt.get("is_private") is True:
+            raise ledger.ActionBlocked("public submolt identity unavailable")
+        name = _id(submolt.get("name"))
+        community = _read(f"/submolts/{name}", key).get("submolt")
+        if not isinstance(community, dict) or community.get("name") != name or community.get("is_private") is True:
+            raise ledger.ActionBlocked("private or unidentified community is outside discussion scope")
+        tag = hashlib.sha256(key.encode()).hexdigest()
+        reads = {row[0] for row in db.query(
+            "SELECT path FROM moltbook_read_receipts WHERE task_id=? AND run_id=? AND credential_tag=? AND profile_since=?",
+            (scope.task_id, scope.run_id, tag, scope.profile_since))}
+        if not {f"/posts/{post_id}", f"/posts/{post_id}/comments", f"/submolts/{name}"} <= reads:
+            raise ledger.ActionBlocked("read the post, comments and submolt rules in this run before commenting")
+        if parent_id:
+            _parent_in_thread(key, post_id, parent_id)
+        runtime = current_runtime_context()
+        action_id = ledger.reserve(scope, account, post_id, parent_id, content, runtime.tool_call_id,
+                                   tag, kind="discussion")
+        payload = {"content": content}
+        if parent_id:
+            payload["parent_id"] = parent_id
+        return _send(scope, action_id, account, key, f"/posts/{post_id}/comments", payload, autonomous=True)
+    except (ledger.ActionError, db.StoreError) as exc:
+        return f"Error: {exc}. Inspect /schedule actions; do not resend."
+    except ledger.ActionBlocked as exc:
+        return f"Blocked: {exc}. Inspect /schedule actions; do not bypass the boundary."
+
+
+@tool(guarded=True)
+def moltbook_verify_comment(action_id: str, answer: str) -> str:
+    """Verify one pending autonomous discussion comment without resending it.
+
+    Args:
+        action_id: Local action ID from a pending_verification comment receipt.
+        answer: Numeric answer with exactly two decimal places, such as 15.00.
+    """
+    return _verify_comment("moltbook_verify_comment", action_id, answer, kind="discussion")
+
+
+@tool(guarded=True)
 def moltbook_verify_reply(action_id: str, answer: str) -> str:
     """Submit one verification answer for a recorded pending reply from this task.
 
@@ -241,8 +314,12 @@ def moltbook_verify_reply(action_id: str, answer: str) -> str:
         action_id: Local action ID from a pending_verification receipt.
         answer: Numeric answer with exactly two decimal places, such as 15.00.
     """
+    return _verify_comment("moltbook_verify_reply", action_id, answer)
+
+
+def _verify_comment(tool_name: str, action_id: str, answer: str, *, kind: str = "reply") -> str:
     try:
-        scope = ledger.require_execution("moltbook_verify_reply")
+        scope = ledger.require_execution(tool_name)
         action_id = _id(action_id.strip())
         if not re.fullmatch(r"-?\d{1,12}\.\d{2}", answer, flags=re.ASCII):
             raise ledger.ActionBlocked("answer must be a number with exactly two decimal places")
@@ -250,11 +327,12 @@ def moltbook_verify_reply(action_id: str, answer: str) -> str:
         account = _account(key)
         runtime = current_runtime_context()
         code, remote_id = ledger.verification(scope, action_id, account, runtime.tool_call_id,
-                                              credential_tag=hashlib.sha256(key.encode()).hexdigest())
+                                              credential_tag=hashlib.sha256(key.encode()).hexdigest(), kind=kind)
         if not code:
             return _receipt(action_id, "verification_expired", remote_id) + "\nKnown expiry; continue learning, never repost."
         return _send(scope, action_id, account, key, "/verify",
-                     {"verification_code": code, "answer": answer}, verifying=True, remote_id=remote_id)
+                     {"verification_code": code, "answer": answer}, verifying=True, remote_id=remote_id,
+                     autonomous=kind == "discussion")
     except (ledger.ActionError, db.StoreError) as exc:
         return f"Error: {exc}. Inspect /schedule actions; do not resend."
     except ledger.ActionBlocked as exc:

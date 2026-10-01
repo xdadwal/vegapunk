@@ -15,7 +15,8 @@ from logpose import current_runtime_context
 
 from . import db
 
-WRITE_TOOLS = frozenset({"moltbook_reply", "moltbook_verify_reply", "moltbook_publish", "moltbook_verify_post"})
+WRITE_TOOLS = frozenset({"moltbook_reply", "moltbook_verify_reply", "moltbook_comment", "moltbook_verify_comment", "moltbook_publish", "moltbook_verify_post"})
+_AUTONOMOUS_TOOLS = frozenset({"moltbook_comment", "moltbook_verify_comment", "moltbook_publish", "moltbook_verify_post"})
 _OPEN = ("sending", "pending_verification", "verifying", "unknown")
 
 
@@ -117,7 +118,7 @@ def authorized(tool_name: str = "") -> bool:
     if scope is None:
         return False
     try:
-        _authorize(db.get_connection(), scope, autonomous=tool_name in ("moltbook_publish", "moltbook_verify_post"))
+        _authorize(db.get_connection(), scope, autonomous=tool_name in _AUTONOMOUS_TOOLS)
         return True
     except (ActionBlocked, db.StoreError):
         return False
@@ -153,7 +154,7 @@ def check_task(conn, scope: Execution) -> None:
 
 def require_execution(tool_name: str) -> Execution:
     scope = task_execution(tool_name)
-    _authorize(db.get_connection(), scope, autonomous=tool_name in ("moltbook_publish", "moltbook_verify_post"))
+    _authorize(db.get_connection(), scope, autonomous=tool_name in _AUTONOMOUS_TOOLS)
     return scope
 
 
@@ -177,10 +178,12 @@ def revoke(task_id: str) -> None:
 
 
 def reserve(scope: Execution, account: str, post: str, parent: str, content: str,
-            call_id: str = "", credential_tag: str = "") -> str:
+            call_id: str = "", credential_tag: str = "", *, kind: str = "reply") -> str:
+    if kind not in ("reply", "discussion"):
+        raise ActionBlocked("unsupported comment intent kind")
     stamp, action_id = db.utcnow(), db.new_id()
     with db.transaction(immediate=True) as conn:
-        _authorize(conn, scope, account)
+        _authorize(conn, scope, account, autonomous=kind == "discussion")
         if conn.execute("SELECT id FROM moltbook_actions WHERE account_id=? AND post_id=? AND parent_id=?",
                         (account, post, parent)).fetchone():
             raise ActionBlocked("this parent already has a reply intent; inspect /schedule actions")
@@ -190,9 +193,9 @@ def reserve(scope: Execution, account: str, post: str, parent: str, content: str
         until = conn.execute("SELECT until_at FROM moltbook_backoff WHERE account_id=?", (account,)).fetchone()
         if until and until[0] > stamp:
             raise ActionBlocked(f"account rate-limited until {until[0]}")
-        if conn.execute("SELECT id FROM moltbook_actions WHERE run_id=? AND kind='reply'", (scope.run_id,)).fetchone():
+        if conn.execute("SELECT id FROM moltbook_actions WHERE run_id=? AND kind IN ('reply','discussion')", (scope.run_id,)).fetchone():
             raise ActionBlocked("one new reply per scheduled run")
-        count = conn.execute("SELECT COUNT(*) FROM moltbook_actions WHERE account_id=? AND kind='reply' AND created_at>?",
+        count = conn.execute("SELECT COUNT(*) FROM moltbook_actions WHERE account_id=? AND kind IN ('reply','discussion') AND created_at>?",
                              (account, db.stamp_plus(stamp, -86400))).fetchone()[0]
         if count >= 3:
             raise ActionBlocked("three reply attempts per account per rolling day")
@@ -204,16 +207,16 @@ def reserve(scope: Execution, account: str, post: str, parent: str, content: str
             raise ActionBlocked("60-second account cooldown")
         conn.execute(
             "INSERT INTO moltbook_actions (id,task_id,run_id,account_id,last_run_id,tool_call_id,post_id,parent_id,content,"
-            "content_hash,state,created_at,updated_at,credential_tag,profile_since) VALUES (?,?,?,?,?,?,?,?,?,?,'sending',?,?,?,?)",
+            "content_hash,state,created_at,updated_at,credential_tag,profile_since,kind) VALUES (?,?,?,?,?,?,?,?,?,?,'sending',?,?,?,?,?)",
             (action_id, scope.task_id, scope.run_id, account, scope.run_id, call_id, post, parent, content,
-             hashlib.sha256(content.encode()).hexdigest(), stamp, stamp, credential_tag, scope.profile_since),
+             hashlib.sha256(content.encode()).hexdigest(), stamp, stamp, credential_tag, scope.profile_since, kind),
         )
     return action_id
 
 
-def check_send(scope: Execution, account: str) -> None:
+def check_send(scope: Execution, account: str, *, autonomous: bool = False) -> None:
     """Recheck after preflight/reservation, immediately before network dispatch."""
-    _authorize(db.get_connection(), scope, account)
+    _authorize(db.get_connection(), scope, account, autonomous=autonomous)
 
 
 def complete(action_id: str, expected: str, state: str, *, remote_id: str = "",
@@ -241,7 +244,7 @@ def verification(scope: Execution, action_id: str, account: str, call_id: str = 
                  credential_tag: str = "") -> tuple[str, str]:
     """Reserve the single verification attempt; code never comes from the model."""
     with db.transaction(immediate=True) as conn:
-        _authorize(conn, scope, account, autonomous=kind == "post")
+        _authorize(conn, scope, account, autonomous=kind in ("post", "discussion"))
         row = conn.execute(
             "SELECT state,verification_code,remote_id,expires_at FROM moltbook_actions "
             "WHERE id=? AND task_id=? AND account_id=? AND created_at>=? AND kind=? "
@@ -292,7 +295,7 @@ def context(task_id: str) -> str:
     policy = ("moltbook.reply_own for account " + grant_row[0][0]) if grant_row else "no write grant"
     auto = db.query("SELECT account_id FROM moltbook_autonomy WHERE task_id=?", (task_id,))
     if auto:
-        policy = "autonomous own-content publishing/replies, bound to account " + auto[0][0]
+        policy = "autonomous publishing and public discussion participation, bound to account " + auto[0][0]
     prefix = f"\n\nScheduled-task Moltbook permission: {policy}. Tools enforce the scope and budgets.\n"
     profile = db.query("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
     cutoff = profile[0][1] if profile and profile[0][0] == "moltbook" else ""
