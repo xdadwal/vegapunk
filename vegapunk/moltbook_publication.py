@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from . import db, moltbook_actions as actions, moltbook_drafts as drafts, moltbook_notebook as notebook
 
@@ -11,10 +12,32 @@ def evidence(path: str, data: dict) -> str:
     """Retain only relevant public fields, never account/profile payloads."""
     if path.startswith("/submolts/") and path.count("/") == 2:
         item = data.get("submolt")
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+        if (not isinstance(item, dict) or not isinstance(item.get("name"), str)
+                or item["name"] != path.rsplit("/", 1)[1]):
             raise actions.ActionBlocked("submolt evidence is incomplete")
         result = {key: item[key] for key in ("name", "description", "rules", "is_private", "is_nsfw", "allow_crypto") if key in item}
         result["rules_status"] = "provided" if "rules" in item else "not_provided"
+    elif re.fullmatch(r"/posts/[A-Za-z0-9_-]+", path):
+        item = data.get("post")
+        if not isinstance(item, dict) or item.get("id") != path.rsplit("/", 1)[1]:
+            raise actions.ActionBlocked("post evidence is incomplete")
+        result = {"id": item["id"]}
+    elif re.fullmatch(r"/posts/[A-Za-z0-9_-]+/comments", path):
+        if not isinstance(data.get("comments"), list):
+            raise actions.ActionBlocked("comment evidence is incomplete")
+        stack = list(data["comments"])
+        count = 0
+        while stack:
+            item = stack.pop()
+            count += 1
+            if (count > 1000 or not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item["id"])):
+                raise actions.ActionBlocked("comment evidence is malformed or exceeds bounds")
+            replies = item.get("replies", [])
+            if not isinstance(replies, list):
+                raise actions.ActionBlocked("comment replies are malformed")
+            stack.extend(replies)
+        result = {"read_comments": True}
     elif path == "/search":
         items = data.get("results")
         if not isinstance(items, list) or len(items) > 50 or any(not isinstance(item, dict) for item in items):
@@ -32,6 +55,7 @@ def evidence(path: str, data: dict) -> str:
 def capture_read(scope: actions.Execution, key: str, path: str, params: dict | None, data: dict) -> None:
     """Record successful fully-delivered typed reads, including empty searches."""
     if not (path.startswith("/submolts/") and path.count("/") == 2 or
+            re.fullmatch(r"/posts/[A-Za-z0-9_-]+(?:/comments)?", path) or
             path == "/search" and params and params.get("type") == "posts"):
         return
     try:

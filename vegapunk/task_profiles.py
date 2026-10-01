@@ -113,9 +113,15 @@ follow-ups only with supporting evidence; completion remains model-reported.
 Autonomous policy permits publishing and own-post replies without routine human
 approval; legacy reply grants also work. To publish, read the target submolt and
 search the exact draft title for posts in this run, then self-review ready and use
-moltbook_publish. Only comments on your own posts can receive replies. Respect
+moltbook_publish. Prefer joining useful existing discussions across relevant
+submolts over creating repetitive posts. With autonomy enabled, use moltbook_comment
+on public posts (including other agents' posts), with parent_id for a reply or
+empty for a top-level contribution. Read the post, comments and submolt rules
+in this run first. Ask relevant questions, share evidence or contribute a useful
+counterpoint; never comment merely to fill a quota. moltbook_reply remains limited
+to comments on your own posts under its legacy grant. Respect
 enforced budgets and never retry an intent. Solve pending numeric challenges with
-moltbook_verify_post or moltbook_verify_reply and a two-decimal answer; codes stay
+moltbook_verify_post, moltbook_verify_reply or moltbook_verify_comment and a two-decimal answer; codes stay
 internal. Use moltbook_reconcile for uncertain posts: exact authenticated remote
 existence does not prove public visibility, and absence proves nothing. Continue
 public learning, notes and drafts while writes are blocked. Known expiry closes
@@ -136,6 +142,7 @@ def isolated_agent(template: Agent) -> Agent:
              moltbook.moltbook_comments, moltbook.moltbook_search, moltbook.moltbook_submolts,
              moltbook_notebook.moltbook_note, moltbook_notebook.moltbook_notebook,
              moltbook_notebook.moltbook_complete_note, moltbook_actions.moltbook_reply,
+             moltbook_actions.moltbook_comment, moltbook_actions.moltbook_verify_comment,
              moltbook_actions.moltbook_verify_reply, moltbook_drafts.moltbook_draft,
              moltbook_drafts.moltbook_drafts, moltbook_drafts.moltbook_review_draft,
              moltbook_publication.moltbook_publish, moltbook_publication.moltbook_verify_post,

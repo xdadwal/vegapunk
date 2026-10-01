@@ -283,6 +283,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
 | `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
 | `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Scheduled grant or autonomous policy |
+| `moltbook_comment` / `moltbook_verify_comment` | Join and verify a public discussion on any agent's post. | Scheduled autonomous policy only |
 | `moltbook_publish` / `moltbook_verify_post` | Publish a sourced, later-run self-reviewed draft and verify once. | Autonomous scheduled policy only |
 | `moltbook_reconcile` | Check exact authenticated remote existence without resending. | Isolated scheduled profile only |
 | `moltbook_note` / `moltbook_notebook` / `moltbook_complete_note` | Save, retrieve, revise, and complete sourced local learning. | Active scheduled task only; no network write grant needed |
@@ -313,10 +314,10 @@ only to the fixed `https://www.moltbook.com/api/v1` origin. Redirects are refuse
 forwarding the authorization header.
 
 The current integration can read the home dashboard, feeds, submolts, posts, comments, and semantic
-search. Scheduled tasks can additionally reply to comments on the authenticated account's own
-posts after an explicit human grant. Use the bundled `moltbook` skill for the check-in order.
-New posts, comments on others' posts, votes, follows, subscriptions, DMs, profile changes, and
-notification mutations are not supported.
+search. Autonomous scheduled tasks can publish reviewed original posts and join public discussions
+on other agents' posts. Legacy reply grants remain limited to comments on the account's own posts.
+Use the bundled `moltbook` skill for the check-in order. Votes, follows, subscriptions, DMs, profile
+changes, and notification mutations are not supported.
 
 Moltbook scheduled runs require the explicit `moltbook` task profile:
 
@@ -432,11 +433,26 @@ Snapshot/history storage is retained, so total database size can grow over time.
 
 Enable only after reviewing the task's observation history; all tasks start without write grants:
 
-Original publishing is enabled once with `/schedule autonomy <task-id> on` (or disabled with
+Original publishing and public discussion participation are enabled once with `/schedule autonomy <task-id> on` (or disabled with
 `off`). This binds the task to the authenticated account, credential hash and profile epoch.
 Policy changes require an idle Moltbook task and quarantine previous context/drafts while
 revoking legacy grants. Scheduled runs then self-review and publish without routine human
 approval. Interactive/general agents cannot inherit this authority.
+
+`moltbook_comment` adds a top-level comment (empty `parent_id`) or replies to an existing comment
+on a public post, including another agent's post. Before sending, the model must read the exact
+post, comments and submolt details/rules through typed tools in the current run. Truncated or failed
+reads do not establish this evidence. The client checks current post/community identity, public
+scope and parent membership again before creating a durable intent. Community-rule compliance
+and contribution quality remain the agent's judgment, not an independently verified guarantee.
+Prefer useful existing conversations across relevant submolts; no engagement quota requires a send.
+
+Discussion comments and own-post replies share one new attempt per run, three per account per
+rolling day, a six-hour thread cooldown and a 60-second account cooldown. Duplicate parents and
+duplicate top-level attempts on the same post remain blocked across runs. `moltbook_verify_comment`
+verifies only a pending discussion intent, once; it requires autonomy even if a legacy grant exists.
+Turning autonomy off stops new dispatches but cannot recall requests already sent. API acceptance
+does not independently confirm public visibility. No additional human approval is required.
 
 Publishing consumes a local sourced draft created in an earlier run. In the publishing run,
 the agent reads the target submolt, searches the exact draft title for posts, then reviews it

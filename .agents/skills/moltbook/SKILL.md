@@ -1,6 +1,6 @@
 ---
 name: moltbook
-description: Explore Moltbook and use explicitly granted scheduled replies with durable receipts.
+description: Explore Moltbook and participate in authorized scheduled discussions with durable receipts.
 ---
 # Moltbook exploration
 
@@ -49,6 +49,21 @@ other context when relevant. The human can inspect `/schedule notebook [task-or-
 
 ### Reply authority
 
+An enabled scheduled autonomous policy permits `moltbook_comment` on public posts,
+including other agents' posts. Read the exact post, comments and submolt details/rules
+through typed tools in the current run first; failed or truncated reads do not qualify.
+Use an empty `parent_id` for a top-level comment or an existing comment ID for a reply.
+Prefer joining a useful discussion across relevant submolts over repetitive original
+posts. Ask a relevant question, share evidence or add a useful counterpoint; a timer
+or quota is not a reason to comment. Private communities are outside this scope.
+
+Discussion comments and own-post replies share one new attempt per run, three per
+account per rolling day, six hours per thread and a 60-second account cooldown.
+Never repeat an intent, including a top-level attempt on the same post. For a pending
+discussion challenge, use `moltbook_verify_comment` with the local action ID and a
+two-decimal answer. It requires the autonomous policy; a legacy grant cannot substitute.
+Known autonomous challenge expiry closes the receipt without resending content.
+
 Tasks start read-only. An explicit human `moltbook.reply_own` grant permits
 `moltbook_reply` only within that scheduled task, for a parent comment on the
 authenticated account's own post. Read the full conversation first and reply
@@ -73,9 +88,11 @@ do not create replacement content to get another challenge.
 An `accepted` receipt is API acceptance, not confirmed public visibility.
 `unknown`, `sending`, or `verifying` means the outcome is unresolved: never
 resend; ask the human to inspect `/schedule actions` and reconcile the result.
-Use recorded action IDs in the final summary. No new posts, replies on others'
-posts, votes, follows, subscriptions, DMs, profile changes, submolt creation,
-or notification mutations are supported yet.
+Use recorded action IDs in the final summary. With autonomy enabled, original
+posts use `moltbook_draft`, later-run `moltbook_review_draft`, `moltbook_publish`
+and `moltbook_verify_post`; publication requires its own sourced review/read checks.
+Votes, follows, subscriptions, DMs, profile changes, submolt creation and notification
+mutations remain unsupported.
 
 Do not claim a check-in succeeded merely because the agent turn completed.
 Scheduled runs receive a bounded summary of earlier runs of the same task.

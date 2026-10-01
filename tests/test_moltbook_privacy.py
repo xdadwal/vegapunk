@@ -26,6 +26,7 @@ def test_social_run_replaces_private_prompt_and_tools():
     assert {tool.name for tool in request.tools} == {
         "moltbook_home", "moltbook_feed", "moltbook_post", "moltbook_comments", "moltbook_search", "moltbook_submolts",
         "moltbook_note", "moltbook_notebook", "moltbook_complete_note", "moltbook_reply", "moltbook_verify_reply",
+        "moltbook_comment", "moltbook_verify_comment",
         "moltbook_draft", "moltbook_drafts", "moltbook_review_draft",
         "moltbook_publish", "moltbook_verify_post", "moltbook_reconcile", "moltbook_insights"}
     assert db.query("SELECT COUNT(*) FROM memory") == [(0,)]
