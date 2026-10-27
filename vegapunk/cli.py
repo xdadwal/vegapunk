@@ -22,6 +22,7 @@ from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
 from .delegation import RoleRunner, set_runner
+from .delegate_activity import DelegateActivity, DelegateDisplay
 from .prompter import Prompter, PromptToolkitPrompter
 from .questions import CLIQuestioner, set_questioner
 from .render import Renderer, RichRenderer
@@ -194,7 +195,13 @@ def main(
     # later /model or /effort change applies without reinstalling the runner.
     # ALL_TOOLS is intentionally shared: roles differ by responsibility and
     # isolated context, never by a hidden capability subset.
-    set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS))
+    activity = DelegateActivity()
+    display = DelegateDisplay(activity)
+    display.start()
+    set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS,
+                          approver=getattr(session, "approver", None),
+                          approval_mode=lambda: approval_policy.mode,
+                          activity=activity))
     warned_worker_died = False
     try:
         while True:
@@ -293,6 +300,7 @@ def main(
         # teardown.
         worker.stop(scheduler)
         set_runner(None)
+        display.close()
         session.close()
         set_questioner(None)
 

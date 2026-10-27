@@ -141,6 +141,8 @@ class Session:
         until the first pull, so a created-but-never-consumed send is a no-op.
         """
         checkpoint = len(self._conversation.messages)
+        if self._approver is not None:
+            self._approver.begin_turn()
         try:
             # The run is started here, beside the conversation it appends to and
             # the rollback below that undoes those appends. ``trace`` renders the
@@ -148,6 +150,7 @@ class Session:
             reply, context_tokens = yield from trace(
                 stream_sync(self._agent, user_input, conversation=self._conversation),
                 self._renderer,
+                on_cancel=self._approver.cancel_pending if self._approver is not None else None,
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
@@ -169,6 +172,11 @@ class Session:
             # the loop an orphaned list is what makes the rollback final.
             self._conversation = Conversation(self._conversation.messages[:checkpoint])
             raise
+
+    @property
+    def approver(self) -> Approver | None:
+        """The session's shared tool approver, also used by joined delegates."""
+        return self._approver
 
     @property
     def renderer(self) -> Renderer:

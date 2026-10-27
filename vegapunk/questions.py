@@ -19,7 +19,7 @@ from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import Output
 
-from . import menu
+from . import menu, terminal
 
 CUSTOM = "__custom__"
 CANCELLED = (
@@ -61,7 +61,7 @@ class CLIQuestioner(Questioner):
     def ask(self, question: str, options: list[str], preferred_option: str) -> str:
         if not sys.stdin.isatty():
             return UNAVAILABLE
-        with self._lock:
+        with self._lock, terminal.interaction():
             selected_value: str | None = None
             pending_custom_note: str | None = None
             while True:

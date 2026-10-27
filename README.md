@@ -228,8 +228,20 @@ the result. Roles divide responsibility, not capability: every delegate receives
 tool registry and an isolated conversation on a separately spawned provider for the live model.
 Independent delegate calls requested together run concurrently in background threads, and the
 primary agent waits for every result before it can synthesize and finish its reply. An interrupted
-turn also drains active delegate work before returning to the prompt. Delegates run unattended, so
-approval-gated actions, `ask_user`, and recursive delegation fail closed.
+turn also drains active delegate work before returning to the prompt. Delegates share the main
+session's approval policy: in `--auto` they can write files and run shell commands; in manual mode,
+the same approval picker shows the requesting role and exact tool arguments. Concurrent approval
+requests are serialized, and session-wide tool allowances apply to all agents. Delegates still
+cannot call `ask_user` or recursively delegate. Existing file-tool workspace limits and OS
+permissions apply; auto mode does not add sudo access or an OS sandbox.
+
+While delegates run, a terminal activity panel shows each invocation's role, model, status, elapsed
+time, and accumulated provider-reported input/output and cache tokens. Usage updates at completed
+model turns; providers that omit it show “usage not reported”. The panel yields to approval/input
+menus and completed summaries remain in the trace on stderr, leaving stdout for the reply. Piped
+output has plain completed summaries. Cancellation releases pending approval menus and drains
+already-running delegate handlers before returning; a tool deadline can therefore take longer to
+report while an in-flight synchronous operation finishes. Cancellation does not undo completed work.
 
 Override the active choice with `/model codex gpt-5.4` or `/effort medium` (other supported
 providers work too). Overrides belong to the current conversation and are saved immediately for
