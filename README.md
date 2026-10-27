@@ -288,7 +288,7 @@ generated schemas and can call them as part of a multi-step turn.
 | `edit_file` | Replace an exact snippet in an existing file. | Required |
 | `run_shell` | Run a shell command in the workspace. | Required |
 | `fetch_url` | Fetch a page and extract readable text. | — |
-| `search_web` | Search the web through DuckDuckGo. | — |
+| `search_web` | Search through Z.ai Coding Plan MCP or keyless DuckDuckGo. | — |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -508,6 +508,21 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_CODEX_EFFORT` | Empty | Initial Codex/OpenAI reasoning effort. |
 | `VEGAPUNK_SCHEDULER_MODEL` | Empty | Scheduler provider and optional model as `provider[:model]`; empty inherits startup configuration. |
 | `VEGAPUNK_SCHEDULER_EFFORT` | Empty | Scheduler effort; empty inherits the selected provider's configured effort. |
+
+### Web search
+
+`search_web` is independent of the selected chat model. `VEGAPUNK_SEARCH_PROVIDER=auto` (the
+default) uses Z.ai's Coding Plan search when `ZAI_KEY` is configured, otherwise DuckDuckGo HTML.
+Set it to `zai` or `duckduckgo` to choose explicitly. Z.ai search uses the existing Coding Plan key
+and its search quota; it never falls back to the separately billed REST search API. No new package
+or credential is needed for an existing eligible Coding Plan key.
+
+DuckDuckGo may return a human-verification page, including with HTTP 202 or 200. Vegapunk reports
+that as provider blocking rather than claiming the query has no results. Quota/authentication,
+network, and unrecognized-response failures are also reported without silently switching providers.
+Search returns links and snippets; use `fetch_url` to read a source before relying on it.
+
+See [Z.ai's Web Search MCP documentation](https://docs.z.ai/devpack/mcp/search-mcp-server).
 
 ### Persistence and skills
 

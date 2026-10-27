@@ -92,6 +92,8 @@ class Config:
     # directory Vegapunk was launched in, so it operates on the project you're
     # in; point it elsewhere to sandbox it. Reads/writes outside it are refused.
     workspace_root: str = os.getenv("VEGAPUNK_WORKSPACE", os.getcwd())
+    # Coding Plan search uses the existing ZAI_KEY; no separately billed REST fallback.
+    search_provider: str = os.getenv("VEGAPUNK_SEARCH_PROVIDER", "auto").strip().lower()
 
     # How long a shell command may run before it's killed (seconds).
     shell_timeout: float = float(os.getenv("VEGAPUNK_SHELL_TIMEOUT", "30"))
