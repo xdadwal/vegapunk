@@ -869,6 +869,27 @@ def test_bare_effort_picks_a_level(on_a_terminal):
     assert current_effort(ctx.session.backend) == "high"
 
 
+def test_zai_effort_picker_excludes_unsupported_levels(on_a_terminal):
+    ctx = _ctx(model_label="glm-5.3-flash", effort_key="reasoning_effort")
+    on_a_terminal.answer = "low"
+    result = dispatch("/effort", ctx)
+    assert [option.label for option in on_a_terminal.options] == ["low", "high", "max"]
+    assert "effort set to low" in result.output
+
+
+def test_switch_to_zai_keeps_target_low_when_previous_effort_is_medium(monkeypatch):
+    from vegapunk.backend import create_backend, with_effort
+
+    ctx = _ctx(model_label="old-model", effort_key="output_config")
+    ctx.session.swap_backend(with_effort(ctx.session.backend, "medium"))
+    target = create_backend("zai")
+    monkeypatch.setattr("vegapunk.commands.create_backend", lambda *args: target)
+    monkeypatch.setattr("vegapunk.commands.resolve_model_choice", lambda *args: "glm-5.3-flash")
+    result = dispatch("/model zai glm-5.3-flash", ctx)
+    assert "model switched" in result.output
+    assert current_effort(ctx.session.backend) == "low"
+
+
 def test_the_pickers_stay_out_of_the_way_without_a_terminal(monkeypatch):
     """Every non-interactive path — tests, pipes, the scheduler — keeps the
     plain-text behaviour it had before the pickers existed."""

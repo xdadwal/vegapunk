@@ -20,6 +20,8 @@ def _reloaded_config(monkeypatch, **env: str):
     """Reload vegapunk.config with the given env and return a fresh Config."""
     for key in (
         "VEGAPUNK_PROVIDER",
+        "VEGAPUNK_ZAI_MODEL",
+        "VEGAPUNK_ZAI_EFFORT",
         "VEGAPUNK_CODEX_MODEL",
         "VEGAPUNK_CODEX_CONTEXT_WINDOW",
         "VEGAPUNK_CODEX_EFFORT",
@@ -56,7 +58,8 @@ def _restore(monkeypatch) -> None:
 def test_provider_defaults_to_codex_with_gpt_5_5(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.provider == "codex"
+        assert cfg.provider == "zai"
+        assert cfg.zai_model == "glm-5.3-flash" and cfg.zai_effort == "low"
         assert cfg.codex_model == "gpt-5.5"
         assert cfg.scheduler_model == ""
         assert cfg.claude_model == ""

@@ -23,12 +23,12 @@ from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
     Backend,
-    EFFORT_LEVELS,
     available_models,
     create_backend,
     current_effort,
     describe,
     resolve_model_choice,
+    supported_effort_levels,
     with_effort,
     with_model,
 )
@@ -153,7 +153,7 @@ def _execution_backend(ctx: CommandContext, selector: str, effort: str) -> Backe
         provider, separator, model = selector.partition(":")
         if not provider or not separator or not model:
             raise ValueError("Expected a saved model in provider:model form")
-        cfg = replace(config, codex_effort="", claude_effort="")
+        cfg = replace(config, codex_effort="", claude_effort="", zai_effort="")
         backend = create_backend(provider, with_model(cfg, provider, model))
     if backend.supports_effort:
         return with_effort(backend, effort)
@@ -388,7 +388,7 @@ def _switch(ctx: CommandContext, provider: str, model: str) -> CommandResult:
         # Carry a /effort choice across claude→claude swaps (a claude→local→claude
         # round trip loses it — the local backend has nowhere to hold it).
         effort = current_effort(ctx.session.backend)
-        if effort and backend.supports_effort:
+        if effort and effort in supported_effort_levels(backend):
             backend = with_effort(backend, effort)
     except ValueError as exc:
         return CommandResult(output=str(exc))
@@ -467,7 +467,8 @@ def _pick_effort(ctx: CommandContext) -> CommandResult:
     """Choose a reasoning-effort level, marking the one in force."""
     live = current_effort(ctx.session.backend)
     options = [
-        menu.Option(value=level, label=level, active=level == live) for level in EFFORT_LEVELS
+        menu.Option(value=level, label=level, active=level == live)
+        for level in supported_effort_levels(ctx.session.backend)
     ]
     chosen = _pick(f"effort for {ctx.session.model_label}", options)
     if chosen is None:

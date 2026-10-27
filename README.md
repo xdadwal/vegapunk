@@ -50,8 +50,8 @@ project matures.
 ## Requirements
 
 - Python 3.10 or newer. Development and tests currently use Python 3.12.
-- A supported model provider. The default setup uses an existing Codex CLI sign-in with access to
-  GPT-5.5; Docker Model Runner is optional.
+- A supported model provider. The default is Z.ai Coding Plan with GLM-5.3-Flash
+  at low reasoning effort. Codex and Docker Model Runner remain optional alternatives.
 
 ## Quickstart
 
@@ -76,10 +76,14 @@ Logpose currently keeps the same package version across commit pins, so an ordin
 install can leave the previous commit installed. Restarting also clears Vegapunk's
 in-process model catalog cache; `/models codex` then lists the updated catalog.
 
-Sign in through the Codex CLI, then start Vegapunk from the directory you want it to treat as its
-workspace:
+Save your Coding Plan key as `ZAI_KEY` in the ignored local `.env` (never commit it).
+Export it before launching; `.env` is not loaded automatically. Start from the directory
+you want Vegapunk to treat as its workspace:
 
 ```bash
+set -a
+source .env
+set +a
 .venv/bin/python -m vegapunk
 ```
 
@@ -170,8 +174,9 @@ you choose a model when discovery is supported. Common provider names are:
 | `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Messages API. |
 | `openai` | `OPENAI_API_KEY` | OpenAI Responses API; defaults to GPT-5.5. |
 | `openai-compat` | Server-dependent | OpenAI-compatible Chat Completions endpoint. |
+| `zai` | `ZAI_KEY` | Default: Z.ai Coding Plan, GLM-5.3-Flash, low effort, preserved reasoning. |
 | `claude` / `claude-code` | Local Claude Code session | Subscription-backed, unofficial integration. |
-| `codex` | Local Codex session | Default provider with GPT-5.5; subscription-backed, unofficial integration. |
+| `codex` | Local Codex session | GPT-5.5; subscription-backed, unofficial integration. |
 
 Select a provider at launch with `VEGAPUNK_PROVIDER`, or switch during a session:
 
@@ -179,7 +184,15 @@ Select a provider at launch with `VEGAPUNK_PROVIDER`, or switch during a session
 /model local docker.io/gemma4:latest
 /model anthropic claude-sonnet-4-5
 /model codex
+/model zai glm-5.3-flash
 ```
+
+Z.ai uses `https://api.z.ai/api/coding/paas/v4`, not the general prepaid API endpoint.
+`/effort` and its dropdown/completion offer `low`, `high`, and `max` on Z.ai; `medium`
+and `xhigh` are rejected rather than silently mapped. Thinking remains enabled, and
+Logpose replays its unmodified reasoning across tool calls. No OpenAI credential or local
+embedding URL is reused. Model discovery may be unavailable on the service; an explicit
+model ID remains selectable. Other providers retain their own configuration.
 
 Provider names correspond to credential types deliberately: `anthropic` and `openai` use API keys,
 while `claude-code` and `codex` use existing CLI subscription sessions. The subscription backends
@@ -459,7 +472,7 @@ Every application setting can be overridden with an environment variable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VEGAPUNK_PROVIDER` | `codex` | Provider selected at launch. |
+| `VEGAPUNK_PROVIDER` | `zai` | Provider selected at launch. |
 | `VEGAPUNK_BASE_URL` | `http://localhost:12434/engines/v1` | Endpoint for Docker Model Runner or `openai-compat`. |
 | `VEGAPUNK_MODEL` | `docker.io/gemma4:latest` | Model used by Chat Completions-compatible backends. |
 | `VEGAPUNK_API_KEY` | `not-needed` | API key passed to the optional local embeddings client. |
@@ -486,6 +499,9 @@ Every application setting can be overridden with an environment variable.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `ZAI_KEY` | Unset | Z.ai Coding Plan API key; kept outside source control. |
+| `VEGAPUNK_ZAI_MODEL` | `glm-5.3-flash` | Z.ai model; separate from local and Codex model settings. |
+| `VEGAPUNK_ZAI_EFFORT` | `low` | Z.ai reasoning effort: `low`, `high`, or `max`. |
 | `VEGAPUNK_CLAUDE_MODEL` | Empty | Model for Anthropic and Claude Code backends. |
 | `VEGAPUNK_CLAUDE_CONTEXT_WINDOW` | `200000` | Context size used by the Claude prompt gauge. |
 | `VEGAPUNK_CLAUDE_EFFORT` | Empty | Initial Claude effort: `low`, `medium`, `high`, `xhigh`, or `max`. |
