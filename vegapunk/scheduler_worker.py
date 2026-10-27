@@ -90,11 +90,7 @@ def build_backend() -> Backend:
 
 
 def build_agent(backend: Backend) -> Agent:
-    """General-profile template, owned exclusively by this worker.
-
-    ``run_task`` supplies a separate fixed configuration for Moltbook tasks;
-    both configurations execute on one scheduler runtime/provider loop.
-    """
+    """Build the agent owned exclusively by this scheduler worker."""
     return Agent(
         backend.provider,
         system=prompt.system_prompt(config, mode="unattended", delegation=False),
@@ -165,7 +161,7 @@ def main() -> None:
         stop.set()
         if memory_thread is not None:
             memory_thread.join(timeout=1)
-        from .task_profiles import close_scheduled_agent
+        from .scheduled_runtime import close_scheduled_agent
 
         close_scheduled_agent(agent)
         close_sync(agent)

@@ -643,46 +643,21 @@ def _format_tasks() -> str:
         status = t.last_status or "pending"
         lines.append(
             f"  {t.id[:8]}  every {t.interval_seconds}s  next {_local_stamp(t.next_run_at)}  "
-            f"[{status}]  profile={t.profile}  {_oneline(t.prompt)}"
+            f"[{status}]  {_oneline(t.prompt)}"
         )
     return "\n".join(lines)
 
 
-@command("schedule", "Manage tasks: list, history, add, profile, remove; Moltbook: notebook, drafts, insights, autonomy, grant, revoke, permissions, actions, resolve-action")
+@command("schedule", "Manage tasks: list, history, add, remove")
 def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
-    if sub == "autonomy":
-        parts = rest.split()
-        return CommandResult(output=scheduler.set_autonomy(*parts) if len(parts) == 2
-                             else "Usage: /schedule autonomy <task-id> on|off")
     if sub in ("", "list"):
         return CommandResult(output=_format_tasks())
-    if sub == "profile":
-        parts = rest.split()
-        if len(parts) != 2:
-            return CommandResult(output="Usage: /schedule profile <task-id> general|moltbook")
-        return CommandResult(output=scheduler.set_profile(*parts))
     if sub == "history":
         from .task_history import format_history
 
         return CommandResult(output=format_history(rest))
-    if sub == "notebook":
-        from .moltbook_notebook import format_notebook
-
-        return CommandResult(output=format_notebook(rest))
-    if sub == "drafts":
-        from .moltbook_drafts import format_drafts
-
-        return CommandResult(output=format_drafts(rest))
-    if sub == "insights":
-        from .moltbook_insights import format_insights
-
-        return CommandResult(output=format_insights(rest))
-    if sub in ("grant", "revoke", "permissions", "actions", "resolve-action"):
-        from .moltbook_actions import command as action_command
-
-        return CommandResult(output=action_command(sub, rest))
     if sub == "add":
         # "<seconds> <prompt>": the first token is the interval, the rest is the
         # prompt. Validation of the interval's floor and the prompt's emptiness
@@ -696,14 +671,12 @@ def _schedule(ctx: CommandContext, arg: str) -> CommandResult:
             return CommandResult(
                 output="Usage: /schedule add <seconds> <prompt>  (seconds must be a whole number)"
             )
-        profile = "general"
-        if prompt.startswith("--profile "):
-            _, _, options = prompt.partition(" ")
-            profile, _, prompt = options.partition(" ")
-        return CommandResult(output=scheduler.add_task(prompt, interval, profile=profile))
+        if prompt.startswith("--profile"):
+            return CommandResult(output="Task profiles are no longer supported. Usage: /schedule add <seconds> <prompt>")
+        return CommandResult(output=scheduler.add_task(prompt, interval))
     if sub == "remove":
         return CommandResult(output=scheduler.remove_task(rest))
-    return CommandResult(output="Usage: /schedule [list | history [id] | notebook [id] | drafts [id] | insights [id] | add <seconds> [--profile general|moltbook] <prompt> | profile <id> general|moltbook | autonomy <id> on|off | remove <id> | grant <id> moltbook.reply_own | revoke <id> moltbook.reply_own | permissions [id] | actions [id] | resolve-action <id> rejected | resolve-action <id> accepted <remote-id>]")
+    return CommandResult(output="Usage: /schedule [list | history [id] | add <seconds> <prompt> | remove <id>]")
 
 
 @command("skill", "Stage a skill for your next message: /skill <name>")

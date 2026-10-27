@@ -141,22 +141,18 @@ def test_history_command_lists_evidence_and_removed_tasks():
     assert "Usage:" in dispatch("/schedule history not-hex", ctx).output
 
 
-def test_moltbook_auth_failure_is_blocked_and_raw_results_are_not_events(tmp_path, monkeypatch):
-    from dataclasses import replace
+def test_blocked_tool_events_do_not_store_response_bodies():
+    from logpose import ToolResult
     from vegapunk import task_history
-    from vegapunk.tools import moltbook
 
-    monkeypatch.setattr(moltbook, "config", replace(
-        moltbook.config, moltbook_credentials_file=tmp_path / "missing.json",
-    ))
     task = _task()
-    agent, _ = agent_for([wants(call("moltbook_home")), says("check blocked")],
-                         tools=[moltbook.moltbook_home])
-    scheduler.run_task(task, agent)
-    run = task_history.list_runs(task.id)[0]
-    assert run.status == "blocked"
-    assert task_history.events(run.id)[0].outcome == "blocked"
-    assert "missing.json" not in repr(task_history.events(run.id))
+    run_id = task_history.begin(task)
+    observer = task_history.RunObserver(run_id)
+    observer(ToolResult(id="one", name="external_read",
+                        content="Blocked: private path or credential detail", is_error=False))
+    assert observer.status() == "blocked"
+    assert task_history.events(run_id)[0].outcome == "blocked"
+    assert "private path" not in repr(task_history.events(run_id))
 
 
 def test_step_limit_and_token_limit_are_errors():
@@ -324,26 +320,13 @@ def test_context_keeps_only_three_latest_summaries():
     assert all(f"observation-{i}" in context for i in (2, 3, 4))
 
 
-def test_moltbook_success_records_read_without_raw_body(tmp_path, monkeypatch):
-    from dataclasses import replace
-    from types import SimpleNamespace
+def test_returned_tool_events_do_not_store_raw_body():
     from vegapunk import task_history
-    from vegapunk.tools import moltbook
 
-    credentials = tmp_path / "credentials.json"
-    credentials.write_text('{"api_key":"test-secret"}')
-    monkeypatch.setattr(moltbook, "config", replace(moltbook.config, moltbook_credentials_file=credentials))
-    monkeypatch.setattr(moltbook, "_get", lambda *a, **k: SimpleNamespace(
-        status_code=200, headers={}, raise_for_status=lambda: None,
-        json=lambda: {"body": "raw account content"},
-    ))
     task = _task()
-    agent, _ = agent_for([wants(call("moltbook_home")), says("observed account")],
-                         tools=[moltbook.moltbook_home])
-    scheduler.set_profile(task.id, "moltbook")
+    agent, _ = agent_for([wants(call("fetch_page")), says("observed page")], tools=[fetch_page])
     scheduler.run_task(task, agent)
     run = task_history.list_runs(task.id)[0]
-    assert run.status == "success"
-    assert task_history.events(run.id)[0].outcome == "success"
-    assert "raw account content" not in repr(task_history.events(run.id))
-    assert "test-secret" not in repr(run)
+    assert run.status == "completed"
+    assert task_history.events(run.id)[0].outcome == "returned"
+    assert "page body" not in repr(task_history.events(run.id))

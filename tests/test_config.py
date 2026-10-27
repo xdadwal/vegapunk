@@ -40,7 +40,6 @@ def _reloaded_config(monkeypatch, **env: str):
         "VEGAPUNK_MEMORY_REVIEW",
         "VEGAPUNK_MEMORY_TIMEOUT",
         "VEGAPUNK_MEMORY_SCAN_INTERVAL",
-        "VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -237,21 +236,6 @@ def test_explicit_database_override_wins_over_both_existing_databases(
     try:
         cfg = _reloaded_config(monkeypatch, VEGAPUNK_DB_FILE=override)
         assert cfg.db_file == Path(override)
-    finally:
-        _restore(monkeypatch)
-
-
-def test_moltbook_credentials_path_defaults_and_can_be_overridden(monkeypatch):
-    try:
-        cfg = _reloaded_config(monkeypatch)
-        assert cfg.moltbook_credentials_file.name == "credentials.json"
-        assert cfg.moltbook_credentials_file.parent.name == "moltbook"
-
-        cfg = _reloaded_config(
-            monkeypatch,
-            VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE="/tmp/private/moltbook.json",
-        )
-        assert str(cfg.moltbook_credentials_file) == "/tmp/private/moltbook.json"
     finally:
         _restore(monkeypatch)
 

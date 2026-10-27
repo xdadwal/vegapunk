@@ -71,7 +71,7 @@ def events(run_id: str) -> list[RunEvent]:
 def context(task_id: str) -> str:
     """Small task-local continuity packet; prior summaries never grant authority."""
     row = db.query("SELECT profile,profile_since FROM scheduled_tasks WHERE id=?", (task_id,))
-    cutoff = row[0][1] if row and row[0][0] == "moltbook" else ""
+    cutoff = row[0][1] if row else ""
     runs = [r for r in list_runs(task_id, 4) if r.status != "running" and r.started_at >= cutoff][:3]
     if not runs:
         return ""
@@ -99,29 +99,12 @@ class RunObserver:
             self.cut_off = True
         if not isinstance(event, ToolResult):
             return
-        # Approval denials are plain strings in the existing gate contract.
-        # Moltbook success has a client-owned envelope; its body is untrusted.
-        if event.name in ("moltbook_reply", "moltbook_verify_reply", "moltbook_publish", "moltbook_verify_post", "moltbook_reconcile"):
-            row = db.query("SELECT state FROM moltbook_actions WHERE last_run_id=? AND tool_call_id=?",
-                           (self.run_id, event.id))
-            outcome = ({"accepted": "success", "read_back_confirmed": "success", "pending_verification": "pending",
-                        "verification_expired": "blocked", "rejected": "blocked"}.get(row[0][0], "returned" if event.name == "moltbook_reconcile" else "error") if row else
-                       "error" if event.is_error or event.content.startswith("Error:") else "blocked")
-        elif event.content == NO_GATE or event.content.startswith("Blocked:"):
+        # A normal tool return proves call completion, not external success.
+        if event.content == NO_GATE or event.content.startswith("Blocked:"):
             outcome = "blocked"
-        elif event.is_error or (event.name.startswith("moltbook_") and event.content.startswith("Error:")):
+        elif event.is_error:
             outcome = "error"
-        elif event.name in ("moltbook_note", "moltbook_notebook", "moltbook_complete_note",
-                            "moltbook_draft", "moltbook_drafts", "moltbook_review_draft", "moltbook_insights"):
-            outcome = "returned"  # local bookkeeping, not a successful external action
-        elif event.name.startswith("moltbook_"):
-            outcome = (
-                "success" if event.content.startswith("Untrusted Moltbook data from GET ")
-                else "blocked"
-            )
         else:
-            # Legacy tools can return failures as ordinary strings. A normal
-            # return proves completion of the call, not success of its work.
             outcome = "returned"
         db.execute(
             "INSERT INTO scheduled_run_events (run_id, sequence, tool, outcome, created_at) "
@@ -135,12 +118,6 @@ class RunObserver:
         if self.cut_off:
             return "error"
         kinds = set(self.outcomes)
-        if "pending" in kinds:
-            pending = db.query("SELECT id FROM moltbook_actions WHERE last_run_id=? AND state='pending_verification'",
-                               (self.run_id,))
-            if pending:
-                return "error" if "error" in kinds else "partial"
-            kinds.discard("pending")
         if kinds & {"success", "returned"} and kinds & {"blocked", "error"}:
             return "partial"
         if "error" in kinds:
