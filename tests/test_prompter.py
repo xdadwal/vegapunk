@@ -198,7 +198,7 @@ def test_scripted_prompter_raises_queued_exception():
 def test_status_callable_is_wired_to_the_bottom_toolbar():
     status = lambda: " gemma · my-chat"  # noqa: E731 — mirrors the CLI's wiring
     prompter = PromptToolkitPrompter(history=InMemoryHistory(), status=status)
-    assert prompter._session.bottom_toolbar is status  # re-evaluated per render
+    assert prompter._session.bottom_toolbar() == status()  # re-evaluated per render
 
 
 def test_prompt_message_is_plain_off_a_tty():

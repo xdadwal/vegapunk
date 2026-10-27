@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from threading import Event as ThreadEvent, Lock
 from copy import copy
 from dataclasses import replace
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from logpose import (
     Agent,
     Conversation,
+    Event,
     Message,
     RunEnd,
     TextBlock,
@@ -22,6 +24,7 @@ from logpose import (
 )
 
 from .gate import DELEGATION_TOOL, QUESTION_TOOL
+from .tool_runtime import joined_tool
 
 QUESTION_BATCH_BLOCKED = (
     "Blocked: ask_user must be the only tool call in a step. Read the user's answer, "
@@ -41,6 +44,10 @@ _MAX_TEXT_QUESTION_RETRIES = 2
 _FINAL_MARKER = "FINAL:"
 
 
+class TurnCancelled(Exception):
+    """The UI requested cancellation of its currently running session turn."""
+
+
 def _final_answer(text: str) -> str | None:
     """Return a completed interview response with its private marker removed."""
     if not text.startswith(_FINAL_MARKER):
@@ -51,6 +58,27 @@ def _final_answer(text: str) -> str | None:
 
 class InteractiveAgent(Agent):
     """An Agent that turns a user question into a barrier between tool steps."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
+        super().__init__(*args, **kwargs)
+        self._cancel_requested = ThreadEvent()
+        self._active_lock = Lock()
+        self._active: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+
+    def prepare_turn(self) -> None:
+        self._cancel_requested.clear()
+
+    def cancel(self) -> None:
+        """Signal the owning event loop, never close a running sync generator."""
+        if self._cancel_requested.is_set():
+            return
+        self._cancel_requested.set()
+        with self._active_lock:
+            active = self._active
+        if active is not None:
+            loop, task = active
+            loop.call_soon_threadsafe(task.cancel)
 
     async def _invoke(
         self, call: ToolUseBlock, queued_at: float, turn_context: Any
@@ -104,14 +132,34 @@ class InteractiveAgent(Agent):
             for call in calls
         ]
 
-    def stream(
+    async def stream(
         self,
         prompt: str | Message | None = None,
         *,
         conversation: Conversation | None = None,
-    ):
+    ) -> AsyncIterator[Event]:
         """Stream with a narrow retry guard for an active picker interview."""
-        return self._stream_interview(prompt, conversation)
+        events = self._stream_interview(prompt, conversation)
+        try:
+            while True:
+                with self._active_lock:
+                    self._active = (asyncio.get_running_loop(), asyncio.current_task())
+                try:
+                    if self._cancel_requested.is_set():
+                        raise TurnCancelled("turn cancelled")
+                    event = await anext(events)
+                except StopAsyncIteration:
+                    return
+                except asyncio.CancelledError:
+                    if self._cancel_requested.is_set():
+                        raise TurnCancelled("turn cancelled") from None
+                    raise
+                finally:
+                    with self._active_lock:
+                        self._active = None
+                yield event
+        finally:
+            await events.aclose()
 
     async def _stream_interview(
         self, prompt: str | Message | None, conversation: Conversation | None

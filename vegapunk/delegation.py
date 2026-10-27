@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import replace
 from threading import Lock
 from typing import Protocol
 
@@ -24,6 +23,7 @@ from .runtime import agent_runtime_options
 from .approval import Approver, Decision
 from .delegate_activity import DelegateActivity
 from . import terminal
+from .tool_runtime import joined_tool
 
 UNAVAILABLE = (
     "Delegation is unavailable outside the primary interactive conversation. "
@@ -52,7 +52,7 @@ class _DelegatedAgent(Agent):
 
     def __init__(self, *args, activity: DelegateActivity | None = None,
                  activity_id: str = "", **kwargs) -> None:
-        kwargs["tools"] = [_joined_tool(tool) for tool in kwargs.get("tools", ())]
+        kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
         super().__init__(*args, **kwargs)
         self._activity = activity
         self._activity_id = activity_id
@@ -82,26 +82,6 @@ class _DelegatedAgent(Agent):
         closer = getattr(self.provider, "aclose", None)
         if closer is not None:
             await closer()
-
-
-def _joined_tool(tool: ToolDef) -> ToolDef:
-    """A deadline must not abandon a sync handler still mutating host state."""
-    if tool.is_async:
-        return tool
-
-    async def invoke(*args: object, **kwargs: object) -> object:
-        work = asyncio.create_task(asyncio.to_thread(tool.handler, *args, **kwargs))
-        try:
-            return await asyncio.shield(work)
-        except asyncio.CancelledError:
-            # wait_for waits for this cleanup before returning its timeout.
-            # The original cancellation wins even if the handler itself fails.
-            try:
-                await work
-            finally:
-                raise
-
-    return replace(tool, handler=invoke, is_async=True)
 
 
 class RoleRunner:

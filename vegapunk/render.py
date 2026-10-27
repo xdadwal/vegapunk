@@ -306,9 +306,9 @@ class RichRenderer:
     def __init__(
         self, console: Console | None = None, trace_console: Console | None = None
     ) -> None:
-        self._console = console if console is not None else Console(file=sys.stdout)
+        self._console = console if console is not None else Console()
         self._trace_console = (
-            trace_console if trace_console is not None else Console(file=sys.stderr)
+            trace_console if trace_console is not None else Console(stderr=True)
         )
         self._buffer = ""
         self._live: Live | None = None
@@ -391,6 +391,10 @@ class RichRenderer:
         self._finish_live()
 
     def _refresh_live(self) -> None:
+        if terminal.composer_active():
+            # Completed Markdown blocks print above the persistent composer;
+            # its application exclusively owns redraws and the input cursor.
+            return
         if self._live is None:
             self._live = Live(
                 console=self._console,
@@ -456,6 +460,8 @@ class RichRenderer:
         )
 
     def _finish_live(self) -> None:
+        if terminal.composer_active() and self._live is None and self._buffer:
+            self._console.print(self._panel())
         if self._live is not None:
             # rich.live_render.LiveRender never emits a trailing newline
             # after the region's last row — Live.stop() is what closes that

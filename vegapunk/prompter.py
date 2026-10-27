@@ -10,19 +10,27 @@ suggestions and command completion, deliberate multi-line composition
 from __future__ import annotations
 
 import sys
+import asyncio
+import time
+from collections import deque
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.document import Document
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import History
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
-from . import agents, db, skills, style
+from . import agents, db, skills, style, terminal
 from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
@@ -187,17 +195,38 @@ class PromptToolkitPrompter(Prompter):
         status: Callable[[], str] | None = None,
         toggle_approval: Callable[[], str] | None = None,
         effort_levels: Callable[[], tuple[str, ...]] | None = None,
+        activity: Callable[[], str] | None = None,
     ) -> None:
         if history is None:
             history = DbHistory()
         # Shaka gold for the person giving the orders — gated through the same
         # seam as everything else, so NO_COLOR/VEGAPUNK_COLOR strip it too.
         message = [("bold fg:ansiyellow", "❯ ")] if style.enabled(sys.stdout) else "❯ "
+        self._queued: deque[str] = deque()
+        self._draft = Document()
+        self._busy = False
+        self._stopping = False
+        self._started_at = 0.0
+        self._status = status or (lambda: "")
+        self._activity = activity or (lambda: "")
+        bindings = _build_key_bindings(toggle_approval)
+
+        @bindings.add(Keys.Enter, filter=Condition(lambda: self._busy))
+        @bindings.add(Keys.Tab, filter=Condition(lambda: self._busy))
+        def queue_message(event) -> None:
+            buffer = event.current_buffer
+            message = buffer.text.strip()
+            if message:
+                self._queued.append(message)
+                buffer.append_to_history()
+                buffer.reset()
+                event.app.invalidate()
+
         self._session: PromptSession[str] = PromptSession(
             message=message,
             history=history,
             multiline=False,  # Enter submits; Up/Down recall history
-            key_bindings=_build_key_bindings(toggle_approval),
+            key_bindings=bindings,
             enable_history_search=False,  # plain chronological recall, not prefix-search
             auto_suggest=AutoSuggestFromHistory(),  # grey ghost text, accept with Right/End
             # Completes the command name, then its arguments — providers,
@@ -207,7 +236,7 @@ class PromptToolkitPrompter(Prompter):
             complete_while_typing=True,
             # A callable is re-evaluated on every render, so a status line
             # like "model · session-name" stays current without any wiring.
-            bottom_toolbar=status,
+            bottom_toolbar=self._toolbar,
             input=input,
             output=output,
         )
@@ -215,7 +244,135 @@ class PromptToolkitPrompter(Prompter):
     def prompt(self) -> str:
         # prompt_toolkit raises EOFError on Ctrl-D and KeyboardInterrupt on
         # Ctrl-C, exactly like builtins.input().
-        return self._session.prompt()
+        if self._queued:
+            message = self._queued.popleft()
+            print(f"❯ {message}")
+            return message
+        draft, self._draft = self._draft, Document()
+        return self._session.prompt(default=draft)
+
+    @property
+    def queued(self) -> tuple[str, ...]:
+        return tuple(self._queued)
+
+    def _toolbar(self) -> str:
+        base = self._status()
+        if not self._busy:
+            return base
+        elapsed = time.monotonic() - self._started_at
+        activity = self._activity()
+        state = "Stopping" if self._stopping else "Working"
+        line = f"{state} {elapsed:.0f}s · {len(self._queued)} queued"
+        if activity:
+            line += " · " + activity
+        else:
+            line += " · Enter/Tab queue · Ctrl-C stop"
+        if self._queued:
+            preview = " ".join(self._queued[0].split())[:65]
+            line += f"\nNext: {preview}"
+        return base + "\n" + line
+
+    def run_turn(self, action: Callable[[], None], cancel: Callable[[], None]) -> None:
+        """Keep input editable while one serialized agent turn runs off the UI loop."""
+        error = asyncio.run(self._run_turn(action, cancel))
+        if error is not None:
+            raise error
+
+    async def _run_turn(self, action: Callable[[], None],
+                        cancel: Callable[[], None]) -> BaseException | None:
+        loop = asyncio.get_running_loop()
+
+        def input_runner(callback: Callable[[], object]) -> object:
+            async def handoff() -> object:
+                # Existing approval/question pickers keep their synchronous API.
+                while not self._session.app.is_running:
+                    if self._stopping:
+                        return await asyncio.to_thread(callback)
+                    await asyncio.sleep(0.005)
+                with set_app(self._session.app):
+                    return await run_in_terminal(callback, in_executor=True)
+            return asyncio.run_coroutine_threadsafe(handoff(), loop).result()
+
+        self._busy = True
+        self._stopping = False
+        self._started_at = time.monotonic()
+        eof = False
+        prompt_task = None
+        work = None
+
+        def execute() -> BaseException | None:
+            try:
+                action()
+            except BaseException as error:
+                # KeyboardInterrupt must not escape an asyncio Task and tear
+                # down its UI loop before the session executor has drained.
+                return error
+            return None
+
+        async def read(draft: Document) -> str | BaseException:
+            try:
+                return await self._session.prompt_async(default=draft, refresh_interval=0.2)
+            except (KeyboardInterrupt, EOFError) as error:
+                return error
+        # This path is used only by an interactive terminal. Piped invocations
+        # keep the original stdout-reply/stderr-trace split in cli.main.
+        with patch_stdout(raw=True):
+            terminal.set_input_runner(input_runner)
+            try:
+                work = asyncio.create_task(asyncio.to_thread(execute))
+                while not work.done():
+                    draft, self._draft = self._draft, Document()
+                    prompt_task = asyncio.create_task(read(draft))
+                    done, _ = await asyncio.wait((work, prompt_task),
+                                                 return_when=asyncio.FIRST_COMPLETED)
+                    if prompt_task in done:
+                        result = prompt_task.result()
+                        if isinstance(result, KeyboardInterrupt):
+                            self._draft = self._session.default_buffer.document
+                            self._stopping = True
+                            cancel()
+                            submitted = ""
+                        elif isinstance(result, EOFError):
+                            self._stopping = True
+                            cancel()
+                            eof = True
+                            submitted = ""
+                        else:
+                            submitted = result.strip()
+                        if submitted:
+                            self._queued.append(submitted)
+                        prompt_task = None
+                        if eof:
+                            break
+                    if work in done:
+                        break
+                if prompt_task is not None and not prompt_task.done():
+                    self._draft = self._session.default_buffer.document
+                    self._session.app.exit(result="")
+                    await prompt_task
+                    prompt_task = None
+                error = await work
+                if eof:
+                    self._queued.appendleft("/exit")
+                return error
+            finally:
+                # Never detach a to_thread Session turn on input/UI errors.
+                self._stopping = True
+                if work is not None and not work.done():
+                    cancel()
+                if prompt_task is not None and not prompt_task.done():
+                    self._draft = self._session.default_buffer.document
+                    self._session.app.exit(result="")
+                    await prompt_task
+                if work is not None:
+                    try:
+                        await asyncio.shield(work)
+                    finally:
+                        terminal.set_input_runner(None)
+                        self._busy = False
+                else:
+                    terminal.set_input_runner(None)
+                    self._busy = False
 
 
 class ScriptedPrompter(Prompter):

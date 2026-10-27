@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -11,7 +10,6 @@ from threading import Event, Lock, Thread
 from logpose import TurnEnd
 from rich.console import Console
 from rich.live import Live
-from rich.panel import Panel
 from rich.text import Text
 
 from . import terminal
@@ -90,13 +88,33 @@ class DelegateActivity:
             rows.append(f"{run.role} #{run.id} · {run.status} · {seconds:.1f}s · {usage} · {run.model}")
         return rows
 
+    def compact(self) -> str:
+        """One activity line, suitable for the composer's small status area."""
+        runs = tuple(run for run in self.snapshot() if run.ended is None)
+        if not runs:
+            return ""
+        now = self._clock()
+        names = ", ".join(f"{run.role} {max(0, now - run.started):.0f}s" for run in runs[:2])
+        if len(runs) > 2:
+            names += f", +{len(runs) - 2}"
+        reported = any(run.usage_reported for run in runs)
+        count = sum(run.input_tokens + run.output_tokens + run.cache_read + run.cache_write
+                    for run in runs)
+        tokens = f"{count:,} reported tok" if reported else "tokens n/a"
+        missing = sum(not run.usage_reported for run in runs)
+        if reported and missing:
+            tokens += f" · {missing} n/a"
+        waiting = sum(run.status.startswith("approval:") for run in runs)
+        suffix = f" · {waiting} awaiting approval" if waiting else ""
+        return f"{len(runs)} agents · {names} · {tokens}{suffix}"
+
 
 class DelegateDisplay:
     """Refresh elapsed time while yielding the terminal to approval pickers."""
 
     def __init__(self, activity: DelegateActivity, console: Console | None = None) -> None:
         self.activity = activity
-        self.console = console or Console(file=sys.stderr)
+        self.console = console or Console(stderr=True)
         self._live: Live | None = None
         self._stop = Event()
         self._thread: Thread | None = None
@@ -115,7 +133,10 @@ class DelegateDisplay:
         runs = self.activity.snapshot()
         for run, line in zip(runs, self.activity.lines(runs)):
             if run.ended is not None and run.id not in self._shown:
-                self.console.print(Text(f"  [agent] {line}"))
+                # Keep the durable trace compact too; detailed fields remain
+                # available on the activity snapshot and runtime logs.
+                brief = line.rsplit(" · ", 1)[0]
+                self.console.print(Text(f"  [agent] {brief}"))
                 self._shown.add(run.id)
 
     def _stop_live(self) -> None:
@@ -124,6 +145,9 @@ class DelegateDisplay:
             self._live = None
 
     def _draw(self) -> None:
+        if terminal.composer_active():
+            self._stop_live()
+            return
         runs = self.activity.snapshot()
         if not runs:
             return
@@ -132,8 +156,7 @@ class DelegateDisplay:
                 self._live = Live(console=self.console, auto_refresh=False, transient=True,
                                   redirect_stdout=False, redirect_stderr=False)
                 self._live.start()
-            self._live.update(Panel(Text("\n".join(self.activity.lines(runs))),
-                                    title="Sub-agents", border_style="cyan"), refresh=True)
+            self._live.update(Text("  " + self.activity.compact()), refresh=True)
         else:
             self._stop_live()
 

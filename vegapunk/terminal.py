@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from functools import wraps
-from typing import ParamSpec, TypeVar
+from typing import ParamSpec, TypeVar, cast
 from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import RLock
@@ -10,8 +10,25 @@ from threading import RLock
 LOCK = RLock()
 ACTOR: ContextVar[str] = ContextVar("terminal_actor", default="Vegapunk")
 _pause: Callable[[], None] | None = None
+_input_runner: Callable[[Callable[[], object]], object] | None = None
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+def set_input_runner(runner: Callable[[Callable[[], object]], object] | None) -> None:
+    """Register the active composer's UI-loop handoff, not under the UI lock."""
+    global _input_runner
+    _input_runner = runner
+
+
+def composer_active() -> bool:
+    return _input_runner is not None
+
+
+def input_call(callback: Callable[[], T]) -> T:
+    """Suspend the composer before acquiring any interactive terminal locks."""
+    runner = _input_runner
+    return callback() if runner is None else cast(T, runner(callback))
 
 
 def set_pause_handler(handler: Callable[[], None] | None) -> None:

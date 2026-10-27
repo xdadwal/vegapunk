@@ -59,6 +59,9 @@ class CLIQuestioner(Questioner):
         self._lock = threading.Lock()
 
     def ask(self, question: str, options: list[str], preferred_option: str) -> str:
+        return terminal.input_call(lambda: self._ask_serialized(question, options, preferred_option))
+
+    def _ask_serialized(self, question: str, options: list[str], preferred_option: str) -> str:
         if not sys.stdin.isatty():
             return UNAVAILABLE
         with self._lock, terminal.interaction():

@@ -124,6 +124,12 @@ class CLIApprover(Approver):
         self._cancelled.set()
 
     def approve(self, tool_name: str, arguments: dict) -> Decision:
+        if self.policy.auto:
+            self._check_cancelled()
+            return Decision(allow=True)
+        return terminal.input_call(lambda: self._serialized_approval(tool_name, arguments))
+
+    def _serialized_approval(self, tool_name: str, arguments: dict) -> Decision:
         # One policy/UI serves all agents. Waiters must also be releasable when
         # the parent turn is cancelled, rather than opening a stale next menu.
         while not terminal.LOCK.acquire(timeout=0.05):

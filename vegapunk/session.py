@@ -107,6 +107,7 @@ class Session:
         # Guards side-effecting tools. None means no gate — fail-closed, so a
         # guarded tool is blocked rather than run unattended.
         self._approver = approver
+        self._turn_prepared = False
         self._agent = self._build_agent()
         self._titler: Agent | None = None
         # One renderer for both channels of a turn: the trace writes through it
@@ -141,8 +142,9 @@ class Session:
         until the first pull, so a created-but-never-consumed send is a no-op.
         """
         checkpoint = len(self._conversation.messages)
-        if self._approver is not None:
-            self._approver.begin_turn()
+        if not self._turn_prepared:
+            self.prepare_turn()
+        self._turn_prepared = False
         try:
             # The run is started here, beside the conversation it appends to and
             # the rollback below that undoes those appends. ``trace`` renders the
@@ -177,6 +179,19 @@ class Session:
     def approver(self) -> Approver | None:
         """The session's shared tool approver, also used by joined delegates."""
         return self._approver
+
+    def cancel(self) -> None:
+        """Cancel the active turn and release manual approvals before draining."""
+        if self._approver is not None:
+            self._approver.cancel_pending()
+        self._agent.cancel()
+
+    def prepare_turn(self) -> None:
+        """Reset cancellation before handing a new turn to a UI executor."""
+        self._agent.prepare_turn()
+        if self._approver is not None:
+            self._approver.begin_turn()
+        self._turn_prepared = True
 
     @property
     def renderer(self) -> Renderer:

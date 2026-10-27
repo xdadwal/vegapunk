@@ -20,6 +20,7 @@ from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend, current_effort, supported_effort_levels
 from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
+from .interactive_agent import TurnCancelled
 from .config import config
 from .delegation import RoleRunner, set_runner
 from .delegate_activity import DelegateActivity, DelegateDisplay
@@ -146,11 +147,13 @@ def main(
         refresh_prompt()
         return mode
 
+    activity = DelegateActivity()
     if prompter is None:
         prompter = PromptToolkitPrompter(
             status=lambda: _status_line(ctx),
             toggle_approval=toggle_approval,
             effort_levels=lambda: supported_effort_levels(ctx.session.backend),
+            activity=activity.compact,
         )
     if _is_rich_session(session):
         print(
@@ -195,7 +198,6 @@ def main(
     # later /model or /effort change applies without reinstalling the runner.
     # ALL_TOOLS is intentionally shared: roles differ by responsibility and
     # isolated context, never by a hidden capability subset.
-    activity = DelegateActivity()
     display = DelegateDisplay(activity)
     display.start()
     set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS,
@@ -255,12 +257,28 @@ def main(
             events = None
             try:
                 refresh_prompt()
+                live_input = (isinstance(prompter, PromptToolkitPrompter)
+                              and sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty())
+                if live_input:
+                    session.prepare_turn()
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.
                 events = session.send(user_input)
-                _render_reply(events, session.renderer)
-            except (KeyboardInterrupt, ApprovalCancelled):
+
+                def render_turn() -> None:
+                    try:
+                        _render_reply(events, session.renderer)
+                    finally:
+                        # The executor owns this generator. Roll back partial
+                        # history even if rendering fails between stream pulls.
+                        events.close()
+
+                if live_input:
+                    prompter.run_turn(render_turn, session.cancel)
+                else:
+                    render_turn()
+            except (KeyboardInterrupt, ApprovalCancelled, TurnCancelled):
                 # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
                 # approval prompt arrives as ApprovalCancelled instead, because
                 # that prompt runs on logpose's loop thread where a real

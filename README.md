@@ -135,6 +135,18 @@ Press `Shift`-`Tab` to toggle approval mode without submitting or changing the c
 toggle back. The active mode is always written in the bottom toolbar and included in `/status`, so
 the distinction remains visible with color disabled.
 
+In an interactive terminal, the composer stays available while the agent runs. Press `Enter` or
+`Tab` to queue a follow-up; messages run in submission order after the current turn. Slash commands
+queue too, so `/model`, `/new`, or `/exit` cannot change a session in the middle of its work. The
+status area shows the queue count, next message, and compact sub-agent activity. Approval and
+question menus temporarily take over input, then restore your draft and cursor position.
+
+`Ctrl-C` stops the active turn while preserving queued messages and the draft; already-running
+synchronous operations finish before the next turn starts. `Ctrl-D` from an empty composer cancels
+and drains current work, then exits. The queue is session-local and is not saved across restarts.
+This is follow-up queueing, not mid-turn steering. Redirected/piped sessions retain sequential input
+and separate stdout replies/stderr traces.
+
 Reasoning is collapsed in the Rich interface by default. `/reason` shows the previous turn's
 available reasoning summary, while `VEGAPUNK_REASONING=full` streams it into the live trace. Plain
 mode retains the full trace for compatibility with scripts and logs.
@@ -235,11 +247,11 @@ requests are serialized, and session-wide tool allowances apply to all agents. D
 cannot call `ask_user` or recursively delegate. Existing file-tool workspace limits and OS
 permissions apply; auto mode does not add sudo access or an OS sandbox.
 
-While delegates run, a terminal activity panel shows each invocation's role, model, status, elapsed
-time, and accumulated provider-reported input/output and cache tokens. Usage updates at completed
-model turns; providers that omit it show “usage not reported”. The panel yields to approval/input
-menus and completed summaries remain in the trace on stderr, leaving stdout for the reply. Piped
-output has plain completed summaries. Cancellation releases pending approval menus and drains
+While delegates run, the composer status shows a compact active count, role names, elapsed time,
+reported tokens, and pending approvals. Mixed usage availability is labelled rather than counting
+unknown usage as zero. Usage updates at completed model turns; providers that omit it show
+“tokens n/a”. Completed summaries remain in the trace; there is no large live agent panel. Piped
+output has plain completed summaries on stderr. Cancellation releases pending approval menus and drains
 already-running delegate handlers before returning; a tool deadline can therefore take longer to
 report while an in-flight synchronous operation finishes. Cancellation does not undo completed work.
 

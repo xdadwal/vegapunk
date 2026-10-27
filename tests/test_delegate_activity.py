@@ -78,8 +78,8 @@ def test_terminal_panel_yields_to_interaction_and_summary_is_plain():
         display.close()
     finally:
         terminal.set_pause_handler(None)
-    assert "Sub-agents" in output.getvalue()
-    assert "usage not reported" in output.getvalue()
+    assert "1 agents · Atlas" in output.getvalue()
+    assert "tokens n/a" in output.getvalue()
 
 
 def test_non_terminal_completion_does_not_use_live_escape_sequences():
@@ -143,3 +143,14 @@ def test_completion_is_flushed_at_handoff_not_by_background_refresh():
         assert output.getvalue() == before
     finally:
         display.close()
+
+
+def test_compact_usage_identifies_unreported_roles():
+    from logpose import TurnEnd
+
+    activity = DelegateActivity()
+    key = activity.start("Atlas", "model")
+    activity.start("Lilith", "model")
+    activity.usage(key, TurnEnd("tool_use", Usage(input_tokens=100, output_tokens=20)))
+    assert "120 reported tok" in activity.compact()
+    assert "1 n/a" in activity.compact()
