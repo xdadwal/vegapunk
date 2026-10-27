@@ -77,13 +77,11 @@ install can leave the previous commit installed. Restarting also clears Vegapunk
 in-process model catalog cache; `/models codex` then lists the updated catalog.
 
 Save your Coding Plan key as `ZAI_KEY` in the ignored local `.env` (never commit it).
-Export it before launching; `.env` is not loaded automatically. Start from the directory
-you want Vegapunk to treat as its workspace:
+The CLI loads `.env` from its launch directory before reading configuration. Explicitly
+exported variables take precedence; parent directories are not searched. Start from
+the directory you want Vegapunk to treat as its workspace:
 
 ```bash
-set -a
-source .env
-set +a
 .venv/bin/python -m vegapunk
 ```
 
@@ -318,8 +316,8 @@ moves or merges databases. Logs, locks, and `backups/` follow the selected datab
 To relocate legacy storage, quit the CLI and its scheduler first, then move the database together
 with all its WAL/Turso sidecars, logs, and backups into `.vegapunk/state/`. Do not overwrite an
 existing destination database. Restart from the same launch directory and check the path with
-`/status`. `.env` is not loaded automatically; export or source it when using settings from that
-file.
+`/status`. The CLI loads only the launch directory's `.env`, without overriding exported
+variables. Its scheduler worker inherits that environment. Library imports do not load `.env`.
 
 - A successful first turn is assigned a short model-generated session name, then saved after every
   turn. Use `/sessions` to resume or remove conversations and `/save` to rename the current one.

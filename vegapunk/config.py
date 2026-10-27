@@ -1,6 +1,6 @@
 """All of Vegapunk's tunable settings in one place.
 
-Defaults use Codex with GPT-5.5. Override any value with the matching
+Defaults use Z.ai Coding Plan with GLM-5.3-Flash at low effort. Override values with
 ``VEGAPUNK_*`` environment variable, including the optional local Docker Model
 Runner setup — no code change needed when you move to another provider or model.
 """
