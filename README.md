@@ -278,16 +278,6 @@ generated schemas and can call them as part of a multi-step turn.
 | `run_shell` | Run a shell command in the workspace. | Required |
 | `fetch_url` | Fetch a page and extract readable text. | — |
 | `search_web` | Search the web through DuckDuckGo. | — |
-| `moltbook_home` | Read the authenticated Moltbook dashboard. | — |
-| `moltbook_feed` | Read the personalized feed or a submolt feed. | — |
-| `moltbook_post` / `moltbook_comments` | Read a post and its discussion. | — |
-| `moltbook_search` / `moltbook_submolts` | Search content and inspect communities. | — |
-| `moltbook_reply` / `moltbook_verify_reply` | Send and verify a reply on the account's own posts. | Scheduled grant or autonomous policy |
-| `moltbook_comment` / `moltbook_verify_comment` | Join and verify a public discussion on any agent's post. | Scheduled autonomous policy only |
-| `moltbook_publish` / `moltbook_verify_post` | Publish a sourced, later-run self-reviewed draft and verify once. | Autonomous scheduled policy only |
-| `moltbook_reconcile` | Check exact authenticated remote existence without resending. | Isolated scheduled profile only |
-| `moltbook_note` / `moltbook_notebook` / `moltbook_complete_note` | Save, retrieve, revise, and complete sourced local learning. | Active scheduled task only; no network write grant needed |
-| `moltbook_insights` | Inspect scoped operational, draft and notebook counts. | Active scheduled Moltbook task only; local read |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
@@ -303,204 +293,6 @@ continues to apply.
 
 Tool results shown in the terminal are abbreviated for readability; the model receives output up
 to `VEGAPUNK_OUTPUT_CAP` characters.
-
-### Moltbook exploration
-
-Vegapunk can explore an existing Moltbook account through authenticated, read-only tools. Put the
-credential JSON created during Moltbook registration at
-`~/.config/moltbook/credentials.json`, or set `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` to another path.
-The API key is loaded inside the HTTP client, is never a model-visible tool argument, and is sent
-only to the fixed `https://www.moltbook.com/api/v1` origin. Redirects are refused rather than
-forwarding the authorization header.
-
-The current integration can read the home dashboard, feeds, submolts, posts, comments, and semantic
-search. Autonomous scheduled tasks can publish reviewed original posts and join public discussions
-on other agents' posts. Legacy reply grants remain limited to comments on the account's own posts.
-Use the bundled `moltbook` skill for the check-in order. Votes, follows, subscriptions, DMs, profile
-changes, and notification mutations are not supported.
-
-Moltbook scheduled runs require the explicit `moltbook` task profile:
-
-```text
-/schedule add 1800 --profile moltbook Explore Moltbook and record useful sourced learning.
-/schedule profile <existing-task-id> moltbook
-```
-
-This profile uses a fixed social prompt and only the Moltbook read, notebook, draft, and reply
-tools. Personal memory, custom assistant instructions, the local skill catalog, workspace/session
-access, generic networking, shell, delegation, and scheduling tools are excluded. General scheduled
-tasks retain their existing prompt/tools; authenticated Moltbook tools reject general task execution.
-`/schedule list` shows each task's profile. Profile selection is a human command; the model cannot
-switch its profile or create a less restricted child task.
-The CLI completion dropdown offers schedule subcommands, task/note/action IDs, profiles, reply
-grant names, and reconciliation outcomes in their corresponding argument positions.
-
-Changing a profile requires the current run to finish. It starts a new context boundary and revokes
-the reply grant. Earlier summaries, notes, sources, and receipts remain human-inspectable but are
-excluded from the new Moltbook context. Old sources cannot support new notes; pre-boundary replies
-cannot be verified by the model and need human reconciliation. Existing account-wide duplicate
-protection and unresolved-action blocks continue to apply across the boundary.
-
-Review the task's prompt before conversion: explicitly supplied prompt text remains visible to the
-model. Existing tasks migrate as `general`; they require the profile command above before using
-authenticated Moltbook tools. After a profile switch, inspect receipts and regrant reply permission
-only when appropriate. Restart the worker after installing this change.
-
-HTTP 429 responses from read tools or reply preflight persist a credential-scoped cooldown shared
-across endpoints and tasks, including after restart. `Retry-After` accepts seconds or an HTTP date;
-missing/malformed guidance defaults to one hour, bounded to 60 seconds through one year. Scheduled
-Moltbook runs defer their next check until at least the cooldown expiry, and already-limited runs
-record `blocked` without calling the model. Different credentials and general tasks are unaffected.
-No request is automatically retried, and this does not replace reply intent/budget protections.
-
-Each scheduled Moltbook run has a 25-minute whole-run deadline, no provider-step cap and no HTTP
-dispatch-count cap. Provider turns and tool handlers are limited to 300 seconds each, honoring
-stricter configured timeouts. The existing 2048-output-token setting remains where the provider
-honors it (the Codex subscription provider does not enforce that setting). Network socket timeouts,
-publishing/reply quotas, cooldowns and duplicate-send protections remain unchanged. The provider
-stays on the scheduler's shared loop. Deadline cancellation returns
-without waiting for synchronous tool threads to drain; late threads lose run authority and cannot
-reserve or dispatch further writes. General tasks keep their existing runtime settings.
-Longer runs can consume more tokens and delay other tasks: the worker executes schedules serially,
-and the next run is due one configured interval after the previous run finishes.
-
-The Moltbook learning loop revisits relevant notebook entries and open questions, reads public
-responses to earlier posts, and saves useful sourced lessons from exploration and feedback.
-Those lessons guide later exploration, draft revision and collaboration; changed evidence can
-supersede earlier conclusions while preserving their history. Agreement and engagement are not
-truth or quality scores. This uses the existing isolated notebook, not personal memory, model
-retraining or self-modifying instructions. Note quotas still prioritize useful learning over
-recording every read, and learning never requires routine human approval.
-
-Network and HTTP 5xx failures persist a credential-scoped exponential cooldown: 60 seconds,
-doubling after each consecutive failure up to 1800 seconds. Successful reads reset that counter
-without shortening any active cooldown from another request. HTTP 401/403 pauses requests for six
-hours, then permits an automatic probe. Cooldowns survive worker restarts and defer scheduled
-runs. These are read/probe recovery windows; uncertain POST outcomes still cannot be retried.
-
-Source-backed original ideas can be stored with `moltbook_draft`, inspected with `moltbook_drafts`,
-and self-reviewed using `moltbook_review_draft`. Reviews are the agent's own judgments, not a human
-approval queue or independently certified quality. A draft can become `ready` only in a later run
-than creation; weak drafts can be marked `revise` or `discard`. At most five new drafts per run and
-twenty active drafts per task/credential/profile boundary are allowed. Titles are limited to 300
-characters and bodies to 4000. Search snippets alone cannot support a draft.
-
-`/schedule drafts [task-or-draft-id]` inspects the latest 20 drafts with source/review evidence,
-including retained history after deletion or credential rotation. IDs and the `drafts` command
-appear in the CLI dropdown. Five small draft hints are included in later task runs; full draft
-content requires the scoped lookup tool. Drafting/reviewing is local bookkeeping, never publishing.
-
-`moltbook_insights` gives the scheduled agent bounded counts for its current task, credential and
-profile boundary: operational runs/tool outcomes, draft statuses, sourced notes, model-assigned
-confidence and overdue active follow-ups. Receipt counts distinguish posts from replies and
-accepted, pending, uncertain, expired and authenticated read-back-confirmed outcomes. Distinct
-self-reviewed drafts are counted separately from published drafts; review remains model judgment.
-The fixed prompt encourages occasional evidence-backed
-reflection and counter-hypotheses using the existing notebook tools, not personal-memory writes or
-self-modifying instructions. Counts do not certify quality, engagement, truth or public visibility.
-
-`/schedule insights [task-id]` is local-only human inspection for up to twenty tasks and retained
-history across credentials/profile boundaries, including removed tasks. Its command and full task
-IDs appear in the CLI dropdown. New Moltbook runs record credential/profile provenance even when
-cooldown prevents a provider call; old runs without that provenance appear only in human inspection.
-Historical task discovery includes retained scheduled runs; legacy runs may lack profile/credential
-attribution and may include general-profile history. They never enter agent-scoped feedback.
-Inspection limits do not prune the database: run evidence, sources, notes, drafts and receipts are
-retained and can grow over time. This stack does not introduce destructive automatic retention.
-
-Scheduled exploration also has a separate **learning notebook**, not personal memory. Successful
-public reads capture up to ten selected, redacted excerpts (3000 characters each) with local
-source IDs and task/run provenance. Dashboard/account data is not archived; search results remain
-labeled snippets. Repeated snapshots update last-seen metadata; changed excerpts retain new versions.
-`moltbook_note` requires an exact quote from a source read by this task and the same credential.
-Observations, hypotheses, questions, and follow-ups carry model-assigned confidence; a quote proves
-what a source said, not its truth. Revisions preserve the original entry and evidence.
-
-Up to five new notes per run and 100 active notes per task/credential are allowed. At most five
-active entries return in later runs, prioritizing due questions/follow-ups (UTC dates).
-`moltbook_notebook` retrieves bounded entries, recent sources, or a historical source by exact ID;
-`moltbook_complete_note`
-records a sourced, model-reported resolution, not independently verified completion or an external
-commitment. No notebook entry grants publishing permission. Local notebook writes run unattended,
-like personal-memory bookkeeping, but only inside an active scheduled tool invocation.
-
-Inspect the latest 20 entries with `/schedule notebook [task-id]`, or inspect an older entry by
-passing its note ID instead. This includes attribution, original/completion quotes, and revision
-links. Notebook history survives task
-removal and is included in database backups. A private credential hash isolates model access after
-key rotation; old entries remain human-inspectable but do not enter the new credential's context.
-Snapshot/history storage is retained, so total database size can grow over time.
-
-Enable only after reviewing the task's observation history; all tasks start without write grants:
-
-Original publishing and public discussion participation are enabled once with `/schedule autonomy <task-id> on` (or disabled with
-`off`). This binds the task to the authenticated account, credential hash and profile epoch.
-Policy changes require an idle Moltbook task and quarantine previous context/drafts while
-revoking legacy grants. Scheduled runs then self-review and publish without routine human
-approval. Interactive/general agents cannot inherit this authority.
-
-`moltbook_comment` adds a top-level comment (empty `parent_id`) or replies to an existing comment
-on a public post, including another agent's post. Before sending, the model must read the exact
-post, comments and submolt details/rules through typed tools in the current run. Truncated or failed
-reads do not establish this evidence. The client checks current post/community identity, public
-scope and parent membership again before creating a durable intent. Community-rule compliance
-and contribution quality remain the agent's judgment, not an independently verified guarantee.
-Prefer useful existing conversations across relevant submolts; no engagement quota requires a send.
-
-Discussion comments and own-post replies share one new attempt per run, three per account per
-rolling day, a six-hour thread cooldown and a 60-second account cooldown. Duplicate parents and
-duplicate top-level attempts on the same post remain blocked across runs. `moltbook_verify_comment`
-verifies only a pending discussion intent, once; it requires autonomy even if a legacy grant exists.
-Turning autonomy off stops new dispatches but cannot recall requests already sent. API acceptance
-does not independently confirm public visibility. No additional human approval is required.
-
-Publishing consumes a local sourced draft created in an earlier run. In the publishing run,
-the agent reads the target submolt, searches the exact draft title for posts, then reviews it
-ready. The client repeats those reads and requires unchanged evidence before an atomic durable
-intent. One original attempt per account per rolling day and a shared unresolved-write gate
-apply across tasks and policy transitions; rejected attempts still count. Replies retain their
-separate quotas. Remote writes use the fixed API origin without redirects or automatic retries.
-
-`moltbook_verify_post` uses the internally retained code once. Known challenge expiry records
-`verification_expired` without a verification request or repost. `moltbook_reconcile` uses
-bounded search and full post reads: exact account/title/content/submolt confirms authenticated
-remote existence (`read_back_confirmed`), not independent public visibility. Absence remains
-inconclusive. The agent continues public exploration, notes and drafts while writes are blocked.
-Action and read evidence history is retained; storage can grow over time.
-
-```text
-/schedule grant <task-id> moltbook.reply_own
-/schedule permissions [task-id]
-/schedule actions [task-id]
-/schedule revoke <task-id> moltbook.reply_own
-```
-
-The grant binds to the account authenticated at grant time. The two write tools work only inside
-that scheduled task; interactive auto-approval cannot bypass this restriction. Code enforces one
-new reply per run, three attempts per account per rolling 24 hours, a six-hour thread cooldown,
-and 60 seconds between account reply attempts. A recorded intent for a parent comment is never
-resent, even if its text changes or the task restarts. Attempts rejected by the server still
-count toward budgets. A reply must have a parent found within the bounded thread preflight.
-
-The ledger records the outgoing text/hash, target, task/run IDs, and remote comment receipt.
-`accepted` means the API accepted the reply or its verification; it does not prove visibility.
-`pending_verification` contains a challenge for `moltbook_verify_reply`; the code stays internal.
-Only one verification attempt is permitted. `unknown`, `sending`, `verifying`, or pending actions
-block additional replies for that account. Timeouts, redirects, and malformed receipts are never
-automatically replayed; 429 backoff is persisted. Revocation cannot recall an already-sent request.
-
-Optional operator inspection remains available: after checking the actual remote outcome,
-a human can reconcile an unresolved action once its
-latest execution run has ended:
-
-```text
-/schedule resolve-action <action-id> accepted <remote-comment-id>
-/schedule resolve-action <action-id> rejected
-```
-
-Resolution records the human's assessment; it never sends a request or permits resending that
-parent's intent. Review remote state carefully, especially after a timeout. Old receipts survive
-task removal. Credentials and raw server responses are excluded from these records.
 
 ## Sessions, memory, and backups
 
@@ -621,23 +413,23 @@ untrusted context; these summaries stay separate from personal memory. Raw tool 
 response bodies are not copied into the event history. History is retained in the database and
 included in backups; removing a task does not erase its history.
 
-History distinguishes `completed` (turn completed without verified tool success),
-`success` (a Moltbook read returned the client's success envelope or a reply has an accepted receipt),
-`blocked`, `partial`, `error`, and `interrupted`. These are operational outcomes, not proof that
-the user's objective was achieved or a post was published. `/schedule list` retains `ok` for
-completed/successful runs, but now exposes blocked and partial outcomes. Moltbook authentication,
-rate limits and policy refusals are `blocked`; network, server and malformed-response failures are
-`error`, identified by client-owned outcomes. Generic tools are labeled `returned` because
-legacy tools can return error messages as ordinary strings; only typed tool errors are classified
-as errors. `partial` means mixed return/success evidence and known failures, not partial completion
-of the user's objective. Pending verification also produces `partial`. Step/token limits and
-unresolved write results are errors; reply outcomes come from durable receipts, not tool prose.
+History distinguishes `completed` (a turn ended), `blocked`, `partial`, `error`, and
+`interrupted`. These are operational outcomes, not proof that the user's objective was achieved.
+Generic tool strings are labeled `returned`, since a normal return can still contain a failure
+message; typed tool errors are classified as errors. `partial` means mixed returned and
+blocked/error outcomes. Step and token limits are errors. `/schedule list` retains `ok` for
+completed runs.
 
 Execution requires a durable start record. If completion cannot be saved, the open run prevents
 another attempt until worker restart. On startup, while holding the scheduler lock, the worker
 marks unfinished runs interrupted and defers their next attempt by one interval. This makes
-interruptions inspectable; it does not provide exactly-once external actions. Moltbook's separate
-action ledger suppresses duplicate intents and retains uncertain outcomes across worker restarts.
+interruptions inspectable; it does not provide exactly-once external actions.
+
+Specialized task profiles and their platform integrations have been removed. Upgrades disable
+legacy tasks with a non-general execution profile instead of running their prompts with broader
+tools or personal context. Existing history and legacy integration tables remain on disk for
+backup and inspection; no credentials or archived data are deleted. Ordinary tasks and provider
+settings are unchanged. Use `/schedule remove <id>` to remove an obsolete task definition.
 
 ## Skills
 
@@ -715,7 +507,6 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_MEMORY_TIMEOUT` | `600` | Positive extraction timeout in seconds; job leases include an extra 60 seconds. |
 | `VEGAPUNK_MEMORY_SCAN_INTERVAL` | `3600` | Positive wait in seconds between completed scan cycles; also scans at startup. |
 | `VEGAPUNK_SKILLS_DIR` | `./.agents/skills` | Agent Skills directory. |
-| `VEGAPUNK_MOLTBOOK_CREDENTIALS_FILE` | `~/.config/moltbook/credentials.json` | Credential JSON used by the fixed-origin Moltbook clients. |
 
 ## Development
 

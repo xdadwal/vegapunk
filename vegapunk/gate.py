@@ -4,9 +4,7 @@ logpose calls this once per tool the model asks for, in the order it asked,
 before any of them start. That ordering is the whole point: an interactive
 approver prompts on stdin, and two prompts at once are unusable.
 
-The gate is fail-closed. Workspace writes require an approver. The narrowly
-scoped Moltbook reply tools instead require a persisted scheduled-task grant;
-their handlers independently enforce scope, budgets, and durable intents.
+The gate is fail-closed. Workspace writes require an approver.
 """
 
 from __future__ import annotations
@@ -75,12 +73,6 @@ def make_gate(
     """
 
     async def gate(call: ToolUseBlock) -> str | ToolGateResult | None:
-        from . import moltbook_actions
-
-        if call.name in moltbook_actions.WRITE_TOOLS:
-            # Interactive auto-approval cannot turn a scheduled-only grant into
-            # ambient authority. The handler checks again before reserving.
-            return None if moltbook_actions.authorized(call.name) else NO_GATE
         if call.name == QUESTION_TOOL:
             if not allow_questions:
                 return ToolGateResult(QUESTION_UNAVAILABLE, is_error=True)

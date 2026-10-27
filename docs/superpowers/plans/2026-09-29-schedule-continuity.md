@@ -1,7 +1,6 @@
 # Scheduled-run continuity
 
-Continuation of the approved Moltbook maturity plan, Stage 2. This PR delivers
-run continuity; mutation receipts and scoped publishing remain a subsequent slice.
+Durable run continuity for scheduled tasks, separate from personal memory.
 
 ## Design
 
@@ -15,12 +14,9 @@ their next attempt by one interval.
 
 Classify operational evidence independently from model prose: completed means a
 turn ended without verified success; generic tool strings count only as returned.
-Success means a Moltbook read returned its client's success envelope; blocked means
-all observed attempts were blocked; partial means mixed success/failure; error
-means an exception, tool error, or step limit. These do not certify that the
-user's objective was met. Moltbook's read client has a known success envelope;
-failed authenticated reads must not be called successful just because they return
-a string. No new write capability is introduced.
+Blocked means all observed attempts were blocked; partial means mixed returns and
+failures; error means an exception, typed tool error, or step/token limit. These
+outcomes do not certify that the user's objective was met.
 
 Inject at most three previous summaries (500 characters each), scoped to the
 current task, as explicitly untrusted historical data. Expose recent runs and
@@ -35,7 +31,7 @@ tasks. Persist full bounded summaries (2000 characters) for inspection.
   recovery, bounded reads and context. Use existing immediate transactions.
 - [x] Observe loop events through an optional callback; integrate the runner and
   locked worker startup. Keep the legacy `record_run` interface working.
-- [x] Add the command and update README and Moltbook skill.
+- [x] Add the command and update README.
 - [ ] Run focused then full tests, independent review, inspect the diff, sync the
   base, commit, push and open a PR.
 

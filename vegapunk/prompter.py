@@ -36,8 +36,7 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 _SUBCOMMANDS = {
     "agent": list(agents.AGENTS),
     "sessions": ["remove"],
-    "schedule": ["list", "history", "notebook", "drafts", "insights", "add", "profile", "autonomy", "remove",
-                 "grant", "revoke", "permissions", "actions", "resolve-action"],
+    "schedule": ["list", "history", "add", "remove"],
 }
 
 
@@ -63,47 +62,14 @@ def _schedule_options(words: list[str]) -> list[str]:
     sub = words[0]
     if position == 0:
         return _SUBCOMMANDS["schedule"]
-    if sub == "add":
-        if position == 2:
-            return ["--profile"]
-        if position == 3 and words[2] == "--profile":
-            return ["general", "moltbook"]
+    if position != 1 or sub not in ("remove", "history"):
         return []
-    if position == 2:
-        if sub == "autonomy":
-            return ["on", "off"]
-        if sub == "profile":
-            return ["general", "moltbook"]
-        if sub in ("grant", "revoke"):
-            return ["moltbook.reply_own"]
-        if sub == "resolve-action":
-            return ["accepted", "rejected"]
-    if position != 1:
-        return []
-    if sub == "resolve-action":
-        sql = "SELECT id FROM moltbook_actions ORDER BY id"
-    elif sub in ("profile", "autonomy", "remove", "grant", "revoke", "permissions", "history", "actions", "notebook", "drafts", "insights"):
-        sql = "SELECT id FROM scheduled_tasks"
-        if sub == "history":
-            sql += " UNION SELECT task_id FROM scheduled_runs"
-        elif sub == "actions":
-            sql += " UNION SELECT task_id FROM moltbook_actions"
-        elif sub == "notebook":
-            sql += (" UNION SELECT task_id FROM moltbook_sources"
-                    " UNION SELECT task_id FROM moltbook_notes UNION SELECT id FROM moltbook_notes")
-        elif sub == "drafts":
-            sql += " UNION SELECT task_id FROM moltbook_drafts UNION SELECT id FROM moltbook_drafts"
-        elif sub == "insights":
-            sql = ("SELECT id FROM scheduled_tasks WHERE profile='moltbook' "
-                   "UNION SELECT task_id FROM moltbook_sources UNION SELECT task_id FROM moltbook_notes "
-                   "UNION SELECT task_id FROM moltbook_drafts UNION SELECT task_id FROM moltbook_actions "
-                   "UNION SELECT task_id FROM moltbook_run_scopes UNION SELECT task_id FROM scheduled_runs")
-        sql += " ORDER BY 1"
-    else:
-        return []
+    sql = "SELECT id FROM scheduled_tasks"
+    if sub == "history":
+        sql += " UNION SELECT task_id FROM scheduled_runs"
+    sql += " ORDER BY 1"
     try:
-        # Full IDs avoid ambiguous eight-character prefixes and make individual
-        # note selections usable by the human inspection command.
+        # Full IDs avoid ambiguous eight-character prefixes.
         return [row[0] for row in db.query(sql)]
     except db.StoreError:
         return []  # Completion must not interrupt input when the store is down.

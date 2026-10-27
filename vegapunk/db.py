@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -134,141 +134,6 @@ CREATE TABLE IF NOT EXISTS scheduled_run_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, sequence)
 );
-CREATE TABLE IF NOT EXISTS moltbook_permissions (
-    task_id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    granted_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_autonomy (
-    task_id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    profile_since TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_read_receipts (
-    id INTEGER PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    profile_since TEXT NOT NULL,
-    path TEXT NOT NULL,
-    params TEXT NOT NULL,
-    evidence TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_draft_checks (
-    draft_id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL,
-    submolt_receipt INTEGER NOT NULL,
-    search_receipt INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_backoff (
-    account_id TEXT PRIMARY KEY,
-    until_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_request_backoff (
-    credential_tag TEXT PRIMARY KEY,
-    until_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_request_health (
-    credential_tag TEXT PRIMARY KEY,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS moltbook_run_scopes (
-    run_id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    profile_since TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS moltbook_drafts (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    profile_since TEXT NOT NULL,
-    submolt TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    rationale TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    quote TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'draft',
-    review_run_id TEXT NOT NULL DEFAULT '',
-    review_rationale TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(task_id,credential_tag,profile_since,content_hash)
-);
-CREATE TABLE IF NOT EXISTS moltbook_actions (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    last_run_id TEXT NOT NULL,
-    tool_call_id TEXT NOT NULL,
-    post_id TEXT NOT NULL,
-    parent_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    state TEXT NOT NULL,
-    remote_id TEXT NOT NULL DEFAULT '',
-    verification_code TEXT NOT NULL DEFAULT '',
-    challenge TEXT NOT NULL DEFAULT '',
-    expires_at TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    kind TEXT NOT NULL DEFAULT 'reply',
-    draft_id TEXT NOT NULL DEFAULT '',
-    credential_tag TEXT NOT NULL DEFAULT '',
-    profile_since TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL DEFAULT '',
-    submolt TEXT NOT NULL DEFAULT '',
-    checks_json TEXT NOT NULL DEFAULT '',
-    UNIQUE(account_id, post_id, parent_id)
-);
-CREATE INDEX IF NOT EXISTS idx_moltbook_account ON moltbook_actions(account_id, created_at);
-CREATE TABLE IF NOT EXISTS moltbook_sources (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    remote_id TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    author TEXT NOT NULL,
-    excerpt TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    first_run_id TEXT NOT NULL,
-    last_run_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    seen_count INTEGER NOT NULL DEFAULT 1,
-    UNIQUE(task_id, credential_tag, kind, remote_id, content_hash)
-);
-CREATE TABLE IF NOT EXISTS moltbook_notes (
-    id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    credential_tag TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    text TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    quote TEXT NOT NULL,
-    follow_up_on TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    supersedes TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    resolution TEXT NOT NULL DEFAULT '',
-    completion_source_id TEXT NOT NULL DEFAULT '',
-    completion_quote TEXT NOT NULL DEFAULT '',
-    UNIQUE(task_id, credential_tag, fingerprint)
-);
-CREATE INDEX IF NOT EXISTS idx_notebook_active ON moltbook_notes(task_id, credential_tag, status);
 CREATE TABLE IF NOT EXISTS memory_jobs (
     session_slug TEXT PRIMARY KEY,
     cursor INTEGER NOT NULL DEFAULT 0,
@@ -454,11 +319,12 @@ def _check_version(conn: turso.Connection) -> None:
                 conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile TEXT NOT NULL DEFAULT 'general'")
             if "profile_since" not in columns:
                 conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN profile_since TEXT NOT NULL DEFAULT ''")
-            columns = {item[1] for item in conn.execute("PRAGMA table_info(moltbook_actions)").fetchall()}
-            for column in ("kind", "draft_id", "credential_tag", "profile_since", "title", "submolt", "checks_json"):
-                if column not in columns:
-                    default = "reply" if column == "kind" else ""
-                    conn.execute(f"ALTER TABLE moltbook_actions ADD COLUMN {column} TEXT NOT NULL DEFAULT '{default}'")
+            # Retired specialized tasks must never inherit general tools/context.
+            # Keep legacy rows and tables intact for backups and inspection.
+            conn.execute(
+                "UPDATE scheduled_tasks SET enabled=0,last_status='retired' "
+                "WHERE profile!='general'",
+            )
             conn.execute(
                 "INSERT INTO meta (key,value) VALUES ('schema_version',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),),
