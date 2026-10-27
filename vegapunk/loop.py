@@ -250,8 +250,6 @@ class _Spinner:
 
     @terminal.coordinated
     def start(self) -> None:
-        if terminal.composer_active():
-            return
         if not sys.stderr.isatty() or self._thread is not None:
             return
         self._stop.clear()

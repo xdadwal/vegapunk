@@ -52,7 +52,12 @@ class DelegateActivity:
 
     def status(self, key: str, status: str) -> None:
         with self._lock:
-            self._runs[key] = replace(self._runs[key], status=status)
+            if self._runs[key].ended is None:
+                self._runs[key] = replace(self._runs[key], status=status)
+
+    def model(self, key: str, model: str) -> None:
+        with self._lock:
+            self._runs[key] = replace(self._runs[key], model=model)
 
     def usage(self, key: str, event: TurnEnd) -> None:
         usage = event.usage
@@ -106,19 +111,25 @@ class DelegateActivity:
             tokens += f" · {missing} n/a"
         waiting = sum(run.status.startswith("approval:") for run in runs)
         suffix = f" · {waiting} awaiting approval" if waiting else ""
-        return f"{len(runs)} agents · {names} · {tokens}{suffix}"
+        label = "agent" if len(runs) == 1 else "agents"
+        stopping = sum(run.status == "stopping" for run in runs)
+        if stopping:
+            suffix += f" · stopping {stopping}"
+        return f"{len(runs)} {label} · {names} · {tokens}{suffix}"
 
 
 class DelegateDisplay:
     """Refresh elapsed time while yielding the terminal to approval pickers."""
 
-    def __init__(self, activity: DelegateActivity, console: Console | None = None) -> None:
+    def __init__(self, activity: DelegateActivity, console: Console | None = None,
+                 *, session_status: Callable[[], str] | None = None) -> None:
         self.activity = activity
         self.console = console or Console(stderr=True)
         self._live: Live | None = None
         self._stop = Event()
         self._thread: Thread | None = None
         self._shown: set[str] = set()
+        self._session_status = session_status
 
     def start(self) -> None:
         terminal.set_pause_handler(self.pause)
@@ -145,9 +156,6 @@ class DelegateDisplay:
             self._live = None
 
     def _draw(self) -> None:
-        if terminal.composer_active():
-            self._stop_live()
-            return
         runs = self.activity.snapshot()
         if not runs:
             return
@@ -156,7 +164,14 @@ class DelegateDisplay:
                 self._live = Live(console=self.console, auto_refresh=False, transient=True,
                                   redirect_stdout=False, redirect_stderr=False)
                 self._live.start()
-            self._live.update(Text("  " + self.activity.compact()), refresh=True)
+            rows = Text()
+            if self._session_status is not None:
+                # The normal prompt gauge contains alignment padding; keep the
+                # live session row compact and separate from delegate metrics.
+                stats = " ".join(self._session_status().split())
+                rows.append("  Session: " + stats + "\n", style="dim")
+            rows.append("  Sub-agents: " + self.activity.compact() + " · Ctrl-C stop all")
+            self._live.update(rows, refresh=True)
         else:
             self._stop_live()
 

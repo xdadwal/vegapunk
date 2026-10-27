@@ -152,7 +152,7 @@ class Session:
             reply, context_tokens = yield from trace(
                 stream_sync(self._agent, user_input, conversation=self._conversation),
                 self._renderer,
-                on_cancel=self._approver.cancel_pending if self._approver is not None else None,
+                on_cancel=self.cancel,
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
@@ -182,12 +182,27 @@ class Session:
 
     def cancel(self) -> None:
         """Cancel the active turn and release manual approvals before draining."""
-        if self._approver is not None:
-            self._approver.cancel_pending()
-        self._agent.cancel()
+        from . import delegation
+
+        while True:
+            try:
+                if self._approver is not None:
+                    self._approver.cancel_pending()
+                delegation.stop_all()
+                self._agent.cancel()
+                # SIGINT can interrupt the sync Future before its coroutine
+                # unwinds. A second SIGINT must not skip the remaining cleanup.
+                self._agent.wait_for_stop()
+                delegation.wait_for_stop()
+                return
+            except KeyboardInterrupt:
+                continue
 
     def prepare_turn(self) -> None:
-        """Reset cancellation before handing a new turn to a UI executor."""
+        """Reset cancellation at the next sequential turn boundary."""
+        from . import delegation
+
+        delegation.prepare_turn()
         self._agent.prepare_turn()
         if self._approver is not None:
             self._approver.begin_turn()

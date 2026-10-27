@@ -78,7 +78,7 @@ def test_terminal_panel_yields_to_interaction_and_summary_is_plain():
         display.close()
     finally:
         terminal.set_pause_handler(None)
-    assert "1 agents · Atlas" in output.getvalue()
+    assert "1 agent · Atlas" in output.getvalue()
     assert "tokens n/a" in output.getvalue()
 
 

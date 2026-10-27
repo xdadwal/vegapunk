@@ -193,8 +193,8 @@ def test_cli_approver_remembers_always(monkeypatch):
     # tool must be served from memory — if it re-opened the menu, next() would
     # raise StopIteration and fail the test. A different tool still prompts.
     monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
-    # 'always' is now the 4th choice (index 3) after the feedback option.
-    approver = _PipeCLIApprover([DOWN + DOWN + DOWN + ENTER, ENTER])  # 'always' for act, then 'yes' for other
+    # 'always' is the last choice, after feedback and stop-agent.
+    approver = _PipeCLIApprover([DOWN * 4 + ENTER, ENTER])  # 'always' for act, then 'yes' for other
 
     assert approver.approve("act", {}).allow is True  # selected 'always'
     assert approver.approve("act", {}).allow is True  # remembered — no menu
@@ -225,3 +225,12 @@ def test_auto_policy_bypasses_prompts_and_can_return_to_manual(monkeypatch):
     assert approver.approve("act", {}).allow is True
     assert policy.toggle() == "manual"
     assert approver.approve("act", {}).allow is False
+
+
+def test_cli_approver_exposes_stop_agent_option(monkeypatch):
+    from vegapunk.gate import ApprovalCancelled
+
+    monkeypatch.setattr("vegapunk.approval.sys.stdin", _FakeStdin(True))
+    approver = _PipeCLIApprover([DOWN * 3 + ENTER])
+    with pytest.raises(ApprovalCancelled, match="agent stopped"):
+        approver.approve("act", {})

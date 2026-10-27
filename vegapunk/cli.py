@@ -153,12 +153,11 @@ def main(
             status=lambda: _status_line(ctx),
             toggle_approval=toggle_approval,
             effort_levels=lambda: supported_effort_levels(ctx.session.backend),
-            activity=activity.compact,
         )
     if _is_rich_session(session):
         print(
             style.paint(
-                "── Vegapunk · /help · Shift+Tab approval · /exit",
+                "── Vegapunk · /help · Shift+Tab approval · Ctrl-C stop turn + agents · /exit",
                 style.DIM,
                 sys.stdout,
             )
@@ -171,7 +170,7 @@ def main(
             )
         )
     else:
-        print("Vegapunk interactive session. /help · Shift+Tab approval · /exit")
+        print("Vegapunk interactive session. /help · Shift+Tab approval · Ctrl-C stop turn + agents · /exit")
         print(
             style.paint(
                 f"model {session.model_label} · workspace {config.workspace_root}",
@@ -198,7 +197,7 @@ def main(
     # later /model or /effort change applies without reinstalling the runner.
     # ALL_TOOLS is intentionally shared: roles differ by responsibility and
     # isolated context, never by a hidden capability subset.
-    display = DelegateDisplay(activity)
+    display = DelegateDisplay(activity, session_status=lambda: _status_line(ctx))
     display.start()
     set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS,
                           approver=getattr(session, "approver", None),
@@ -257,10 +256,6 @@ def main(
             events = None
             try:
                 refresh_prompt()
-                live_input = (isinstance(prompter, PromptToolkitPrompter)
-                              and sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty())
-                if live_input:
-                    session.prepare_turn()
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.
@@ -274,10 +269,7 @@ def main(
                         # history even if rendering fails between stream pulls.
                         events.close()
 
-                if live_input:
-                    prompter.run_turn(render_turn, session.cancel)
-                else:
-                    render_turn()
+                render_turn()
             except (KeyboardInterrupt, ApprovalCancelled, TurnCancelled):
                 # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
                 # approval prompt arrives as ApprovalCancelled instead, because

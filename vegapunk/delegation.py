@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
-from threading import Lock
+from threading import Event as ThreadEvent, Lock
 from typing import Protocol
 
 from logpose import (Agent, Conversation, Event, Message, RunEnd, ToolCall, ToolDef,
@@ -24,6 +24,7 @@ from .approval import Approver, Decision
 from .delegate_activity import DelegateActivity
 from . import terminal
 from .tool_runtime import joined_tool
+from .run_control import RunControl, RunCancelled, wait_for_cleanup
 
 UNAVAILABLE = (
     "Delegation is unavailable outside the primary interactive conversation. "
@@ -51,15 +52,16 @@ class _DelegatedAgent(Agent):
     """An agent that owns the separately spawned provider handed to it."""
 
     def __init__(self, *args, activity: DelegateActivity | None = None,
-                 activity_id: str = "", **kwargs) -> None:
+                 activity_id: str = "", control: RunControl | None = None, **kwargs) -> None:
         kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
         super().__init__(*args, **kwargs)
         self._activity = activity
         self._activity_id = activity_id
+        self._control = control or RunControl()
 
     async def stream(self, prompt: str | Message | None = None, *,
                      conversation: Conversation | None = None) -> AsyncIterator[Event]:
-        events = super().stream(prompt, conversation=conversation)
+        events = self._control.stream(super().stream(prompt, conversation=conversation))
         try:
             async for event in events:
                 if self._activity is not None:
@@ -102,29 +104,64 @@ class RoleRunner:
         self._config = cfg
         self._approver = approver
         self._approval_mode = approval_mode
-        self._activity = activity
+        self._activity = activity or DelegateActivity()
+        self._control_lock = Lock()
+        self._controls: dict[str, RunControl] = {}
+        self._stopped = False
+        self._idle = ThreadEvent()
+        self._idle.set()
+
+    def prepare_turn(self) -> None:
+        """Allow new delegates only once the previous turn is fully drained."""
+        with self._control_lock:
+            if self._controls:
+                raise RuntimeError("Cannot begin a turn while sub-agents are still running.")
+            self._stopped = False
+
+    def stop_all(self) -> None:
+        """Stop inference and reject late siblings; existing sync effects drain."""
+        with self._control_lock:
+            self._stopped = True
+            controls = tuple(self._controls.items())
+        if self._approver is not None:
+            self._approver.cancel_pending()
+        for key, control in controls:
+            self._activity.status(key, "stopping")
+            control.cancel()
+
+    def wait_for_stop(self) -> None:
+        """Join even roles executing between parent stream event pulls."""
+        wait_for_cleanup(self._idle)
 
     def run(self, role: str, task: str) -> str:
         # Imported lazily so registering the delegate tool can finish while the
         # approval gate itself is importing the tool registry.
-        from .gate import make_gate
+        from .gate import ApprovalCancelled, make_gate
 
         agent_id, definition = agents.get_delegate(role)
         assigned = task.strip()
         if not assigned:
             raise ValueError("Delegated task must not be empty.")
 
-        primary = self._backend()
-        activity_id = self._activity.start(definition.name, primary.model_label) if self._activity else ""
-        approver = (_RoleApprover(self._approver, definition.name, self._activity, activity_id)
-                    if self._approver is not None else None)
-        mode = self._approval_mode() if self._approval_mode is not None else "manual"
-        if self._approver is None:
-            mode = "unattended"
+        activity_id = self._activity.start(definition.name, "starting")
+        control = RunControl()
+        with self._control_lock:
+            if self._stopped:
+                control.cancel()
+            self._controls[activity_id] = control
+            self._idle.clear()
         status = "failed"
         worker = None
         backend = None
         try:
+            control.check()
+            approver = (_RoleApprover(self._approver, definition.name, self._activity, activity_id)
+                        if self._approver is not None else None)
+            mode = self._approval_mode() if self._approval_mode is not None else "manual"
+            if self._approver is None:
+                mode = "unattended"
+            primary = self._backend()
+            self._activity.model(activity_id, primary.model_label)
             system = prompt.system_prompt(
                 self._config, mode=mode, agent_id=agent_id,
                 delegation=False, include_memory=False,
@@ -132,16 +169,20 @@ class RoleRunner:
             # Resolve policy/logging before allocating a separately owned client.
             runtime = agent_runtime_options(self._config, "interactive")
             backend = spawn_backend(primary)
+            control.check()
             worker = _DelegatedAgent(
                 backend.provider, system=system, tools=self._tools,
                 max_iterations=self._config.max_steps, extra=backend.extra,
                 on_tool_call=make_gate(approver, allow_questions=False, allow_delegation=False),
-                activity=self._activity, activity_id=activity_id, **runtime,
+                activity=self._activity, activity_id=activity_id, control=control, **runtime,
             )
             outcome = run_sync(worker, assigned)
             result = outcome.text.strip()
             reason = getattr(outcome, "stop_reason", "end_turn")
             status = "completed" if reason == "end_turn" else f"stopped: {reason}"
+        except (RunCancelled, ApprovalCancelled):
+            status = "cancelled"
+            result = "Cancelled by the user. Do not restart this delegated task."
         finally:
             try:
                 if worker is not None:
@@ -157,6 +198,10 @@ class RoleRunner:
             finally:
                 if self._activity:
                     self._activity.finish(activity_id, status)
+                with self._control_lock:
+                    self._controls.pop(activity_id, None)
+                    if not self._controls:
+                        self._idle.set()
         if not result:
             result = "(The role returned no text.)"
         return f"{definition.name} role result:\n{result}"
@@ -196,3 +241,29 @@ def run(role: str, task: str) -> str:
     if runner is None:
         return UNAVAILABLE
     return runner.run(role, task)
+
+
+def stop_all() -> None:
+    """Stop the active primary conversation's roles, when it supports stopping."""
+    with _runner_lock:
+        runner = _runner
+    stop = getattr(runner, "stop_all", None)
+    if stop is not None:
+        stop()
+
+
+def prepare_turn() -> None:
+    """Reset the delegation stop latch at a new primary turn boundary."""
+    with _runner_lock:
+        runner = _runner
+    prepare = getattr(runner, "prepare_turn", None)
+    if prepare is not None:
+        prepare()
+
+
+def wait_for_stop() -> None:
+    with _runner_lock:
+        runner = _runner
+    wait = getattr(runner, "wait_for_stop", None)
+    if wait is not None:
+        wait()

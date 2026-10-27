@@ -135,17 +135,17 @@ Press `Shift`-`Tab` to toggle approval mode without submitting or changing the c
 toggle back. The active mode is always written in the bottom toolbar and included in `/status`, so
 the distinction remains visible with color disabled.
 
-In an interactive terminal, the composer stays available while the agent runs. Press `Enter` or
-`Tab` to queue a follow-up; messages run in submission order after the current turn. Slash commands
-queue too, so `/model`, `/new`, or `/exit` cannot change a session in the middle of its work. The
-status area shows the queue count, next message, and compact sub-agent activity. Approval and
-question menus temporarily take over input, then restore your draft and cursor position.
+Chat uses the original sequential flow: submit a message, watch the response, then enter the next
+message. There is no busy composer or message queue. The normal prompt toolbar contains only
+session information: approval mode, model, session name, and context usage.
 
-`Ctrl-C` stops the active turn while preserving queued messages and the draft; already-running
-synchronous operations finish before the next turn starts. `Ctrl-D` from an empty composer cancels
-and drains current work, then exits. The queue is session-local and is not saved across restarts.
-This is follow-up queueing, not mid-turn steering. Redirected/piped sessions retain sequential input
-and separate stdout replies/stderr traces.
+While sub-agents run, a separate compact `Sub-agents:` activity row shows roles, elapsed time,
+reported usage, and `Ctrl-C stop all`. A distinct `Session:` row above it shows the primary
+model/session/context stats. Press `Ctrl-C` during a turn to stop the main agent and all
+active delegates, then return to the normal prompt. New sibling delegates cannot start after that
+stop request. In manual approval menus, `Stop this agent` stops the requesting agent; stopping a
+delegate this way lets the primary continue with its cancellation result. Already-running
+synchronous operations finish before control returns; cancellation does not undo completed work.
 
 Reasoning is collapsed in the Rich interface by default. `/reason` shows the previous turn's
 available reasoning summary, while `VEGAPUNK_REASONING=full` streams it into the live trace. Plain
@@ -247,7 +247,7 @@ requests are serialized, and session-wide tool allowances apply to all agents. D
 cannot call `ask_user` or recursively delegate. Existing file-tool workspace limits and OS
 permissions apply; auto mode does not add sudo access or an OS sandbox.
 
-While delegates run, the composer status shows a compact active count, role names, elapsed time,
+While delegates run, their dedicated activity row shows a compact active count, role names, elapsed time,
 reported tokens, and pending approvals. Mixed usage availability is labelled rather than counting
 unknown usage as zero. Usage updates at completed model turns; providers that omit it show
 “tokens n/a”. Completed summaries remain in the trace; there is no large live agent panel. Piped

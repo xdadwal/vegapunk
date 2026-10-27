@@ -461,7 +461,7 @@ def test_shift_tab_refreshes_the_model_facing_approval_mode(monkeypatch, capsys)
         return f"SYS {mode}"
 
     class TogglingPrompter:
-        def __init__(self, *, status, toggle_approval, effort_levels, activity):
+        def __init__(self, *, status, toggle_approval, effort_levels):
             self.toggle_approval = toggle_approval
             self.toggled = False
 

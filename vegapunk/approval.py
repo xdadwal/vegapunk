@@ -30,6 +30,7 @@ _CHOICES = [
     ("yes", "Yes (run it)"),
     ("no", "No (don't run)"),
     ("feedback", "No — tell Vegapunk what to do instead"),
+    ("stop", "Stop this agent"),
     ("always", "Always allow this tool this session"),
 ]
 
@@ -74,7 +75,7 @@ def _build_menu(
     """The approval menu, built on the shared picker (``vegapunk/menu.py``).
 
     Returns an Application whose ``.run()`` yields the chosen value
-    ('yes' / 'no' / 'feedback' / 'always'), or ``None`` if the user backed out —
+    ('yes' / 'no' / 'feedback' / 'stop' / 'always'), or ``None`` if the user backed out —
     which :meth:`CLIApprover.approve` reads as a decline, the safe answer.
 
     The tool name pops Egghead-cyan inside the bold header; these are
@@ -127,7 +128,7 @@ class CLIApprover(Approver):
         if self.policy.auto:
             self._check_cancelled()
             return Decision(allow=True)
-        return terminal.input_call(lambda: self._serialized_approval(tool_name, arguments))
+        return self._serialized_approval(tool_name, arguments)
 
     def _serialized_approval(self, tool_name: str, arguments: dict) -> Decision:
         # One policy/UI serves all agents. Waiters must also be releasable when
@@ -170,6 +171,10 @@ class CLIApprover(Approver):
         # never run a guarded tool because someone dismissed the prompt.
         choice = self._ask(tool_name, arguments)
         self._check_cancelled()
+        if choice == "stop":
+            from .gate import ApprovalCancelled
+
+            raise ApprovalCancelled("agent stopped by the user at approval")
         if choice == "always":
             self._always_allowed.add(tool_name)
             return Decision(allow=True)
@@ -186,7 +191,7 @@ class CLIApprover(Approver):
     def _ask(
         self, tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
     ) -> str | None:
-        """Run the selection menu and return 'yes' | 'no' | 'feedback' | 'always'.
+        """Run the picker: yes, no, feedback, stop this agent, or always allow.
 
         Isolated so tests can drive the real menu through a prompt_toolkit pipe.
         """
