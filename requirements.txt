@@ -9,6 +9,7 @@ logpose[anthropic] @ git+https://github.com/xdadwal/logpose@832994c47ce541085661
 # Still used by vegapunk/embedding.py against Docker Model Runner's /embeddings
 # endpoint; the chat path goes through logpose's providers instead.
 openai>=1.0
+python-dotenv>=1.0
 # Subscription-billed Claude backend: official wrapper that bundles the
 # Claude Code CLI and speaks to it over a subprocess (auth via `claude /login`
 # or CLAUDE_CODE_OAUTH_TOKEN). The raw `anthropic` SDK is API-key-only.

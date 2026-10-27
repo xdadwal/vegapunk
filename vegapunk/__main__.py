@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
 
-from vegapunk.cli import main
+from dotenv import load_dotenv
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -21,5 +22,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _main(argv: Sequence[str] | None = None) -> None:
+    args = _parse_args(argv)
+    # Configuration defaults are bound at import time. Load only the explicit
+    # workspace file first; never search parent directories or override exports.
+    load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+    from vegapunk.cli import main
+
+    main(auto=args.auto)
+
+
 if __name__ == "__main__":
-    main(auto=_parse_args().auto)
+    _main()
