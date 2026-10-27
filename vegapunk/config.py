@@ -142,7 +142,11 @@ class Config:
     # logpose's provider catalog also works — "anthropic" (an API key rather
     # than the subscription), "codex", "openai", "openai-compat". Switch live
     # with /model, which lists them; this only sets the default at launch.
-    provider: str = os.getenv("VEGAPUNK_PROVIDER", "codex")
+    provider: str = os.getenv("VEGAPUNK_PROVIDER", "zai")
+
+    # Separate from the local embedding endpoint and other providers' settings.
+    zai_model: str = os.getenv("VEGAPUNK_ZAI_MODEL", "glm-5.3-flash")
+    zai_effort: str = os.getenv("VEGAPUNK_ZAI_EFFORT", "low")
 
     # Claude model override: a full model id (e.g. "claude-opus-5"), or the
     # short "opus"/"sonnet"/"haiku", which backend.py expands. Empty means

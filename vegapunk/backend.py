@@ -43,6 +43,7 @@ from .config import Config, config
 # ``reasoning.effort``), so /effort passes the user's word straight through and
 # there is no mapping to keep in sync — only this list to validate against.
 EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+ZAI_EFFORT_LEVELS: tuple[str, ...] = ("low", "high", "max")
 
 # Vegapunk's own names for two logpose providers, kept because they predate the
 # catalog: `local` is what the docs, VEGAPUNK_PROVIDER, and every saved
@@ -178,10 +179,11 @@ def with_model(cfg: Config, name: str, model: str) -> Config:
     silently landing in the Claude setting. An empty ``model`` is a no-op.
     Raises ``ValueError`` for an unknown backend name.
     """
-    api = describe(name).api
+    info = describe(name)
     if not model:
         return cfg
-    return replace(cfg, **{_MODEL_FIELDS[api]: model})
+    field = "zai_model" if info.name == "zai" else _MODEL_FIELDS[info.api]
+    return replace(cfg, **{field: model})
 
 
 @dataclass(frozen=True)
@@ -279,6 +281,8 @@ def _effort_extra(key: str, level: str) -> dict[str, Any]:
     validate_effort(level)
     if key == "reasoning":
         return {"reasoning": {"effort": level, "summary": "auto"}}
+    if key == "reasoning_effort":
+        return {"reasoning_effort": level}
     return {"output_config": {"effort": level}}
 
 
@@ -301,7 +305,9 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
 
     # Only pass what the backend can actually use. The local runner needs to be
     # told where it lives; the hosted ones are found by their own env vars.
-    if info.name in ("docker", "docker-models", "openai-compat"):
+    if info.name == "zai":
+        model = cfg.zai_model
+    elif info.name in ("docker", "docker-models", "openai-compat"):
         kwargs["base_url"] = cfg.base_url
         model = cfg.model
     elif info.api == "messages":
@@ -331,16 +337,17 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
     # from the model actually being requested.
     label = provider.model_default or model or info.name
 
-    key = _effort_key(info.api)
+    key = "reasoning_effort" if info.name == "zai" else _effort_key(info.api)
     # A configured effort is validated whatever the model (a typo in
     # VEGAPUNK_CLAUDE_EFFORT should be named as such), then dropped when the
     # model can't take it — /model claude haiku shouldn't fail because an env
     # var from an earlier model is still set.
-    configured = cfg.claude_effort if info.api == "messages" else cfg.codex_effort
+    configured = (cfg.zai_effort if info.name == "zai" else
+                  cfg.claude_effort if info.api == "messages" else cfg.codex_effort)
     effort = validate_effort(configured) if configured else ""
     takes_effort = bool(key) and (info.api != "messages" or supports_effort(label))
     key = key if takes_effort else ""
-    return Backend(
+    backend = Backend(
         provider=provider,
         model_label=label,
         context_window=_context_window(info.name, cfg),
@@ -348,6 +355,7 @@ def create_backend(name: str, cfg: Config = config) -> Backend:
         spawn_provider=spawn,
         effort_key=key,
     )
+    return with_effort(backend, effort) if key else backend
 
 
 # Model lists, keyed by logpose provider name. Cached for the life of the
@@ -442,6 +450,13 @@ def resolve_model_choice(name: str, model: str, cfg: Config = config) -> str:
     )
 
 
+def supported_effort_levels(backend: Backend) -> tuple[str, ...]:
+    """Provider-specific choices for validation, menus and completions."""
+    if not backend.supports_effort:
+        return ()
+    return ZAI_EFFORT_LEVELS if backend.effort_key == "reasoning_effort" else EFFORT_LEVELS
+
+
 def with_effort(backend: Backend, level: str) -> Backend:
     """The same backend at a different effort level (the /effort command).
 
@@ -456,6 +471,9 @@ def with_effort(backend: Backend, level: str) -> Backend:
             f"{backend.model_label} has no effort setting — "
             "switch to a model that has one, e.g. /model claude opus."
         )
+    levels = supported_effort_levels(backend)
+    if level and level not in levels:
+        raise ValueError(f"Unknown effort level {level!r} — expected one of: {', '.join(levels)}.")
     return replace(backend, extra=_effort_extra(backend.effort_key, level))
 
 
@@ -467,6 +485,8 @@ def current_effort(backend: Backend) -> str:
     check ``supports_effort`` to tell that from "this model has no such setting".
     """
     block = backend.extra.get(backend.effort_key) if backend.effort_key else None
+    if backend.effort_key == "reasoning_effort":
+        return block if isinstance(block, str) else ""
     if not isinstance(block, dict):
         return ""
     effort = block.get("effort")

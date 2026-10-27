@@ -17,7 +17,7 @@ from logpose import TextDelta
 
 from . import agents, db, embedding, prompt, session_store, style, transcript, worker
 from .approval import ApprovalPolicy, CLIApprover
-from .backend import create_backend, current_effort
+from .backend import create_backend, current_effort, supported_effort_levels
 from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
 from .config import config
@@ -149,6 +149,7 @@ def main(
         prompter = PromptToolkitPrompter(
             status=lambda: _status_line(ctx),
             toggle_approval=toggle_approval,
+            effort_levels=lambda: supported_effort_levels(ctx.session.backend),
         )
     if _is_rich_session(session):
         print(

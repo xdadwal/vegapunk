@@ -111,6 +111,9 @@ class SlashCompleter(Completer):
     worse than no completion at all.
     """
 
+    def __init__(self, effort_levels: Callable[[], tuple[str, ...]] | None = None) -> None:
+        self._effort_levels = effort_levels
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/") or "\n" in text:
@@ -122,7 +125,10 @@ class SlashCompleter(Completer):
                     yield Completion(name, start_position=-len(text))
             return
         word = rest[-1]
-        for option in _argument_options(head.lower(), rest):
+        options = (list(self._effort_levels())
+                   if head.lower() == "effort" and len(rest) == 1 and self._effort_levels is not None
+                   else _argument_options(head.lower(), rest))
+        for option in options:
             if option.startswith(word):
                 yield Completion(option, start_position=-len(word))
 
@@ -180,6 +186,7 @@ class PromptToolkitPrompter(Prompter):
         output: Output | None = None,
         status: Callable[[], str] | None = None,
         toggle_approval: Callable[[], str] | None = None,
+        effort_levels: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         if history is None:
             history = DbHistory()
@@ -196,7 +203,7 @@ class PromptToolkitPrompter(Prompter):
             # Completes the command name, then its arguments — providers,
             # models, session names, skills, effort levels. Never fires unless
             # the line starts with "/", so prose is left alone.
-            completer=SlashCompleter(),
+            completer=SlashCompleter(effort_levels=effort_levels),
             complete_while_typing=True,
             # A callable is re-evaluated on every render, so a status line
             # like "model · session-name" stays current without any wiring.

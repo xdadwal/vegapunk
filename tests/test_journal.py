@@ -131,7 +131,7 @@ def test_model_and_approval_switches_keep_journal_prompt(monkeypatch):
     monkeypatch.setattr('vegapunk.commands.create_backend', lambda *args: after)
 
     class SwitchingPrompter:
-        def __init__(self, *, status, toggle_approval):
+        def __init__(self, *, status, toggle_approval, effort_levels):
             self.toggle = toggle_approval
             self.lines = iter(['/journal', 'First thought', '/model codex gpt-5.4',
                                'Second thought', '/exit'])
