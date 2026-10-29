@@ -135,6 +135,18 @@ Press `Shift`-`Tab` to toggle approval mode without submitting or changing the c
 toggle back. The active mode is always written in the bottom toolbar and included in `/status`, so
 the distinction remains visible with color disabled.
 
+Chat uses the original sequential flow: submit a message, watch the response, then enter the next
+message. There is no busy composer or message queue. The normal prompt toolbar contains only
+session information: approval mode, model, session name, and context usage.
+
+While sub-agents run, a separate compact `Sub-agents:` activity row shows roles, elapsed time,
+reported usage, and `Ctrl-C stop all`. A distinct `Session:` row above it shows the primary
+model/session/context stats. Press `Ctrl-C` during a turn to stop the main agent and all
+active delegates, then return to the normal prompt. New sibling delegates cannot start after that
+stop request. In manual approval menus, `Stop this agent` stops the requesting agent; stopping a
+delegate this way lets the primary continue with its cancellation result. Already-running
+synchronous operations finish before control returns; cancellation does not undo completed work.
+
 Reasoning is collapsed in the Rich interface by default. `/reason` shows the previous turn's
 available reasoning summary, while `VEGAPUNK_REASONING=full` streams it into the live trace. Plain
 mode retains the full trace for compatibility with scripts and logs.
@@ -228,8 +240,20 @@ the result. Roles divide responsibility, not capability: every delegate receives
 tool registry and an isolated conversation on a separately spawned provider for the live model.
 Independent delegate calls requested together run concurrently in background threads, and the
 primary agent waits for every result before it can synthesize and finish its reply. An interrupted
-turn also drains active delegate work before returning to the prompt. Delegates run unattended, so
-approval-gated actions, `ask_user`, and recursive delegation fail closed.
+turn also drains active delegate work before returning to the prompt. Delegates share the main
+session's approval policy: in `--auto` they can write files and run shell commands; in manual mode,
+the same approval picker shows the requesting role and exact tool arguments. Concurrent approval
+requests are serialized, and session-wide tool allowances apply to all agents. Delegates still
+cannot call `ask_user` or recursively delegate. Existing file-tool workspace limits and OS
+permissions apply; auto mode does not add sudo access or an OS sandbox.
+
+While delegates run, their dedicated activity row shows a compact active count, role names, elapsed time,
+reported tokens, and pending approvals. Mixed usage availability is labelled rather than counting
+unknown usage as zero. Usage updates at completed model turns; providers that omit it show
+“tokens n/a”. Completed summaries remain in the trace; there is no large live agent panel. Piped
+output has plain completed summaries on stderr. Cancellation releases pending approval menus and drains
+already-running delegate handlers before returning; a tool deadline can therefore take longer to
+report while an in-flight synchronous operation finishes. Cancellation does not undo completed work.
 
 Override the active choice with `/model codex gpt-5.4` or `/effort medium` (other supported
 providers work too). Overrides belong to the current conversation and are saved immediately for

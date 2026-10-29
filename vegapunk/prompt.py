@@ -92,6 +92,9 @@ def system_prompt(
                 "delegate calls in one tool step so they run concurrently. Each call returns only "
                 "after its background role finishes, and you must synthesize all results before "
                 "ending your response."
+                " Delegates share this session's approval policy: auto permits guarded actions; "
+                "manual uses the shared approval UI. Give concurrent writers disjoint files or "
+                "sequence dependent changes. Delegates cannot ask questions or delegate again."
             )
         )
         + "\n\n"

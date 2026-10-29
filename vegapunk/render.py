@@ -23,7 +23,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.markup import escape
 
-from . import style
+from . import style, terminal
 from .config import Config, config
 
 
@@ -147,6 +147,7 @@ class PlainRenderer:
 
     # -- the watch channel (stderr) -----------------------------------------
 
+    @terminal.coordinated
     def step(self, number: int) -> None:
         # The marker shows where each model round trip starts, which is what
         # makes batched-vs-chained tool calling visible.
@@ -154,6 +155,7 @@ class PlainRenderer:
             self._turn_reasoning = ""
         print(style.paint(f"  [think] step {number}", style.DIM, sys.stderr), file=sys.stderr)
 
+    @terminal.coordinated
     def reasoning(self, text: str) -> None:
         self._turn_reasoning += text
         if not self._reasoning_open:
@@ -166,26 +168,31 @@ class PlainRenderer:
             self._reasoning_open = True
         print(text, end="", file=sys.stderr, flush=True)
 
+    @terminal.coordinated
     def reasoning_end(self) -> None:
         if self._reasoning_open:
             self._reasoning_open = False
             print(self._reasoning_reset, file=sys.stderr)
 
+    @terminal.coordinated
     def tool_call(self, name: str, arguments: dict) -> None:
         """Nothing to print yet: the arguments go out beside the result, on one
         line, so there is no half-written line to close before the tool runs."""
 
+    @terminal.coordinated
     def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
         marker = style.paint(
             f"  [tool] {name}", style.RED if is_error else style.CYAN, sys.stderr
         )
         print(f"{marker}({arguments}) -> {_shorten(content)}", file=sys.stderr)
 
+    @terminal.coordinated
     def note(self, text: str) -> None:
         print(style.paint(f"  [note] {text}", style.YELLOW, sys.stderr), file=sys.stderr)
 
     # -- the answer channel (stdout) ----------------------------------------
 
+    @terminal.coordinated
     def reply_delta(self, text: str) -> None:
         if not text:
             return
@@ -195,6 +202,7 @@ class PlainRenderer:
         print(text, end="", flush=True)
         self._line_open = not text.endswith("\n")
 
+    @terminal.coordinated
     def reply_break(self) -> None:
         # Reproduces exactly what the synthetic "\n" delta this replaces used
         # to print via reply_delta: an unconditional newline, leaving _spoke
@@ -203,6 +211,7 @@ class PlainRenderer:
         print(flush=True)
         self._line_open = False
 
+    @terminal.coordinated
     def reply_end(self) -> None:
         if not self._spoke:
             print(self._prefix())  # an empty reply still gets its prompt line
@@ -211,6 +220,7 @@ class PlainRenderer:
         self._spoke = False
         self._line_open = False
 
+    @terminal.coordinated
     def reply_abort(self) -> None:
         self._spoke = False
         self._line_open = False
@@ -296,9 +306,9 @@ class RichRenderer:
     def __init__(
         self, console: Console | None = None, trace_console: Console | None = None
     ) -> None:
-        self._console = console if console is not None else Console(file=sys.stdout)
+        self._console = console if console is not None else Console()
         self._trace_console = (
-            trace_console if trace_console is not None else Console(file=sys.stderr)
+            trace_console if trace_console is not None else Console(stderr=True)
         )
         self._buffer = ""
         self._live: Live | None = None
@@ -307,18 +317,21 @@ class RichRenderer:
 
     # -- the watch channel (stderr) -------------------------------------------
 
+    @terminal.coordinated
     def step(self, number: int) -> None:
         if number == 1:
             self._reasoning_chars = 0
             self._turn_reasoning = ""
         self._trace_console.print(f"[magenta]●[/magenta] [dim]thinking · step {number}[/dim]")
 
+    @terminal.coordinated
     def reasoning(self, text: str) -> None:
         self._reasoning_chars += len(text)
         self._turn_reasoning += text
         if config.reasoning == "full":
             self._trace_console.print(f"  [magenta]⎿[/magenta] {escape(text)}", end="")
 
+    @terminal.coordinated
     def reasoning_end(self) -> None:
         if self._reasoning_chars and config.reasoning == "collapsed":
             self._trace_console.print(
@@ -329,13 +342,16 @@ class RichRenderer:
         if self._reasoning_chars:
             self._reasoning_chars = 0
 
+    @terminal.coordinated
     def tool_result(self, name: str, arguments: dict, content: str, is_error: bool) -> None:
         colour = "red" if is_error else "cyan"
         self._trace_console.print(f"  [{colour}]⎿[/{colour}] {_tool_summary(content)}")
 
+    @terminal.coordinated
     def note(self, text: str) -> None:
         self._trace_console.print(f"[yellow]●[/yellow] [yellow]{escape(text)}[/yellow]")
 
+    @terminal.coordinated
     def tool_call(self, name: str, arguments: dict) -> None:
         """A tool is about to run — or a human is about to answer an approval
         prompt — so the region that's been redrawing in place has to give the
@@ -348,6 +364,7 @@ class RichRenderer:
 
     # -- the answer channel (stdout) -----------------------------------------
 
+    @terminal.coordinated
     def reply_delta(self, text: str) -> None:
         if not text:
             return
@@ -396,6 +413,7 @@ class RichRenderer:
             self._live.start()
         self._live.update(self._panel(), refresh=True)
 
+    @terminal.coordinated
     def reply_break(self) -> None:
         """Nothing to draw: ``loop.py`` calls this immediately before
         ``tool_call``, and ``tool_call`` already finalises the live region on
@@ -407,9 +425,11 @@ class RichRenderer:
         touching the buffer at all is the fix.
         """
 
+    @terminal.coordinated
     def reply_end(self) -> None:
         self._finish_live()
 
+    @terminal.coordinated
     def reply_abort(self) -> None:
         """Reset without drawing anything: an interrupted turn must leave no
         trace, but ``Live.stop()`` always performs one last refresh plus a

@@ -13,6 +13,8 @@ implementation.
 from __future__ import annotations
 
 import sys
+import asyncio
+from threading import Event
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -21,13 +23,14 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.input import Input
 from prompt_toolkit.output import Output
 
-from . import menu, style
+from . import menu, style, terminal
 
 # The approval choices, in menu order: (returned value, label shown).
 _CHOICES = [
     ("yes", "Yes (run it)"),
     ("no", "No (don't run)"),
     ("feedback", "No — tell Vegapunk what to do instead"),
+    ("stop", "Stop this agent"),
     ("always", "Always allow this tool this session"),
 ]
 
@@ -72,7 +75,7 @@ def _build_menu(
     """The approval menu, built on the shared picker (``vegapunk/menu.py``).
 
     Returns an Application whose ``.run()`` yields the chosen value
-    ('yes' / 'no' / 'feedback' / 'always'), or ``None`` if the user backed out —
+    ('yes' / 'no' / 'feedback' / 'stop' / 'always'), or ``None`` if the user backed out —
     which :meth:`CLIApprover.approve` reads as a decline, the safe answer.
 
     The tool name pops Egghead-cyan inside the bold header; these are
@@ -80,7 +83,7 @@ def _build_menu(
     DummyOutput-driven tests see only the returned choice.
     """
     title = [
-        ("bold", "approve tool?  "),
+        ("bold", f"approve tool?  {terminal.ACTOR.get()} · "),
         ("bold fg:ansicyan", tool_name),
         ("bold", f"({arguments})\n"),
     ]
@@ -95,6 +98,12 @@ class Approver(ABC):
     def approve(self, tool_name: str, arguments: dict) -> Decision:
         ...
 
+    def begin_turn(self) -> None:
+        """Reset turn-local interaction cancellation, when supported."""
+
+    def cancel_pending(self) -> None:
+        """Release pending approval UIs before joining cancelled agent work."""
+
 
 class CLIApprover(Approver):
     """Asks the user to approve each guarded tool via an arrow-key menu.
@@ -107,8 +116,40 @@ class CLIApprover(Approver):
     def __init__(self, policy: ApprovalPolicy | None = None) -> None:
         self.policy = policy or ApprovalPolicy()
         self._always_allowed: set[str] = set()
+        self._cancelled = Event()
+
+    def begin_turn(self) -> None:
+        self._cancelled.clear()
+
+    def cancel_pending(self) -> None:
+        self._cancelled.set()
 
     def approve(self, tool_name: str, arguments: dict) -> Decision:
+        if self.policy.auto:
+            self._check_cancelled()
+            return Decision(allow=True)
+        return self._serialized_approval(tool_name, arguments)
+
+    def _serialized_approval(self, tool_name: str, arguments: dict) -> Decision:
+        # One policy/UI serves all agents. Waiters must also be releasable when
+        # the parent turn is cancelled, rather than opening a stale next menu.
+        while not terminal.LOCK.acquire(timeout=0.05):
+            self._check_cancelled()
+        try:
+            self._check_cancelled()
+            with terminal.interaction():
+                return self._approve(tool_name, arguments)
+        finally:
+            terminal.LOCK.release()
+
+    def _check_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            # Lazy import avoids approval -> gate -> approval at module load.
+            from .gate import ApprovalCancelled
+
+            raise ApprovalCancelled("parent turn cancelled while awaiting approval")
+
+    def _approve(self, tool_name: str, arguments: dict) -> Decision:
         if self.policy.auto:
             return Decision(allow=True)
         if tool_name in self._always_allowed:
@@ -129,6 +170,11 @@ class CLIApprover(Approver):
         # None is a backed-out menu (Esc/Ctrl-C). Declining is the safe read:
         # never run a guarded tool because someone dismissed the prompt.
         choice = self._ask(tool_name, arguments)
+        self._check_cancelled()
+        if choice == "stop":
+            from .gate import ApprovalCancelled
+
+            raise ApprovalCancelled("agent stopped by the user at approval")
         if choice == "always":
             self._always_allowed.add(tool_name)
             return Decision(allow=True)
@@ -138,17 +184,25 @@ class CLIApprover(Approver):
             # Declined, but the user wants to redirect: read a line and hand it
             # to the model. Empty input collapses to a plain decline.
             steer = self._ask_feedback(tool_name, arguments)
+            self._check_cancelled()
             return Decision(allow=False, feedback=steer or None)
         return Decision(allow=False)  # plain "no"
 
     def _ask(
         self, tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
-    ) -> str:
-        """Run the selection menu and return 'yes' | 'no' | 'feedback' | 'always'.
+    ) -> str | None:
+        """Run the picker: yes, no, feedback, stop this agent, or always allow.
 
         Isolated so tests can drive the real menu through a prompt_toolkit pipe.
         """
-        return _build_menu(tool_name, arguments, input=input, output=output).run()
+        app = _build_menu(tool_name, arguments, input=input, output=output)
+        return app.run(pre_run=lambda: app.create_background_task(self._watch_cancel(app)))
+
+    async def _watch_cancel(self, app: Application) -> None:
+        while not self._cancelled.is_set():
+            await asyncio.sleep(0.05)
+        if not app.is_done:
+            app.exit(result=None)
 
     def _ask_feedback(
         self, tool_name: str, arguments: dict, *, input: Input | None = None, output: Output | None = None
@@ -162,15 +216,14 @@ class CLIApprover(Approver):
         back) rather than silently collapsing to a decline.
         """
         try:
-            return (
-                PromptSession(
-                    message=f"what should Vegapunk do instead of {tool_name}? > ",
-                    input=input,
-                    output=output,
-                )
-                .prompt()
-                .strip()
+            session = PromptSession(
+                message=f"what should Vegapunk do instead of {tool_name}? > ",
+                input=input,
+                output=output,
             )
+            answer = session.prompt(pre_run=lambda: session.app.create_background_task(
+                self._watch_cancel(session.app)))
+            return (answer or "").strip()
         except EOFError:
             return ""
 

@@ -107,6 +107,7 @@ class Session:
         # Guards side-effecting tools. None means no gate — fail-closed, so a
         # guarded tool is blocked rather than run unattended.
         self._approver = approver
+        self._turn_prepared = False
         self._agent = self._build_agent()
         self._titler: Agent | None = None
         # One renderer for both channels of a turn: the trace writes through it
@@ -141,6 +142,9 @@ class Session:
         until the first pull, so a created-but-never-consumed send is a no-op.
         """
         checkpoint = len(self._conversation.messages)
+        if not self._turn_prepared:
+            self.prepare_turn()
+        self._turn_prepared = False
         try:
             # The run is started here, beside the conversation it appends to and
             # the rollback below that undoes those appends. ``trace`` renders the
@@ -148,6 +152,7 @@ class Session:
             reply, context_tokens = yield from trace(
                 stream_sync(self._agent, user_input, conversation=self._conversation),
                 self._renderer,
+                on_cancel=self.cancel,
             )
             if context_tokens is not None:
                 self.context_tokens = context_tokens
@@ -169,6 +174,39 @@ class Session:
             # the loop an orphaned list is what makes the rollback final.
             self._conversation = Conversation(self._conversation.messages[:checkpoint])
             raise
+
+    @property
+    def approver(self) -> Approver | None:
+        """The session's shared tool approver, also used by joined delegates."""
+        return self._approver
+
+    def cancel(self) -> None:
+        """Cancel the active turn and release manual approvals before draining."""
+        from . import delegation
+
+        while True:
+            try:
+                if self._approver is not None:
+                    self._approver.cancel_pending()
+                delegation.stop_all()
+                self._agent.cancel()
+                # SIGINT can interrupt the sync Future before its coroutine
+                # unwinds. A second SIGINT must not skip the remaining cleanup.
+                self._agent.wait_for_stop()
+                delegation.wait_for_stop()
+                return
+            except KeyboardInterrupt:
+                continue
+
+    def prepare_turn(self) -> None:
+        """Reset cancellation at the next sequential turn boundary."""
+        from . import delegation
+
+        delegation.prepare_turn()
+        self._agent.prepare_turn()
+        if self._approver is not None:
+            self._approver.begin_turn()
+        self._turn_prepared = True
 
     @property
     def renderer(self) -> Renderer:

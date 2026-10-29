@@ -20,8 +20,10 @@ from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend, current_effort, supported_effort_levels
 from .commands import CommandContext, dispatch
 from .gate import ApprovalCancelled
+from .interactive_agent import TurnCancelled
 from .config import config
 from .delegation import RoleRunner, set_runner
+from .delegate_activity import DelegateActivity, DelegateDisplay
 from .prompter import Prompter, PromptToolkitPrompter
 from .questions import CLIQuestioner, set_questioner
 from .render import Renderer, RichRenderer
@@ -145,6 +147,7 @@ def main(
         refresh_prompt()
         return mode
 
+    activity = DelegateActivity()
     if prompter is None:
         prompter = PromptToolkitPrompter(
             status=lambda: _status_line(ctx),
@@ -154,7 +157,7 @@ def main(
     if _is_rich_session(session):
         print(
             style.paint(
-                "── Vegapunk · /help · Shift+Tab approval · /exit",
+                "── Vegapunk · /help · Shift+Tab approval · Ctrl-C stop turn + agents · /exit",
                 style.DIM,
                 sys.stdout,
             )
@@ -167,7 +170,7 @@ def main(
             )
         )
     else:
-        print("Vegapunk interactive session. /help · Shift+Tab approval · /exit")
+        print("Vegapunk interactive session. /help · Shift+Tab approval · Ctrl-C stop turn + agents · /exit")
         print(
             style.paint(
                 f"model {session.model_label} · workspace {config.workspace_root}",
@@ -194,7 +197,12 @@ def main(
     # later /model or /effort change applies without reinstalling the runner.
     # ALL_TOOLS is intentionally shared: roles differ by responsibility and
     # isolated context, never by a hidden capability subset.
-    set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS))
+    display = DelegateDisplay(activity, session_status=lambda: _status_line(ctx))
+    display.start()
+    set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS,
+                          approver=getattr(session, "approver", None),
+                          approval_mode=lambda: approval_policy.mode,
+                          activity=activity))
     warned_worker_died = False
     try:
         while True:
@@ -252,8 +260,17 @@ def main(
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.
                 events = session.send(user_input)
-                _render_reply(events, session.renderer)
-            except (KeyboardInterrupt, ApprovalCancelled):
+
+                def render_turn() -> None:
+                    try:
+                        _render_reply(events, session.renderer)
+                    finally:
+                        # The executor owns this generator. Roll back partial
+                        # history even if rendering fails between stream pulls.
+                        events.close()
+
+                render_turn()
+            except (KeyboardInterrupt, ApprovalCancelled, TurnCancelled):
                 # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
                 # approval prompt arrives as ApprovalCancelled instead, because
                 # that prompt runs on logpose's loop thread where a real
@@ -293,6 +310,7 @@ def main(
         # teardown.
         worker.stop(scheduler)
         set_runner(None)
+        display.close()
         session.close()
         set_questioner(None)
 

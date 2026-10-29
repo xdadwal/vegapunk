@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from copy import copy
 from dataclasses import replace
 from typing import Any
@@ -11,6 +11,7 @@ from typing import Any
 from logpose import (
     Agent,
     Conversation,
+    Event,
     Message,
     RunEnd,
     TextBlock,
@@ -22,6 +23,8 @@ from logpose import (
 )
 
 from .gate import DELEGATION_TOOL, QUESTION_TOOL
+from .tool_runtime import joined_tool
+from .run_control import RunControl, RunCancelled as TurnCancelled
 
 QUESTION_BATCH_BLOCKED = (
     "Blocked: ask_user must be the only tool call in a step. Read the user's answer, "
@@ -51,6 +54,21 @@ def _final_answer(text: str) -> str | None:
 
 class InteractiveAgent(Agent):
     """An Agent that turns a user question into a barrier between tool steps."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
+        super().__init__(*args, **kwargs)
+        self._control = RunControl()
+
+    def prepare_turn(self) -> None:
+        self._control.reset()
+
+    def cancel(self) -> None:
+        """Signal the owning event loop, never close a running sync generator."""
+        self._control.cancel()
+
+    def wait_for_stop(self) -> None:
+        self._control.wait_for_stop()
 
     async def _invoke(
         self, call: ToolUseBlock, queued_at: float, turn_context: Any
@@ -104,14 +122,19 @@ class InteractiveAgent(Agent):
             for call in calls
         ]
 
-    def stream(
+    async def stream(
         self,
         prompt: str | Message | None = None,
         *,
         conversation: Conversation | None = None,
-    ):
+    ) -> AsyncIterator[Event]:
         """Stream with a narrow retry guard for an active picker interview."""
-        return self._stream_interview(prompt, conversation)
+        events = self._control.stream(self._stream_interview(prompt, conversation))
+        try:
+            async for event in events:
+                yield event
+        finally:
+            await events.aclose()
 
     async def _stream_interview(
         self, prompt: str | Message | None, conversation: Conversation | None

@@ -42,7 +42,7 @@ from logpose import (
     stream_sync,
 )
 
-from . import render
+from . import render, terminal
 from .render import Renderer
 
 # What the model is told when it runs out of steps. Yielded before it's returned
@@ -74,6 +74,7 @@ def run(agent: Agent, user_input: str, renderer: Renderer | None = None,
 def trace(
     events: Generator[Event, None, None], renderer: Renderer,
     *, on_event: Callable[[Event | MaxIterationsError], None] | None = None,
+    on_cancel: Callable[[], None] | None = None,
 ) -> Generator[TextDelta, None, tuple[str, int | None]]:
     """Render one run's event stream, and stream the reply back up.
 
@@ -192,6 +193,10 @@ def trace(
                     # A provider that didn't stream its text still gets its
                     # answer displayed — see the display invariant above.
                     yield TextDelta(reply)
+    except BaseException:
+        if on_cancel is not None:
+            on_cancel()
+        raise
     finally:
         spinner.stop()
         renderer.reasoning_end()
@@ -243,6 +248,7 @@ class _Spinner:
         """Update the next wait's label before its drawing thread starts."""
         self._status = status
 
+    @terminal.coordinated
     def start(self) -> None:
         if not sys.stderr.isatty() or self._thread is not None:
             return
