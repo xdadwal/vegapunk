@@ -164,6 +164,8 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
 | `/save <name>` | Rename the current conversation. |
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
+| `/plan [show]` | Inspect the current sequential execution plan. |
+| `/checkpoints [list]` | Inspect recent immutable progress snapshots. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |

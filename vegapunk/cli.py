@@ -266,7 +266,8 @@ def main(
                                                effort=current_effort(session.backend))
                     ctx.current_name = ctx.provisional_name = name
                 if isinstance(session, Session):
-                    run_id = execution.start_run(session_store.session_identity(ctx.current_name), user_input)
+                    session.session_id = session_store.session_identity(ctx.current_name)
+                    run_id = execution.start_run(session.session_id, user_input)
                 refresh_prompt()
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so

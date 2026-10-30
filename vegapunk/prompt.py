@@ -99,6 +99,11 @@ def system_prompt(
         )
         + "\n\n"
         + _MODE_STANZAS[mode]
+        + ("" if journal or not delegation else
+           "\nFor substantial multi-step execution, use create_plan, read its revision with get_plan, "
+           "and update_plan_step as work starts, becomes blocked, or completes. Completion must "
+           "cite evidence. Checkpoints persist independently of conversation rollback. "
+           "Read the existing plan before continuing a resumed task. Keep simple requests direct.")
         + (memory.as_system_block() if include_memory else "")
         + ("" if journal else skills.as_system_block())
     )
