@@ -163,6 +163,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/effort [low\|medium\|high\|xhigh\|max]` | Show or change reasoning effort when the active model supports it. |
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
 | `/save <name>` | Rename the current conversation. |
+| `/runs` | Show recorded requests and turn outcomes for the current conversation. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |
@@ -345,6 +346,12 @@ variables. Its scheduler worker inherits that environment. Library imports do no
 
 - A successful first turn is assigned a short model-generated session name, then saved after every
   turn. Use `/sessions` to resume or remove conversations and `/save` to rename the current one.
+  Before inference starts, a temporary `untitled-…` session and the request are persisted.
+  Interrupted first turns remain discoverable in `/sessions`; `/runs` shows their original
+  request and recorded outcome. On restart, unfinished turns are marked abandoned and are
+  never replayed automatically. Stable internal session IDs survive renaming. Removing a
+  session also removes its run records. This records turn outcomes, not individual tool
+  effects; action-level checkpoints are a later implementation stage.
 - Facts recorded through `remember` or accepted from background extraction are loaded before the
   next interactive turn or scheduled run. Explicit requests to remember a fact save it immediately;
   other statements go through background extraction. If

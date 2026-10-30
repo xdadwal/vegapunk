@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_id TEXT NOT NULL DEFAULT 'default',
     model_selector TEXT NOT NULL DEFAULT '',
     effort TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS execution_runs (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    request TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS execution_events (
+    run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(run_id,sequence)
 );
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
@@ -313,6 +328,15 @@ def _check_version(conn: turso.Connection) -> None:
             for column in ("model_selector", "effort"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        if found < 16:
+            from uuid import uuid4
+
+            columns = {item[1] for item in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            if "session_id" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN session_id TEXT")
+            for (slug,) in conn.execute("SELECT slug FROM sessions WHERE session_id IS NULL").fetchall():
+                conn.execute("UPDATE sessions SET session_id=? WHERE slug=?", (str(uuid4()), slug))
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(session_id)")
         if found < SCHEMA_VERSION:
             columns = {item[1] for item in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
             if "profile" not in columns:
