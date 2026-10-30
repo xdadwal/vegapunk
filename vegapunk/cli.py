@@ -15,7 +15,7 @@ from collections.abc import Generator
 
 from logpose import TextDelta
 
-from . import agents, db, embedding, prompt, session_store, style, transcript, worker
+from . import agents, db, embedding, execution, prompt, session_store, style, transcript, worker
 from .approval import ApprovalPolicy, CLIApprover
 from .backend import create_backend, current_effort, supported_effort_levels
 from .commands import CommandContext, dispatch
@@ -98,6 +98,7 @@ def main(
     # snapshot if the last backup is stale. All but the lock are best-effort and
     # never block the REPL.
     db.acquire_process_lock()
+    execution.recover_runs()
     embedding.sync_embeddings()
     db.backup_if_stale()
     # The registered ask_user tool resolves through this handler while this
@@ -254,7 +255,18 @@ def main(
                 ctx.pending_skill = None
 
             events = None
+            run_id = None
             try:
+                if isinstance(session, Session) and ctx.current_name is None:
+                    from uuid import uuid4
+
+                    name = f"untitled-{uuid4().hex}"
+                    session_store.save_session(name, session.messages, conversation_mode=ctx.conversation_mode,
+                                               agent_id=ctx.agent_id, model_selector=session.backend.selector,
+                                               effort=current_effort(session.backend))
+                    ctx.current_name = ctx.provisional_name = name
+                if isinstance(session, Session):
+                    run_id = execution.start_run(session_store.session_identity(ctx.current_name), user_input)
                 refresh_prompt()
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
@@ -270,7 +282,12 @@ def main(
                         events.close()
 
                 render_turn()
+                if run_id is not None:
+                    _finish_run(run_id, "completed", session.messages)
+                run_id = None
             except (KeyboardInterrupt, ApprovalCancelled, TurnCancelled):
+                if run_id is not None:
+                    _finish_run(run_id, "interrupted")
                 # Ctrl-C mid-generation — cancel just this turn. Ctrl-C at the
                 # approval prompt arrives as ApprovalCancelled instead, because
                 # that prompt runs on logpose's loop thread where a real
@@ -288,6 +305,8 @@ def main(
                 print("\n" + style.paint("(interrupted)", style.YELLOW, sys.stdout))
                 continue
             except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the REPL
+                if run_id is not None:
+                    _finish_run(run_id, "failed")
                 # The turn is already rolled out of history (send()'s rollback),
                 # so show the error — Claude auth failures arrive here with their
                 # "run `claude /login`" hint — and keep the session (approvals,
@@ -315,6 +334,14 @@ def main(
         set_questioner(None)
 
 
+def _finish_run(run_id: str, status: str, messages: list[dict] | None = None) -> None:
+    """Report durability failures while allowing terminal cleanup to finish."""
+    try:
+        execution.finish_run(run_id, status, messages)
+    except OSError as exc:
+        print(f"[session] could not record turn outcome; recovery status is uncertain: {exc}", file=sys.stderr)
+
+
 def _autosave_turn(ctx: CommandContext) -> None:
     """Persist the conversation after a turn, naming a fresh one from its first
     message (model-chosen, with a text-slug then timestamp fallback).
@@ -324,7 +351,7 @@ def _autosave_turn(ctx: CommandContext) -> None:
     committed only after a successful first save, so '(saved as ...)' never lies.
     """
     try:
-        if ctx.current_name is None:
+        if ctx.current_name is None or ctx.current_name == ctx.provisional_name:
             first = next(
                 (
                     transcript.text_of(m)
@@ -334,11 +361,18 @@ def _autosave_turn(ctx: CommandContext) -> None:
                 "",
             )
             name = session_store.choose_name(ctx.session.suggest_name(), first)
-            session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode,
+            if ctx.current_name is not None:
+                session_store.rename_session(ctx.current_name, name, ctx.session.messages,
+                                             conversation_mode=ctx.conversation_mode, agent_id=ctx.agent_id,
+                                             model_selector=ctx.session.backend.selector,
+                                             effort=current_effort(ctx.session.backend))
+            else:
+                session_store.save_session(name, ctx.session.messages, conversation_mode=ctx.conversation_mode,
                                        agent_id=ctx.agent_id,
                                        model_selector=ctx.session.backend.selector,
                                        effort=current_effort(ctx.session.backend))
             ctx.current_name = name
+            ctx.provisional_name = None
             print(style.paint(f"(saved as '{name}')", style.DIM, sys.stdout))
         else:
             session_store.save_session(ctx.current_name, ctx.session.messages,

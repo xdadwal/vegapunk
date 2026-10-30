@@ -18,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import agents, db, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
+from . import agents, db, execution, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -48,6 +48,7 @@ class CommandContext:
 
     session: Session
     current_name: str | None = None
+    provisional_name: str | None = None
     # A skill staged by /skill, to be folded into the user's NEXT message
     # (name, body) — the CLI consumes and clears it; /new drops it.
     pending_skill: tuple[str, str] | None = None
@@ -608,6 +609,17 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
                + (" Journal mode." if conversation_mode == "journal" else "")
                + (f" Agent: {agents.get_agent(agent_id).name}." if agent_id != "default" else "")
     )
+
+
+@command("runs", "Show recorded requests and turn outcomes for this conversation")
+def _runs(ctx: CommandContext, arg: str) -> CommandResult:
+    if ctx.current_name is None:
+        return CommandResult(output="(no recorded runs)")
+    try:
+        runs = execution.list_runs(session_store.session_identity(ctx.current_name))
+    except (db.StoreError, session_store.SessionNotFound) as exc:
+        return CommandResult(output=f"Could not read runs: {exc}")
+    return CommandResult(output="\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)")
 
 
 @command("sessions", "Resume, list, or remove conversations: /sessions [name | remove <name>]")

@@ -14,6 +14,7 @@ import re
 import sys
 from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
 from . import agents, db
 from .transcript import count_user_turns
@@ -109,14 +110,25 @@ def save_session(name: str, messages: list[dict], *, conversation_mode: SessionM
         validate_effort(effort)
     now = db.utcnow()
     db.execute(
-        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, agent_id, model_selector, effort) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, agent_id, model_selector, effort, session_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(slug) DO UPDATE SET "
         "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at, "
         "conversation_mode = excluded.conversation_mode, agent_id = excluded.agent_id, "
         "model_selector = excluded.model_selector, effort = excluded.effort",
-        (name, json.dumps(messages), turns, now, now, conversation_mode, agent_id, model_selector, effort),
+        (name, json.dumps(messages), turns, now, now, conversation_mode, agent_id, model_selector, effort, str(uuid4())),
     )
+
+
+def session_identity(name: str) -> str:
+    """Return the stable identity of a saved session."""
+    rows = db.query("SELECT session_id FROM sessions WHERE slug=?", (name,))
+    if not rows:
+        raise SessionNotFound(name)
+    if rows[0][0] is None:
+        db.execute("UPDATE sessions SET session_id=? WHERE slug=? AND session_id IS NULL", (str(uuid4()), name))
+        rows = db.query("SELECT session_id FROM sessions WHERE slug=?", (name,))
+    return str(rows[0][0])
 
 
 def load_session_execution(name: str) -> tuple[str, str]:
@@ -190,6 +202,8 @@ def load_session(name: str) -> list[dict]:
 def delete_session(name: str) -> None:
     """Remove a session, its extraction work, and memories owned by that source."""
     with db.transaction() as conn:
+        conn.execute("DELETE FROM execution_events WHERE run_id IN (SELECT run_id FROM execution_runs WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?))", (name,))
+        conn.execute("DELETE FROM execution_runs WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM sessions WHERE slug = ?", (name,))
         conn.execute("DELETE FROM memory WHERE id IN (SELECT memory_id FROM memory_candidates "
                      "WHERE session_slug=?)", (name,))
@@ -213,7 +227,7 @@ def rename_session(old: str, new: str, messages: list[dict], *, conversation_mod
     with db.transaction(immediate=True) as conn:
         if conn.execute("SELECT 1 FROM sessions WHERE slug=?", (new,)).fetchone():
             raise db.StoreError(f"A session named '{new}' already exists")
-        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode,agent_id,model_selector,effort FROM sessions WHERE slug=?",
+        source = conn.execute("SELECT created_at,updated_at,messages,conversation_mode,agent_id,model_selector,effort,session_id FROM sessions WHERE slug=?",
                               (old,)).fetchone()
         mode = validate_session_mode(conversation_mode or (source[3] if source else "conversation"))
         selected = agent_id if agent_id is not None else (source[4] if source else "default")
@@ -224,10 +238,13 @@ def rename_session(old: str, new: str, messages: list[dict], *, conversation_mod
             validate_effort(selected_effort)
         created = source[0] if source else stamp
         updated = source[1] if source and source[2] == encoded else stamp
-        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode,agent_id,model_selector,effort) "
-                     "VALUES (?,?,?,?,?,?,?,?,?)",
+        identity = source[7] if source and source[7] else str(uuid4())
+        if source:
+            conn.execute("UPDATE sessions SET session_id=NULL WHERE slug=?", (old,))
+        conn.execute("INSERT INTO sessions(slug,messages,turns,created_at,updated_at,conversation_mode,agent_id,model_selector,effort,session_id) "
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)",
                      (new, encoded, count_user_turns(messages), created, updated, mode, selected,
-                      selected_model, selected_effort))
+                      selected_model, selected_effort, identity))
         conn.execute("DELETE FROM sessions WHERE slug=?", (old,))
         conn.execute("UPDATE memory_candidates SET session_slug=? WHERE session_slug=?", (new, old))
         # An in-flight result uses the old slug and must not commit after rename.
