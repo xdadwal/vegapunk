@@ -118,6 +118,22 @@ CREATE TABLE IF NOT EXISTS progress_checkpoints (
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS progress_operations (
+    plan_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    result TEXT NOT NULL,
+    PRIMARY KEY(plan_id,operation_id)
+);
+CREATE TABLE IF NOT EXISTS progress_claims (
+    plan_id TEXT NOT NULL,
+    step INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY(plan_id,step,owner)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT 'fact',

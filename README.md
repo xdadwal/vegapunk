@@ -164,7 +164,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
 | `/save <name>` | Rename the current conversation. |
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
-| `/plan [show]` | Inspect the current sequential execution plan. |
+| `/plan [show]` | Inspect the current execution plan and dependency graph. |
 | `/checkpoints [list]` | Inspect recent immutable progress snapshots. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
@@ -354,6 +354,14 @@ variables. Its scheduler worker inherits that environment. Library imports do no
   never replayed automatically. Stable internal session IDs survive renaming. Removing a
   session also removes its run records. This records turn outcomes, not individual tool
   effects; action-level checkpoints are a later implementation stage.
+
+For substantial work the primary agent can use `create_plan`, `get_plan`,
+`update_plan_step`, and `revise_plan`. Plans have stable step IDs, optional dependency
+graphs, revision checks, and checkpoint snapshots. Completed steps require an outcome
+and evidence references supplied by the model; these references are assertions, not
+independent verification. Use unique operation IDs for retry-safe mutations. Delegates
+can be assigned an in-progress step through `delegate(plan_id=…, step=…)`; only that
+step can be updated by the child, and an active assignment prevents duplicate delegation.
 - Facts recorded through `remember` or accepted from background extraction are loaded before the
   next interactive turn or scheduled run. Explicit requests to remember a fact save it immediately;
   other statements go through background extraction. If

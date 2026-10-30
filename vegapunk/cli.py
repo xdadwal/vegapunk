@@ -203,7 +203,8 @@ def main(
     set_runner(RoleRunner(lambda: session.backend, ALL_TOOLS,
                           approver=getattr(session, "approver", None),
                           approval_mode=lambda: approval_policy.mode,
-                          activity=activity))
+                          activity=activity,
+                          session_identity=lambda: getattr(session, "session_id", None)))
     warned_worker_died = False
     try:
         while True:
