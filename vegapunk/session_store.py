@@ -202,6 +202,10 @@ def load_session(name: str) -> list[dict]:
 def delete_session(name: str) -> None:
     """Remove a session, its extraction work, and memories owned by that source."""
     with db.transaction() as conn:
+        conn.execute("DELETE FROM progress_checkpoints WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
+        conn.execute("DELETE FROM progress_operations WHERE plan_id IN (SELECT plan_id FROM session_plans WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?))", (name,))
+        conn.execute("DELETE FROM progress_claims WHERE plan_id IN (SELECT plan_id FROM session_plans WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?))", (name,))
+        conn.execute("DELETE FROM session_plans WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM execution_events WHERE run_id IN (SELECT run_id FROM execution_runs WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?))", (name,))
         conn.execute("DELETE FROM execution_runs WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM sessions WHERE slug = ?", (name,))

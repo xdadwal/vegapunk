@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -101,6 +101,39 @@ CREATE TABLE IF NOT EXISTS execution_events (
     created_at TEXT NOT NULL,
     PRIMARY KEY(run_id,sequence)
 );
+CREATE TABLE IF NOT EXISTS session_plans (
+    plan_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    body TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_plan ON session_plans(session_id) WHERE active=1;
+CREATE TABLE IF NOT EXISTS progress_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS progress_operations (
+    plan_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    result TEXT NOT NULL,
+    PRIMARY KEY(plan_id,operation_id)
+);
+CREATE TABLE IF NOT EXISTS progress_claims (
+    plan_id TEXT NOT NULL,
+    step INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY(plan_id,step,owner)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT 'fact',
