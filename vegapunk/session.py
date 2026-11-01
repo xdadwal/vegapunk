@@ -101,6 +101,7 @@ class Session:
         renderer: Renderer | None = None,
     ) -> None:
         self._backend = backend
+        self.session_id: str | None = None
         self._tools = tools
         self._system_prompt = system_prompt
         self._max_steps = max_steps
@@ -123,10 +124,12 @@ class Session:
         self._conversation = Conversation()
 
     def _build_agent(self) -> Agent:
+        from .tools.progress import bind
+
         return InteractiveAgent(
             self._backend.provider,
             system=self._system_prompt,
-            tools=self._tools,
+            tools=bind(self._tools, lambda: self.session_id),
             max_iterations=self._max_steps,
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),
@@ -296,6 +299,7 @@ class Session:
         approval decisions.
         """
         self._conversation.clear()
+        self.session_id = None
         self.context_tokens = None  # a fresh conversation has no footprint yet
         self._last_reasoning = ""
 
@@ -312,6 +316,7 @@ class Session:
         if backend is not None:
             self.swap_backend(backend)
         self._conversation = restored
+        self.session_id = None
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None
