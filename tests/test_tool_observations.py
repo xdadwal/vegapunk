@@ -113,3 +113,33 @@ def test_real_shell_result_can_be_retrieved_without_rerunning(tmp_path, monkeypa
         assert artifacts.read(sid, row["artifact_id"])["text"] == "[exit 0]\nevidence"
     finally:
         session.close()
+
+
+def test_shell_artifact_preserves_text_beyond_preview_limit(tmp_path, monkeypatch):
+    import shlex
+    import sys
+    from dataclasses import replace
+    from tests.fake_provider import session_for, call, wants, says
+    from vegapunk.approval import CLIApprover, ApprovalPolicy
+    from vegapunk.tools import workspace
+    from vegapunk.tools.shell import run_shell
+
+    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=tmp_path))
+    session_store.save_session("one", [])
+    sid = session_store.session_identity("one")
+    command = f"{shlex.quote(sys.executable)} -c \"print('x'*20000 + 'TAIL')\""
+    session = session_for([wants(call("run_shell", {"command": command})), says("done")],
+                          tools=[run_shell], approver=CLIApprover(ApprovalPolicy(auto=True)))
+    session.session_id = sid
+    try:
+        list(session.send("inspect"))
+        row = execution.tool_observations(sid)[0]
+        matches = artifacts.search(sid, row["artifact_id"], "TAIL")
+        assert matches
+        assert "TAIL" in artifacts.read(sid, row["artifact_id"], matches[0]["cursor"])["text"]
+        assert artifacts.metadata(sid, row["artifact_id"])["complete"] == 1
+        results = [b for m in session.messages for b in m["content"] if b["type"] == "tool_result"]
+        assert "...[truncated]" in results[0]["content"]
+        assert "TAIL" not in results[0]["content"]
+    finally:
+        session.close()

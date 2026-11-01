@@ -61,6 +61,8 @@ def fetch_url(url: str) -> str:
     content = "\n".join(lines)
     if not content:
         return f"{url} returned no readable text."
+    from ..output_capture import record
+    record(f"Content from {url}:\n\n{content}")
     if len(content) > config.output_char_cap:
         content = content[: config.output_char_cap] + "\n...[truncated]"
     return f"Content from {url}:\n\n{content}"

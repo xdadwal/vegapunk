@@ -8,6 +8,7 @@ times out, and truncates very long output to protect the context window.
 from __future__ import annotations
 
 import subprocess
+from ..shell_capture import run as bounded_run
 
 from ..config import config
 from .registry import tool
@@ -30,7 +31,8 @@ def run_shell(command: str, stdin: str = "") -> str:
     error instead of hanging until the timeout — when you see that, read the prompt
     shown in the output and retry with the needed input in `stdin`."""
     try:
-        completed = _run(
+        runner = bounded_run if _run is subprocess.run else _run
+        completed = runner(
             command,
             shell=True,
             cwd=str(workspace_root()),
@@ -39,10 +41,20 @@ def run_shell(command: str, stdin: str = "") -> str:
             text=True,
             timeout=config.shell_timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        from ..output_capture import record
+        partial = exc.output or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        record(f"Timed out after {config.shell_timeout:g}s\n{partial}", complete=False)
         return f"Timed out after {config.shell_timeout:g}s: {command!r}"
 
     output = (completed.stdout or "") + (completed.stderr or "")
+    from ..output_capture import record
+    status = "exit 0" if completed.returncode == 0 else f"exit {completed.returncode}"
+    record(f"[{status}]\n{output or '(no output)'}", complete=getattr(completed, "capture_complete", True))
+    if not getattr(completed, "capture_complete", True):
+        output += f"\n...[capture incomplete: {getattr(completed, 'capture_note', 'bounded text capture')}]"
     if len(output) > config.output_char_cap:
         output = output[: config.output_char_cap] + "\n...[truncated]"
     status = "exit 0" if completed.returncode == 0 else f"exit {completed.returncode}"

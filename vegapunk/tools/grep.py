@@ -65,6 +65,8 @@ def grep(pattern: str, path: str = ".", ignore_case: bool = False, target: str =
         )
 
     output = "\n".join(results)
+    from ..output_capture import record
+    record(output)
     if len(output) > config.output_char_cap:
         output = output[: config.output_char_cap] + "\n...[truncated]"
     return output

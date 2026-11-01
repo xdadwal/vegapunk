@@ -375,7 +375,14 @@ and `/runs` expose their references. Missing outcomes remain `outcome_unknown` a
 be reconciled before repeating an action. `completed` means the handler returned;
 inspect the result for the command exit code or action-specific success status.
 Persistence failures stop the model loop instead of inviting an automatic action retry.
-Raw output clipped by an existing tool cannot be recovered from these result snapshots.
+Shell, grep, web search, and fetched-page text are captured before their preview
+clipping, up to 16 MiB. POSIX shell output is streamed and excess data is drained
+without retaining it; the capture is labelled incomplete when the limit is reached
+or the command times out. Other platforms retain the existing subprocess behavior.
+Capture preserves decoded text rather than binary output. Other tools retain their
+normalized result snapshots; data discarded before an instrumented capture cannot
+be recovered. Shell timeouts kill the POSIX command group, including children that
+still hold its output pipe open.
 Automatic model context offloading is not enabled yet.
 The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current
 session only. Suggestions are local, prefix-filtered, and capped at 100 matches.

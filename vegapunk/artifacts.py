@@ -11,7 +11,7 @@ CHUNK_CHARS = 16384
 READ_CHARS = 12000
 
 
-def store_text(session_id: str, title: str, text: str) -> dict:
+def store_text(session_id: str, title: str, text: str, source_complete: bool = True) -> dict:
     """Capture text up to the storage limit, labelling incomplete captures."""
     if not title.strip() or len(title) > 300:
         raise ValueError("Provide a title of 1 to 300 characters")
@@ -24,7 +24,7 @@ def store_text(session_id: str, title: str, text: str) -> dict:
             raise ValueError("Unknown session")
         conn.execute("INSERT INTO session_artifacts VALUES (?,?,?,?,?,?,?,?,?)",
                      (artifact_id, session_id, title.strip(), len(original), len(raw), sha256(raw).hexdigest(),
-                      int(len(original) == len(raw)), len(captured), db.utcnow()))
+                      int(source_complete and len(original) == len(raw)), len(captured), db.utcnow()))
         for position in range(0, len(captured), CHUNK_CHARS):
             conn.execute("INSERT INTO artifact_chunks VALUES (?,?,?)", (artifact_id, position // CHUNK_CHARS, captured[position:position+CHUNK_CHARS]))
     return metadata(session_id, artifact_id)
