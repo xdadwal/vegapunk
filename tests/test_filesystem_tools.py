@@ -150,3 +150,31 @@ def test_edit_file_identical_strings_change_nothing(ws):
 
 def test_edit_file_rejects_traversal(ws):
     assert edit_file("../../etc/hosts", "a", "b").startswith("Refused:")
+
+
+def test_read_file_ranges_and_long_unicode_line_continuation(ws):
+    body = "first\n" + "界" * 25000 + "\nlast\n"
+    (ws / "large.txt").write_text(body)
+    assert read_file("large.txt", start_line=3, max_lines=1) == "last\n"
+    first = read_file("large.txt", start_line=2, max_lines=1)
+    assert first.startswith("界" * 12000)
+    assert "cursor=12006" in first
+    second = read_file("large.txt", cursor=12006, max_lines=1)
+    assert second.startswith("界" * 12000)
+    assert "cursor=24006" in second
+    assert read_file("large.txt", cursor=24006, max_lines=1).startswith("界" * 1000 + "\n")
+
+
+def test_file_bounds_reject_invalid_arguments(ws):
+    (ws / "x").write_text("hello")
+    for kwargs in ({"start_line": 0}, {"max_lines": 201}, {"cursor": -1}, {"cursor": 1, "start_line": 2}):
+        assert read_file("x", **kwargs).startswith("Invalid")
+
+
+def test_directory_pages_are_stable_and_bounded(ws):
+    for i in range(5):
+        (ws / f"file-{i}").touch()
+    assert list_dir(max_entries=2) == 'file-0\nfile-1\n[More entries; continue list_dir(path=".", after="file-1", max_entries=2)]'
+    assert list_dir(max_entries=2, after="file-1").startswith("file-2\nfile-3\n")
+    assert list_dir(max_entries=2, after="file-3") == "file-4"
+    assert list_dir(max_entries=0).startswith("Invalid")

@@ -19,6 +19,16 @@ class _FakeResponse:
     def __init__(self, text: str = "", status_code: int = 200) -> None:
         self.text = text
         self.status_code = status_code
+        self.encoding = "utf-8"
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        raw = self.text.encode()
+        for offset in range(0, len(raw), chunk_size):
+            yield raw[offset:offset+chunk_size]
+
+    def close(self):
+        self.closed = True
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
@@ -79,3 +89,72 @@ def test_non_403_http_error_returns_clear_string(monkeypatch):
     out = fetch_url("http://broken.example")
     assert "HTTP 500" in out
     assert "blocked" not in out.lower()
+
+
+def test_download_cap_labels_partial_capture_and_closes_response(monkeypatch):
+    from vegapunk import output_capture
+    response = _FakeResponse("<p>" + "界" * 30000 + "</p>")
+    monkeypatch.setattr(fetch_mod, "DOWNLOAD_LIMIT", 65536)
+    seen = {}
+    def get(*args, **kwargs):
+        seen.update(kwargs)
+        return response
+    monkeypatch.setattr(fetch_mod, "_get", get)
+    output_capture.begin()
+    try:
+        result = fetch_url("http://example.com")
+    finally:
+        captured = output_capture.finish()
+    assert "download limited" in result
+    assert seen["stream"] is True
+    assert response.closed
+    assert captured is not None and not captured.complete
+
+
+def test_http_error_closes_response(monkeypatch):
+    response = _FakeResponse(status_code=403)
+    monkeypatch.setattr(fetch_mod, "_get", lambda *a, **k: response)
+    assert "403" in fetch_url("http://example.com")
+    assert response.closed
+
+
+def test_midstream_error_is_reported_and_response_closed(monkeypatch):
+    response = _FakeResponse()
+    def chunks(chunk_size):
+        yield b"<p>partial"
+        raise requests.ConnectionError("stream interrupted")
+    response.iter_content = chunks
+    monkeypatch.setattr(fetch_mod, "_get", lambda *a, **k: response)
+    assert "Could not reach" in fetch_url("http://example.com")
+    assert response.closed
+
+
+def test_invalid_charset_is_labelled_instead_of_crashing(monkeypatch):
+    response = _FakeResponse("<p>hello</p>")
+    response.encoding = "unknown-web-charset"
+    monkeypatch.setattr(fetch_mod, "_get", lambda *a, **k: response)
+    result = fetch_url("http://example.com")
+    assert "hello" in result and "encoding was invalid" in result
+    assert response.closed
+
+
+def test_missing_charset_detects_within_bounded_body(monkeypatch):
+    raw = b"<p>caf\xe9</p>"
+    reference = requests.Response()
+    reference._content = raw
+    response = _FakeResponse()
+    response.encoding = None
+    response.iter_content = lambda chunk_size: iter([raw])
+    monkeypatch.setattr(fetch_mod, "_get", lambda *a, **k: response)
+    assert reference.text.removeprefix("<p>").removesuffix("</p>") in fetch_url("http://example.com")
+    assert response.closed
+
+
+def test_partial_multibyte_encoding_keeps_valid_prefix(monkeypatch):
+    response = _FakeResponse()
+    response.encoding = "utf-16-le"
+    raw = "<p>hello world".encode("utf-16-le") + b"x"
+    response.iter_content = lambda chunk_size: iter([raw])
+    monkeypatch.setattr(fetch_mod, "_get", lambda *a, **k: response)
+    result = fetch_url("http://example.com")
+    assert "hello world" in result and "decoding was lossy" in result

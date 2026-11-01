@@ -38,7 +38,8 @@ _DELEGATE_PROMPT = (
     "evidence is needed. Guarded actions follow the primary session's approval policy; "
     "the shared UI obtains any required approval. Do not ask questions or delegate further. "
     "Return concise findings, evidence, caveats, and any useful next action to the primary "
-    "agent. Do not address the user or claim the overall request is complete."
+    "agent. Store lengthy details in session artifacts and return their IDs with a compact summary. "
+    "Do not address the user or claim the overall request is complete."
 )
 
 
@@ -233,6 +234,12 @@ class RoleRunner:
                     progress.release(plan_id, step, activity_id, status)
         if not result:
             result = "(The role returned no text.)"
+        if len(result) > 4000 and sid:
+            from . import artifacts
+            saved = artifacts.store_text(sid, f"{definition.name} delegated result ({status}; model claim)", result)
+            completeness = "complete" if saved["complete"] else "partial capture"
+            result = (result[:800] + f"\n[Delegated result excerpt; status: {status}; {completeness}. "
+                      f"Session artifact: {saved['id']}. Use read_artifact for details.]\n" + result[-800:])
         return f"{definition.name} role result:\n{result}"
 
 

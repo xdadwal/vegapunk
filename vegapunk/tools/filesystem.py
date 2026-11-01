@@ -9,6 +9,9 @@ files outside it.
 
 from __future__ import annotations
 
+import heapq
+import json
+
 from .registry import tool
 from .workspace import PathOutsideWorkspace, resolve_in_workspace
 
@@ -68,10 +71,20 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
 
 
 @tool
-def read_file(path: str) -> str:
-    """Read and return the full text of a file in the workspace. Call this
+def read_file(path: str, start_line: int = 1, max_lines: int = 200, cursor: int = 0) -> str:
+    """Read a bounded page of workspace text before editing it. Call this
     BEFORE editing or overwriting a file so you know its current contents.
-    `path` is relative to the workspace."""
+    Continue with the returned cursor when a page is incomplete. Cursors count
+    decoded characters from the start; changed files can invalidate pagination.
+
+    Args:
+        path: Workspace-relative file path.
+        start_line: First line, starting at 1; use 1 when continuing by cursor.
+        max_lines: Maximum lines per page, 1 through 200 (also capped at 12000 characters).
+        cursor: Character offset returned by a previous page, default 0.
+    """
+    if start_line < 1 or not 1 <= max_lines <= 200 or cursor < 0 or (cursor and start_line != 1):
+        return "Invalid read range: start_line >= 1, 1 <= max_lines <= 200, cursor >= 0; use start_line=1 with a cursor."
     try:
         target = resolve_in_workspace(path)
     except PathOutsideWorkspace as exc:
@@ -82,14 +95,47 @@ def read_file(path: str) -> str:
             f"the user yet — call list_dir or grep now to find the correct name, "
             f"then read that path."
         )
-    return target.read_text(encoding="utf-8")
+    with target.open(encoding="utf-8") as stream:
+        offset = 0
+        while offset < cursor:
+            skipped = stream.read(min(8192, cursor - offset))
+            if not skipped:
+                return "Invalid cursor: beyond the current file contents."
+            offset += len(skipped)
+        line = 1
+        while line < start_line:
+            skipped = stream.readline(8192)
+            if not skipped:
+                return "(no text in the requested range)"
+            offset += len(skipped)
+            line += skipped.endswith("\n")
+        chunks, length = [], 0
+        for _ in range(max_lines):
+            chunk = stream.readline(12000 - length)
+            chunks.append(chunk)
+            length += len(chunk)
+            if not chunk or length == 12000:
+                break
+        more = bool(stream.read(1))
+    content = "".join(chunks)
+    if more:
+        content += f"\n[More text; continue read_file(path={json.dumps(path)}, cursor={offset + length}, max_lines={max_lines})]"
+    return content
 
 
 @tool
-def list_dir(path: str = ".") -> str:
+def list_dir(path: str = ".", after: str = "", max_entries: int = 100) -> str:
     """List the entries in a workspace directory (defaults to the workspace
     root). Call this to discover what files exist before reading or writing.
-    Directories are suffixed with '/'. `path` is relative to the workspace."""
+    Directories are suffixed with '/'. Pagination reflects the current directory.
+
+    Args:
+        path: Workspace-relative directory, default root.
+        after: Return names after this exact previous-page cursor, default empty.
+        max_entries: Page size, 1 through 200.
+    """
+    if not 1 <= max_entries <= 200:
+        return "Invalid page size: 1 <= max_entries <= 200."
     try:
         target = resolve_in_workspace(path)
     except PathOutsideWorkspace as exc:
@@ -99,5 +145,9 @@ def list_dir(path: str = ".") -> str:
             f"No directory at {path!r}. Do not reply to the user yet — call "
             f"list_dir on '.' to see the workspace, then use a path that exists."
         )
-    entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
-    return "\n".join(entries) if entries else "(empty)"
+    names = (p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
+    entries = heapq.nsmallest(max_entries + 1, (name for name in names if name > after))
+    content = "\n".join(entries[:max_entries]) if entries else "(empty)"
+    if len(entries) > max_entries:
+        content += f"\n[More entries; continue list_dir(path={json.dumps(path)}, after={json.dumps(entries[max_entries-1])}, max_entries={max_entries})]"
+    return content
