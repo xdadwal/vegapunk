@@ -126,6 +126,7 @@ class Session:
     def _build_agent(self) -> Agent:
         from .tools.progress import bind
         from .tools.artifacts import bind as bind_artifacts
+        from .execution import tool_observer
 
         return InteractiveAgent(
             self._backend.provider,
@@ -134,6 +135,7 @@ class Session:
             max_iterations=self._max_steps,
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),
+            tool_observer=tool_observer(lambda: self.session_id),
             **agent_runtime_options(config, "interactive"),
         )
 

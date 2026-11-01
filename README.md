@@ -369,7 +369,14 @@ step can be updated by the child, and an active assignment prevents duplicate de
 Snapshots are stored in the existing database, survive session renaming/resumption, and
 are deleted with their session. Capture is limited to 16 MiB with explicit completeness
 metadata; reads return at most 12000 Unicode characters and a continuation cursor.
-Tool output capture and automatic context offloading are not enabled by these tools.
+Approved tool intents and normalized returned results are recorded independently of
+conversation rollback. Results are saved as session artifacts; `get_tool_observations`
+and `/runs` expose their references. Missing outcomes remain `outcome_unknown` and must
+be reconciled before repeating an action. `completed` means the handler returned;
+inspect the result for the command exit code or action-specific success status.
+Persistence failures stop the model loop instead of inviting an automatic action retry.
+Raw output clipped by an existing tool cannot be recovered from these result snapshots.
+Automatic model context offloading is not enabled yet.
 The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current
 session only. Suggestions are local, prefix-filtered, and capped at 100 matches.
 `register_file_artifact` remembers a workspace text-file reference and its baseline hash;

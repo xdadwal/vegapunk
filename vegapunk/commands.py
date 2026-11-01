@@ -619,9 +619,13 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output="(no recorded runs)")
     try:
         runs = execution.list_runs(session_store.session_identity(ctx.current_name))
+        observations = execution.tool_observations(session_store.session_identity(ctx.current_name))
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read runs: {exc}")
-    return CommandResult(output="\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)")
+    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)"
+    if observations:
+        text += "\nTool observations (completed means handler returned; inspect results):\n" + json.dumps(observations, ensure_ascii=False, indent=2)
+    return CommandResult(output=text)
 
 
 @command("plan", "Show the current plan: /plan [show]")

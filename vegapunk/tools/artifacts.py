@@ -42,6 +42,17 @@ def link_artifact_checkpoint(artifact_id: str, checkpoint_id: str) -> str:
 
 
 @tool
+def get_tool_observations() -> str:
+    """Inspect recent session tool intents/outcomes and result artifact IDs.
+
+    An outcome_unknown intent does not prove whether the action ran. Inspect state
+    before retrying it. Completed means the handler returned, not that its action
+    succeeded; inspect the stored result and exit status.
+    """
+    return "Artifacts require a persistent session."
+
+
+@tool
 def list_artifacts(offset: int = 0) -> str:
     """List saved artifact metadata for this session.
 
@@ -75,10 +86,13 @@ def search_artifact(artifact_id: str, query: str) -> str:
 
 def bind(tools: list, identity: Callable[[], str | None]) -> list:
     """Bind artifact handlers while retaining their registered names and schemas."""
+    from ..execution import tool_observations
+
     functions = {"register_artifact": artifacts.store_text, "list_artifacts": artifacts.list_artifacts,
                  "read_artifact": artifacts.read, "search_artifact": artifacts.search,
                  "register_file_artifact": artifacts.register_file,
-                 "link_artifact_checkpoint": artifacts.link_checkpoint}
+                 "link_artifact_checkpoint": artifacts.link_checkpoint,
+                 "get_tool_observations": tool_observations}
 
     def handler(name: str):
         def invoke(**arguments):

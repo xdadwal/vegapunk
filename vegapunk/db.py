@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -164,6 +164,20 @@ CREATE TABLE IF NOT EXISTS checkpoint_artifacts (
     artifact_id TEXT NOT NULL,
     PRIMARY KEY(checkpoint_id,artifact_id)
 );
+CREATE TABLE IF NOT EXISTS tool_observations (
+    observation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    runtime_run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    status TEXT NOT NULL,
+    artifact_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(runtime_run_id,tool_call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_observations_session ON tool_observations(session_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
