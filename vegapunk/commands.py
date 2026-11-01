@@ -581,13 +581,22 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Saved as '{name}'.")
 
 
+def _stored_session_name(arg: str) -> str:
+    """Resolve displayed legacy names before normalizing new user input."""
+    requested = arg.strip()
+    return requested if session_store.exists(requested) else session_store.slugify(requested)
+
+
 def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
-    if not name:
+    if not arg.strip():
         if _interactive():
             return _pick_session(ctx)
         return CommandResult(output="Usage: /sessions <name>")
     try:
+        name = _stored_session_name(arg)
+        if not name:
+            return CommandResult(output="Usage: /sessions <name>")
         messages = session_store.load_session(name)
         conversation_mode = session_store.load_session_mode(name)
         agent_id = session_store.load_session_agent(name)
@@ -719,9 +728,12 @@ def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
         return _pick_session(ctx) if _interactive() else CommandResult(output=_format_sessions())
     if sub == "remove":
         name = session_store.slugify(rest)
-        if not name:
+        if not rest.strip():
             return CommandResult(output="Usage: /sessions remove <name>")
         try:
+            name = _stored_session_name(rest)
+            if not name:
+                return CommandResult(output="Usage: /sessions remove <name>")
             if not session_store.exists(name):
                 return CommandResult(output=f"No session '{name}' to remove.\n{_format_sessions()}")
             session_store.delete_session(name)

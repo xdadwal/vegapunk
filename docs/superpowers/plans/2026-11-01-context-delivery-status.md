@@ -21,7 +21,8 @@ checkboxes describe the specification, not an up-to-date delivery ledger.
   exact checkpoint lookup/pagination/completion, linked outcome artifacts, compact
   plan status, resume warnings, and distinct original/staged recovery input.
 
-The stack is #74 → #76 → #77 → #78 → #79 (usage accounting). #75 is independent.
+The stack is #74 → #76 → #77 → #78 → #79 (usage accounting) → #80 (evaluation)
+→ #81 (message references) → the focused provisional-name resume fix. #75 is independent.
 User data, configuration, and unrelated installer/prompt drafts are outside this stack.
 
 ## Remaining gates and limitations
@@ -39,7 +40,7 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
   to the current in-process conversation, clearing on new/restore; existing runtime
   logs retain historical provider metadata. It does not claim complete billing for
   failed/partial attempts that never report usage, or add provider cache counts twice.
-- Stable-message-reference branch implements the separate `session_message_ids` map.
+- #81 implements the separate `session_message_ids` map.
   Appends/renames preserve IDs; edits renew the changed suffix. Lookup checks session
   identity and canonical hash. Summary source artifacts attach IDs/hash only when
   their original canonical message matches, and label projected excerpts. Ordinals
@@ -51,12 +52,15 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
 - Further open-ended live evaluation remains required before enabling bounded mode
   by default. Actual SIGINT and fresh-process rename/resume smoke tests passed in
   plain and Rich PTYs, retaining completed effects and evidence without replay. An
-  abrupt-exit smoke test retained an unknown action correctly but exposed an older
-  overlong provisional-name lookup bug; a focused follow-up fix is required.
+  abrupt-exit smoke test retained an unknown action correctly and exposed an older
+  overlong provisional-name lookup bug. A focused fix canonicalizes new names and
+  resolves existing displayed names exactly before normalization. The strengthened
+  crash/resume smoke restored the exact session, retained the abandoned request and
+  unknown effect, and performed zero inference or action replay.
   Deterministic tests cover the principal failure boundaries,
   including a 40-turn history, a 1 MiB result, retrieval, corrections, and scope denial.
 
-Latest local verification including stable message references: 1,082 Vegapunk tests
+Latest local verification including provisional-name recovery: 1,084 Vegapunk tests
 pass; Logpose's 950 tests pass. Independent reviews cleared the context policy,
 bounded tool payloads, and lifecycle snapshot changes. The bounded-download path
 also passed a real local HTTP smoke test. These are local results, not hosted CI.

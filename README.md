@@ -360,6 +360,9 @@ variables. Its scheduler worker inherits that environment. Library imports do no
   These records survive transcript rollback and never trigger automatic replay.
   Recovery keeps the original user request separate from expanded staged-skill input;
   `/runs` displays both when present. Older records retain their original stored text.
+  New provisional names respect the normal slug limit. Existing longer names can still
+  be resumed or removed exactly as displayed, without being redirected to a shorter
+  session that happens to share their prefix.
   Resume reports the active plan, latest checkpoint ID, and uncertain actions;
   the prompt status row shows compact active-plan progress.
 
