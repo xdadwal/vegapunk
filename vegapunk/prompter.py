@@ -26,7 +26,7 @@ from . import agents, db, skills, style
 from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
-from .session_store import list_sessions
+from .session_store import SessionNotFound, list_sessions
 
 # The slash commands the REPL understands, offered as completions — derived from
 # the command registry so they never drift from what the REPL actually handles.
@@ -114,8 +114,10 @@ class SlashCompleter(Completer):
     worse than no completion at all.
     """
 
-    def __init__(self, effort_levels: Callable[[], tuple[str, ...]] | None = None) -> None:
+    def __init__(self, effort_levels: Callable[[], tuple[str, ...]] | None = None,
+                 session_identity: Callable[[], str | None] | None = None) -> None:
         self._effort_levels = effort_levels
+        self._session_identity = session_identity
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -131,6 +133,14 @@ class SlashCompleter(Completer):
         options = (list(self._effort_levels())
                    if head.lower() == "effort" and len(rest) == 1 and self._effort_levels is not None
                    else _argument_options(head.lower(), rest))
+        if head.lower() == "artifacts" and len(rest) == 2 and rest[0] in {"read", "search"} and self._session_identity:
+            try:
+                sid = self._session_identity()
+                options = [row[0] for row in db.query(
+                    "SELECT artifact_id FROM session_artifacts WHERE session_id=? AND artifact_id LIKE ? ORDER BY artifact_id LIMIT 100",
+                    (sid, word + "%"))] if sid else []
+            except (db.StoreError, SessionNotFound):
+                options = []
         for option in options:
             if option.startswith(word):
                 yield Completion(option, start_position=-len(word))
@@ -190,6 +200,7 @@ class PromptToolkitPrompter(Prompter):
         status: Callable[[], str] | None = None,
         toggle_approval: Callable[[], str] | None = None,
         effort_levels: Callable[[], tuple[str, ...]] | None = None,
+        session_identity: Callable[[], str | None] | None = None,
     ) -> None:
         if history is None:
             history = DbHistory()
@@ -206,7 +217,7 @@ class PromptToolkitPrompter(Prompter):
             # Completes the command name, then its arguments — providers,
             # models, session names, skills, effort levels. Never fires unless
             # the line starts with "/", so prose is left alone.
-            completer=SlashCompleter(effort_levels=effort_levels),
+            completer=SlashCompleter(effort_levels=effort_levels, session_identity=session_identity),
             complete_while_typing=True,
             # A callable is re-evaluated on every render, so a status line
             # like "model · session-name" stays current without any wiring.

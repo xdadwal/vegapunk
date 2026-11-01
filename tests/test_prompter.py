@@ -155,6 +155,21 @@ def test_completer_offers_saved_sessions_for_load_and_forget():
     assert "remove" in _complete("/sessions ")
 
 
+def test_artifact_completion_is_scoped_and_paginated():
+    from vegapunk import artifacts, session_store
+    from vegapunk.prompter import SlashCompleter
+
+    session_store.save_session("one", [])
+    session_store.save_session("two", [])
+    sid = session_store.session_identity("one")
+    ids = {artifacts.store_text(sid, str(i), "text")["id"] for i in range(22)}
+    outsider = artifacts.store_text(session_store.session_identity("two"), "other", "text")["id"]
+    completer = SlashCompleter(session_identity=lambda: sid)
+    choices = {c.text for c in completer.get_completions(Document("/artifacts read "), CompleteEvent())}
+    assert choices == ids
+    assert outsider not in choices
+
+
 def test_completer_never_makes_a_network_call_for_model_ids(monkeypatch):
     """Completion runs on every keystroke, so it may only offer ids already
     fetched — blocking the line you are typing on an HTTP round trip would be

@@ -370,6 +370,8 @@ Snapshots are stored in the existing database, survive session renaming/resumpti
 are deleted with their session. Capture is limited to 16 MiB with explicit completeness
 metadata; reads return at most 12000 Unicode characters and a continuation cursor.
 Tool output capture and automatic context offloading are not enabled by these tools.
+The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current
+session only. Suggestions are local, prefix-filtered, and capped at 100 matches.
 `register_file_artifact` remembers a workspace text-file reference and its baseline hash;
 reads report whether current content changed. References remain tied to the original
 workspace, and session deletion never removes the referenced file. Reads are limited to
