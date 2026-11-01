@@ -30,10 +30,13 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
   than the full task-quality rubric; the second provider returned HTTP 400 before a
   valid pair. Cross-provider enablement is unverified. See
   `../../evaluations/context-efficiency.md` for results, grading limitations, and costs.
-- `/context` reports serialized system/schema/history estimates and the latest
-  proposal. A complete cumulative accounting of main/delegate/summary calls,
-  retrieval overhead, and memory/skill components remains pending. Existing runtime
-  logs and delegate activity expose provider usage, but do not constitute that ledger.
+- Usage-accounting branch adds a content-free ledger shared by main/delegate/summary
+  execution, latest-turn and conversation totals, retrieval counters, cache reuse,
+  missing usage, and exact assembled memory/skill byte measurements. Raw completions
+  are counted before rendering or summary validation. Ruling: this ledger is scoped
+  to the current in-process conversation, clearing on new/restore; existing runtime
+  logs retain historical provider metadata. It does not claim complete billing for
+  failed/partial attempts that never report usage, or add provider cache counts twice.
 - Summary sources use message/block ordinals protected by a canonical-content digest
   and immutable source artifact. The proposed persistent `session_message_ids` map
   is not implemented; do not expose these ordinals as stable cross-edit identifiers.
@@ -45,7 +48,7 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
   bounded mode by default. Deterministic tests cover the principal failure boundaries,
   including a 40-turn history, a 1 MiB result, retrieval, corrections, and scope denial.
 
-Latest local verification for lifecycle checkpoint delivery: 1,060 Vegapunk tests
+Latest local verification including usage accounting: 1,070 Vegapunk tests
 pass; Logpose's 950 tests pass. Independent reviews cleared the context policy,
 bounded tool payloads, and lifecycle snapshot changes. The bounded-download path
 also passed a real local HTTP smoke test. These are local results, not hosted CI.

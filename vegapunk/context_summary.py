@@ -4,10 +4,11 @@ import asyncio
 import hashlib
 import json
 
-from logpose import Agent
+from logpose import Agent, RunEnd
 from logpose.retry import RetryPolicy
 
 from . import artifacts, db
+from .usage import UsageLedger
 
 _SYSTEM = (
     'Return only JSON {"notes":[{"text":"...","source":"message:block",'
@@ -68,7 +69,7 @@ def parse(text: str, sources: list[dict]) -> list[dict]:
     return notes
 
 
-async def summarize(request, projected: tuple, sid: str, cfg, backend):
+async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage: UsageLedger | None = None):
     """Summarize eligible old exchanges once per source digest, retaining user text."""
     from .context import eligible_ranges, _sizes
     ranges = eligible_ranges(projected, cfg.context_recent_turns)
@@ -121,7 +122,21 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend):
             agent = Agent(owned.provider, system=_SYSTEM, tools=[], max_iterations=1,
                           max_tokens=cfg.summary_max_output_tokens, extra=owned.extra,
                           retry_policy=RetryPolicy(max_attempts=1), provider_turn_timeout=60)
-            result = await asyncio.wait_for(agent.run(payload), timeout=65)
+            async def generate():
+                result = None
+                events = agent.stream(payload)
+                try:
+                    async for event in events:
+                        if usage is not None:
+                            usage.observe("summary", event)
+                        if isinstance(event, RunEnd):
+                            result = event.result
+                finally:
+                    await events.aclose()
+                if result is None:
+                    raise ValueError("Summary generation returned no completed run")
+                return result
+            result = await asyncio.wait_for(generate(), timeout=65)
             if result.stop_reason != "end_turn":
                 raise ValueError("Summary generation did not complete")
             try:

@@ -71,6 +71,7 @@ def system_prompt(
     delegation: bool = True,
     include_memory: bool = True,
     memory_query: str | None = None,
+    component_sizes: dict[str, int] | None = None,
 ) -> str:
     """Return the complete system prompt with current memory and skills."""
     validate_session_mode(conversation_mode)
@@ -80,6 +81,9 @@ def system_prompt(
         memory_block = as_system_block(memory_query, cfg.memory_context_budget)
     else:
         memory_block = memory.as_system_block() if include_memory else ""
+    skills_block = "" if journal else skills.as_system_block()
+    if component_sizes is not None:
+        component_sizes.update(memory_bytes=len(memory_block.encode("utf-8")), skills_bytes=len(skills_block.encode("utf-8")))
     return (
         (_JOURNAL_PROMPT if journal else cfg.system_prompt)
         + agents.system_block(agent_id)
@@ -115,5 +119,5 @@ def system_prompt(
            "outcome_unknown is not evidence of failure; completed means a handler returned, "
            "not that the requested action succeeded. Do not blindly repeat consequential actions.")
         + memory_block
-        + ("" if journal else skills.as_system_block())
+        + skills_block
     )
