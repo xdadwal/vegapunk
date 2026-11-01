@@ -370,6 +370,11 @@ Snapshots are stored in the existing database, survive session renaming/resumpti
 are deleted with their session. Capture is limited to 16 MiB with explicit completeness
 metadata; reads return at most 12000 Unicode characters and a continuation cursor.
 Tool output capture and automatic context offloading are not enabled by these tools.
+`register_file_artifact` remembers a workspace text-file reference and its baseline hash;
+reads report whether current content changed. References remain tied to the original
+workspace, and session deletion never removes the referenced file. Reads are limited to
+16 MiB; binary files are unsupported. `link_artifact_checkpoint` associates evidence
+with a progress checkpoint from the same session, visible through `/checkpoints`.
 - Facts recorded through `remember` or accepted from background extraction are loaded before the
   next interactive turn or scheduled run. Explicit requests to remember a fact save it immediately;
   other statements go through background extraction. If

@@ -653,7 +653,7 @@ def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
         else:
             return CommandResult(output="Usage: /artifacts [list [offset]|read <id> [cursor]|search <id> <query>]")
         return CommandResult(output=json.dumps(result, ensure_ascii=False, indent=2))
-    except (ValueError, db.StoreError, session_store.SessionNotFound) as exc:
+    except (ValueError, OSError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read artifacts: {exc}")
 
 
@@ -663,6 +663,9 @@ def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output="(no checkpoints)")
     try:
         rows = progress.checkpoints(session_store.session_identity(ctx.current_name))
+        sid = session_store.session_identity(ctx.current_name)
+        for row in rows:
+            row["artifacts"] = artifacts.checkpoint_artifacts(sid, row["id"])
         return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read checkpoints: {exc}")

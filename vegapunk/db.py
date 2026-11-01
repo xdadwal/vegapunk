@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -150,6 +150,19 @@ CREATE TABLE IF NOT EXISTS artifact_chunks (
     position INTEGER NOT NULL,
     content TEXT NOT NULL,
     PRIMARY KEY(artifact_id,position)
+);
+CREATE TABLE IF NOT EXISTS artifact_files (
+    artifact_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifact_workspaces (
+    artifact_id TEXT PRIMARY KEY,
+    root TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoint_artifacts (
+    checkpoint_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id,artifact_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (

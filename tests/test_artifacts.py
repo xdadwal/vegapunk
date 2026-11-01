@@ -76,3 +76,64 @@ def test_artifacts_cli_reads_current_session_snapshot():
     ctx = CommandContext(session=None, current_name="one")
     assert json.loads(dispatch(f"/artifacts read {saved['id']}", ctx).output)["text"] == "evidence"
     assert "Could not read" in dispatch("/artifacts read missing", ctx).output
+
+
+def test_file_reference_reports_changes_and_never_deletes_host_file(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from vegapunk.tools import workspace
+
+    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=tmp_path))
+    path = tmp_path / "report.txt"
+    path.write_text("original")
+    sid = identity("one")
+    ref = artifacts.register_file(sid, "report", "report.txt")
+    assert artifacts.read(sid, ref["id"])["changed"] is False
+    path.write_text("updated")
+    page = artifacts.read(sid, ref["id"])
+    assert page["changed"] is True
+    assert page["text"] == "updated"
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=other))
+    with pytest.raises(ValueError, match="workspace"):
+        artifacts.read(sid, ref["id"])
+    session_store.delete_session("one")
+    assert path.read_text() == "updated"
+
+
+def test_file_reference_rejects_escape_and_reports_missing(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from vegapunk.tools import workspace
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=root))
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    (root / "escape").symlink_to(outside)
+    sid = identity("one")
+    with pytest.raises(workspace.PathOutsideWorkspace):
+        artifacts.register_file(sid, "escape", "escape")
+    path = root / "report"
+    path.write_text("report")
+    ref = artifacts.register_file(sid, "report", "report")
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        artifacts.read(sid, ref["id"])
+    from vegapunk.commands import CommandContext, dispatch
+
+    result = dispatch(f"/artifacts read {ref['id']}", CommandContext(session=None, current_name="one"))
+    assert "Could not read artifacts" in result.output
+
+
+def test_checkpoint_links_are_session_scoped():
+    from vegapunk import progress
+
+    one, two = identity("one"), identity("two")
+    progress.create(one, "inspect", ["look"])
+    checkpoint_id = progress.checkpoints(one)[0]["id"]
+    saved = artifacts.store_text(one, "report", "evidence")
+    artifacts.link_checkpoint(one, saved["id"], checkpoint_id)
+    assert artifacts.checkpoint_artifacts(one, checkpoint_id)[0]["id"] == saved["id"]
+    with pytest.raises(ValueError):
+        artifacts.link_checkpoint(two, saved["id"], checkpoint_id)

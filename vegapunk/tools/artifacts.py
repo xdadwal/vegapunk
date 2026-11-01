@@ -20,6 +20,28 @@ def register_artifact(title: str, text: str) -> str:
 
 
 @tool
+def register_file_artifact(title: str, path: str) -> str:
+    """Remember a mutable workspace text file reference, not a content snapshot.
+
+    Args:
+        title: Short description of the file's purpose.
+        path: Workspace-relative text file; reads report changes since registration.
+    """
+    return "Artifacts require a persistent session."
+
+
+@tool
+def link_artifact_checkpoint(artifact_id: str, checkpoint_id: str) -> str:
+    """Associate session evidence with an existing progress checkpoint.
+
+    Args:
+        artifact_id: Artifact ID owned by this session.
+        checkpoint_id: Progress checkpoint ID from this same session.
+    """
+    return "Artifacts require a persistent session."
+
+
+@tool
 def list_artifacts(offset: int = 0) -> str:
     """List saved artifact metadata for this session.
 
@@ -54,7 +76,9 @@ def search_artifact(artifact_id: str, query: str) -> str:
 def bind(tools: list, identity: Callable[[], str | None]) -> list:
     """Bind artifact handlers while retaining their registered names and schemas."""
     functions = {"register_artifact": artifacts.store_text, "list_artifacts": artifacts.list_artifacts,
-                 "read_artifact": artifacts.read, "search_artifact": artifacts.search}
+                 "read_artifact": artifacts.read, "search_artifact": artifacts.search,
+                 "register_file_artifact": artifacts.register_file,
+                 "link_artifact_checkpoint": artifacts.link_checkpoint}
 
     def handler(name: str):
         def invoke(**arguments):
