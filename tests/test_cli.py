@@ -71,6 +71,15 @@ def test_reply_is_printed_and_session_autosaved(capsys):
     assert "(saved as 'a-chat')" in out  # auto-named from the title call
 
 
+def test_cli_records_original_request_before_execution():
+    from vegapunk import execution, session_store
+
+    main(prompter=ScriptedPrompter(["inspect", "/exit"]), session=_session(["done"], title="inspection"))
+    records = execution.list_runs(session_store.session_identity("inspection"))
+    assert records[0].request == "inspect"
+    assert records[0].status == "completed"
+
+
 def test_streamed_reply_is_not_printed_twice(capsys):
     # The reply arrives as streamed deltas AND as send()'s return value; only
     # the stream is rendered — the return must not be printed again.
@@ -283,13 +292,39 @@ def test_autosave_failure_does_not_crash_repl(capsys, monkeypatch):
     def boom(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr("vegapunk.session_store.save_session", boom)
+    monkeypatch.setattr("vegapunk.session_store.rename_session", boom)
     main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session(["yo"]))
 
     captured = capsys.readouterr()
     assert "vega> yo" in captured.out  # reply still shown
     assert "could not save" in captured.err  # degraded on stderr
     assert "bye." in captured.out  # survived to the next prompt and /exit
+
+
+def test_initial_persistence_failure_prevents_agent_execution(capsys, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("vegapunk.session_store.save_session", boom)
+    main(prompter=ScriptedPrompter(["hi", "/exit"]), session=_session(["must not execute"]))
+    output = capsys.readouterr().out
+    assert "disk full" in output
+    assert "vega>" not in output
+
+
+def test_outcome_persistence_failure_reports_uncertainty_without_retry(capsys, monkeypatch):
+    calls = []
+
+    def fail(*args):
+        calls.append(args)
+        raise OSError("disk full")
+
+    monkeypatch.setattr("vegapunk.execution.finish_run", fail)
+    main(prompter=ScriptedPrompter(["hello", "/exit"]), session=_session(["done"]))
+    output = capsys.readouterr()
+    assert len(calls) == 1
+    assert "uncertain" in output.err
+    assert "bye." in output.out
 
 
 def test_banner_shows_model_and_workspace(capsys):
