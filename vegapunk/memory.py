@@ -53,7 +53,7 @@ def load_memory() -> str:
     """
     try:
         rows = db.query(
-            "SELECT content, created_at FROM memory WHERE kind = 'fact' ORDER BY created_at, id"
+            "SELECT content, created_at FROM memory WHERE kind = 'fact' AND NOT EXISTS (SELECT 1 FROM memory_context_flags f WHERE f.memory_id=memory.id AND f.superseded_by IS NOT NULL) ORDER BY created_at, id"
         )
     except db.StoreError as exc:
         print(f"  [memory] could not read the database: {exc}", file=sys.stderr)
@@ -155,7 +155,7 @@ def recall_memory(query: str, limit: int = 5) -> list[Memory]:
                 rows = db.query(
                     "SELECT id, kind, content, created_at, "
                     "vector_distance_cos(embedding, ?) AS distance "
-                    "FROM memory WHERE embedding IS NOT NULL "
+                    "FROM memory WHERE embedding IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memory_context_flags f WHERE f.memory_id=memory.id AND f.superseded_by IS NOT NULL) "
                     "ORDER BY distance LIMIT ?",
                     (vector, limit),
                 )
@@ -169,7 +169,7 @@ def recall_memory(query: str, limit: int = 5) -> list[Memory]:
     try:
         rows = db.query(
             "SELECT id, kind, content, created_at FROM memory "
-            "WHERE content LIKE '%' || ? || '%' ORDER BY created_at DESC, id DESC LIMIT ?",
+            "WHERE content LIKE '%' || ? || '%' AND NOT EXISTS (SELECT 1 FROM memory_context_flags f WHERE f.memory_id=memory.id AND f.superseded_by IS NOT NULL) ORDER BY created_at DESC, id DESC LIMIT ?",
             (q, limit),
         )
     except db.StoreError as exc:

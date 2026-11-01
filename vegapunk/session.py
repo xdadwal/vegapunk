@@ -127,6 +127,9 @@ class Session:
         from .tools.progress import bind
         from .tools.artifacts import bind as bind_artifacts
         from .execution import tool_observer
+        from .context import ContextManager
+
+        self._context_manager = ContextManager(lambda: self.session_id, window=lambda: self._backend.context_window, backend=lambda: self._backend)
 
         return InteractiveAgent(
             self._backend.provider,
@@ -136,6 +139,7 @@ class Session:
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),
             tool_observer=tool_observer(lambda: self.session_id),
+            context_policy=self._context_manager,
             **agent_runtime_options(config, "interactive"),
         )
 
@@ -185,6 +189,11 @@ class Session:
     def approver(self) -> Approver | None:
         """The session's shared tool approver, also used by joined delegates."""
         return self._approver
+
+    @property
+    def context_report(self) -> dict:
+        """Latest policy diagnostics; excludes prompts, source bodies and tool arguments."""
+        return dict(self._context_manager.report)
 
     def cancel(self) -> None:
         """Cancel the active turn and release manual approvals before draining."""
@@ -303,6 +312,7 @@ class Session:
         """
         self._conversation.clear()
         self.session_id = None
+        self._context_manager.report = {}
         self.context_tokens = None  # a fresh conversation has no footprint yet
         self._last_reasoning = ""
 
@@ -320,6 +330,7 @@ class Session:
             self.swap_backend(backend)
         self._conversation = restored
         self.session_id = None
+        self._context_manager.report = {}
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None

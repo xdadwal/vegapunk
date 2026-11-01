@@ -510,14 +510,25 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub, rest = sub.lower(), rest.strip()
     usage = ("Usage: /memory [list|review|jobs|pause|resume|retry] or "
-             "/memory show|approve|reject <candidate-id> or /memory forget <memory-id>")
+             "/memory show|approve|reject <candidate-id>, /memory pin|unpin|forget <memory-id>, "
+             "or /memory supersede <old-id> <new-id>")
     try:
+        if sub in {"pin", "unpin", "supersede"}:
+            from . import memory_context
+            if sub == "supersede":
+                old, _, new = rest.partition(" ")
+                memory_context.supersede(memory_context.resolve(old), memory_context.resolve(new.strip()))
+            else:
+                memory_context.pin(memory_context.resolve(rest), sub == "pin")
+            return CommandResult(output="Memory context flags updated; this does not verify the fact.")
         if sub in {"", "jobs"} and not rest:
             return CommandResult(output=memory_jobs.job_status())
         if sub == "list" and not rest:
             facts = memory.list_memory()
+            flags = {row[0]: (row[1], row[2]) for row in db.query("SELECT memory_id,pinned,superseded_by FROM memory_context_flags")}
             return CommandResult(output="\n".join(
                 f"  {m.id[:8]} [{m.created_at[:10]}] {json.dumps(m.content, ensure_ascii=False)}"
+                + (f" (superseded by {flags[m.id][1]})" if flags.get(m.id, (0, None))[1] else " (pinned)" if flags.get(m.id, (0, None))[0] else "")
                 for m in facts) or "(no active memories)")
         if sub == "review" and not rest:
             pending = memory_jobs.candidates()
@@ -539,7 +550,7 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
         if sub == "retry" and not rest:
             memory_jobs.retry_failed()
             return CommandResult(output="Failed memory jobs queued for retry.\n" + memory_jobs.job_status())
-    except db.StoreError as exc:
+    except (db.StoreError, ValueError) as exc:
         return CommandResult(output=f"Could not manage memory: {exc}")
     return CommandResult(output=usage)
 
@@ -637,6 +648,14 @@ def _plan(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else "(no active plan)")
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read plan: {exc}")
+
+
+@command("context", "Show context policy diagnostics: /context [show]")
+def _context(ctx: CommandContext, arg: str) -> CommandResult:
+    if arg not in {"", "show"}:
+        return CommandResult(output="Usage: /context [show]")
+    report = getattr(ctx.session, "context_report", {})
+    return CommandResult(output=json.dumps(report, indent=2) if report else "(no context policy report yet)")
 
 
 @command("artifacts", "Session snapshots: /artifacts [list|read <id> [cursor]|search <id> <query>]")

@@ -34,6 +34,8 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 
 # Sub-commands that take a fixed vocabulary of their own.
 _SUBCOMMANDS = {
+    "memory": ["list", "review", "jobs", "pause", "resume", "retry", "show", "approve", "reject", "forget", "pin", "unpin", "supersede"],
+    "context": ["show"],
     "artifacts": ["list", "read", "search"],
     "plan": ["show"],
     "checkpoints": ["list"],

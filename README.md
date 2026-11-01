@@ -171,7 +171,8 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
-| `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
+| `/memory [list \| review \| jobs \| pause \| resume \| pin <id> \| unpin <id> \| supersede <old-id> <new-id>]` | Inspect personalization, manage explicit memory priorities, and control background extraction. |
+| `/context [show]` | Inspect the latest request's retained/proposed context estimates and budget diagnostics without inference. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
 | `/agent [name]` | List or select a Vegapunk agent and apply its model/effort defaults. |
 | `/journal` | Start a fresh journal entry with a gentle, user-led conversation style. |
@@ -383,7 +384,19 @@ Capture preserves decoded text rather than binary output. Other tools retain the
 normalized result snapshots; data discarded before an instrumented capture cannot
 be recovered. Shell timeouts kill the POSIX command group, including children that
 still hold its output pipe open.
-Automatic model context offloading is not enabled yet.
+Context preparation defaults to `observe`: `/context` estimates a smaller request while
+the model still receives the original history. `off` disables projection diagnostics.
+Experimental `bounded` mode replaces eligible older large tool results with excerpts and
+retrievable artifact IDs, adds compact plan/checkpoint state, and selects relevant personal
+memory. Original conversation history and artifacts remain intact. Signed/opaque exchanges,
+user messages, and results without complete, unambiguous stored evidence are preserved.
+If the estimated input budget is still exceeded, optional source-quoted historical notes
+are generated with a separate tool-free model call. Quotes and source IDs are validated;
+this does not establish semantic truth. Invalid notes are retained as rejected artifacts
+and never reused. If mandatory context still exceeds budget or summarization fails, the
+turn stops with an explicit error. Summary generation can add cost and latency.
+See [the synthetic evaluation](docs/evaluations/context-efficiency.md) before opting in;
+bounded mode remains experimental and is not enabled by default.
 The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current
 session only. Suggestions are local, prefix-filtered, and capped at 100 matches.
 `register_file_artifact` remembers a workspace text-file reference and its baseline hash;
@@ -445,6 +458,9 @@ Set `VEGAPUNK_MEMORY_REVIEW=review` to review every extracted candidate before a
 /memory list                 # active facts and memory IDs
 /memory show <memory-id>     # inspect an active memory's extraction evidence
 /memory forget <memory-id>
+/memory pin <memory-id>       # always select this active fact in bounded mode
+/memory unpin <memory-id>
+/memory supersede <old-id> <new-id> # explicitly retire an outdated fact
 /memory pause
 /memory resume
 /memory retry                # retry jobs that exhausted automatic attempts
@@ -553,6 +569,12 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_TOOL_TIMEOUT` | `300` | Tool-handler deadline in seconds; `0` disables it. |
 | `VEGAPUNK_SHELL_TIMEOUT` | `30` | Shell command timeout in seconds. |
 | `VEGAPUNK_OUTPUT_CAP` | `10000` | Maximum tool-output characters returned to the model. |
+| `VEGAPUNK_CONTEXT_POLICY` | `observe` | Request preparation: `off`, `observe`, or experimental `bounded`. |
+| `VEGAPUNK_CONTEXT_INPUT_BUDGET` | `32768` | Estimated input tokens (UTF-8 bytes / 3), capped by the known model window minus output reserve and 2048 safety margin. |
+| `VEGAPUNK_CONTEXT_RECENT_TURNS` | `4` | Prefer keeping this many recent complete user exchanges; budget pressure may project older results within them, preserving the newest two results. |
+| `VEGAPUNK_MEMORY_CONTEXT_BUDGET` | `1200` | Estimated selected-memory budget in bounded mode. Pinned overflow fails explicitly. |
+| `VEGAPUNK_CONTEXT_SUMMARIES` | `true` | Allow source-quoted historical summaries when bounded mode exceeds budget. Observe/off never generate summaries. |
+| `VEGAPUNK_SUMMARY_MAX_OUTPUT_TOKENS` | `2048` | Output limit for a separately owned, tool-free summary call. |
 
 ### Interface
 

@@ -5,7 +5,7 @@
 # NOTE: logpose's version string has not moved off 0.1.0, so pip reports this
 # requirement "already satisfied" when only the SHA changes. Bumping the pin is
 # not enough — reinstall with --force-reinstall, or the old wheel stays.
-logpose[anthropic] @ git+https://github.com/xdadwal/logpose@d02a7b286a335910886a51324f272eca2adeb545
+logpose[anthropic] @ git+https://github.com/xdadwal/logpose@86deccc5dc1b0b009968f586412234f365a9afff
 # Still used by vegapunk/embedding.py against Docker Model Runner's /embeddings
 # endpoint; the chat path goes through logpose's providers instead.
 openai>=1.0
