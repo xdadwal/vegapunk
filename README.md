@@ -166,6 +166,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
 | `/plan [show]` | Inspect the current execution plan and dependency graph. |
 | `/checkpoints [list]` | Inspect recent immutable progress snapshots. |
+| `/artifacts [list\|read <id> [cursor]\|search <id> <query>]` | Inspect session text snapshots with bounded retrieval. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |
@@ -362,6 +363,13 @@ and evidence references supplied by the model; these references are assertions, 
 independent verification. Use unique operation IDs for retry-safe mutations. Delegates
 can be assigned an in-progress step through `delegate(plan_id=…, step=…)`; only that
 step can be updated by the child, and an active assignment prevents duplicate delegation.
+
+`register_artifact` stores immutable session text snapshots; `list_artifacts`,
+`read_artifact`, and `search_artifact` retrieve them without repeating the original action.
+Snapshots are stored in the existing database, survive session renaming/resumption, and
+are deleted with their session. Capture is limited to 16 MiB with explicit completeness
+metadata; reads return at most 12000 Unicode characters and a continuation cursor.
+Tool output capture and automatic context offloading are not enabled by these tools.
 - Facts recorded through `remember` or accepted from background extraction are loaded before the
   next interactive turn or scheduled run. Explicit requests to remember a fact save it immediately;
   other statements go through background extraction. If

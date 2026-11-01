@@ -18,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import agents, db, execution, memory, memory_jobs, menu, progress, scheduler, session_store, skills, transcript
+from . import agents, artifacts, db, execution, memory, memory_jobs, menu, progress, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -633,6 +633,28 @@ def _plan(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else "(no active plan)")
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read plan: {exc}")
+
+
+@command("artifacts", "Session snapshots: /artifacts [list|read <id> [cursor]|search <id> <query>]")
+def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
+    if ctx.current_name is None:
+        return CommandResult(output="(no session artifacts)")
+    sub, _, rest = arg.partition(" ")
+    try:
+        sid = session_store.session_identity(ctx.current_name)
+        if sub in {"", "list"}:
+            result = artifacts.list_artifacts(sid, int(rest) if rest else 0)
+        elif sub == "read":
+            artifact_id, _, cursor = rest.partition(" ")
+            result = artifacts.read(sid, artifact_id, int(cursor) if cursor else 0)
+        elif sub == "search":
+            artifact_id, _, query = rest.partition(" ")
+            result = artifacts.search(sid, artifact_id, query)
+        else:
+            return CommandResult(output="Usage: /artifacts [list [offset]|read <id> [cursor]|search <id> <query>]")
+        return CommandResult(output=json.dumps(result, ensure_ascii=False, indent=2))
+    except (ValueError, db.StoreError, session_store.SessionNotFound) as exc:
+        return CommandResult(output=f"Could not read artifacts: {exc}")
 
 
 @command("checkpoints", "Show recent progress checkpoints: /checkpoints [list]")

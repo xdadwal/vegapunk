@@ -125,11 +125,12 @@ class Session:
 
     def _build_agent(self) -> Agent:
         from .tools.progress import bind
+        from .tools.artifacts import bind as bind_artifacts
 
         return InteractiveAgent(
             self._backend.provider,
             system=self._system_prompt,
-            tools=bind(self._tools, lambda: self.session_id),
+            tools=bind_artifacts(bind(self._tools, lambda: self.session_id), lambda: self.session_id),
             max_iterations=self._max_steps,
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),

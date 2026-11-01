@@ -34,6 +34,7 @@ _COMMANDS = sorted(f"/{name}" for name in _COMMAND_REGISTRY)
 
 # Sub-commands that take a fixed vocabulary of their own.
 _SUBCOMMANDS = {
+    "artifacts": ["list", "read", "search"],
     "plan": ["show"],
     "checkpoints": ["list"],
     "agent": list(agents.AGENTS),
