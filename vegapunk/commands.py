@@ -18,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import agents, db, execution, memory, memory_jobs, menu, scheduler, session_store, skills, transcript
+from . import agents, db, execution, memory, memory_jobs, menu, progress, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -602,6 +602,8 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not resume '{name}': {exc}")
     ctx.current_name = name
     ctx.conversation_mode = conversation_mode
+    if isinstance(ctx.session, Session):
+        ctx.session.session_id = session_store.session_identity(name)
     ctx.agent_id = agent_id
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
@@ -620,6 +622,28 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read runs: {exc}")
     return CommandResult(output="\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)")
+
+
+@command("plan", "Show the current plan: /plan [show]")
+def _plan(ctx: CommandContext, arg: str) -> CommandResult:
+    if ctx.current_name is None:
+        return CommandResult(output="(no active plan)")
+    try:
+        plan = progress.get(session_store.session_identity(ctx.current_name))
+        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else "(no active plan)")
+    except (db.StoreError, session_store.SessionNotFound) as exc:
+        return CommandResult(output=f"Could not read plan: {exc}")
+
+
+@command("checkpoints", "Show recent progress checkpoints: /checkpoints [list]")
+def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
+    if ctx.current_name is None:
+        return CommandResult(output="(no checkpoints)")
+    try:
+        rows = progress.checkpoints(session_store.session_identity(ctx.current_name))
+        return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
+    except (db.StoreError, session_store.SessionNotFound) as exc:
+        return CommandResult(output=f"Could not read checkpoints: {exc}")
 
 
 @command("sessions", "Resume, list, or remove conversations: /sessions [name | remove <name>]")

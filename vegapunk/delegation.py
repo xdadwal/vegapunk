@@ -45,7 +45,7 @@ _DELEGATE_PROMPT = (
 class Runner(Protocol):
     """Something able to execute one delegated role to completion."""
 
-    def run(self, role: str, task: str) -> str: ...
+    def run(self, role: str, task: str, plan_id: str = "", step: int | None = None) -> str: ...
 
 
 class _DelegatedAgent(Agent):
@@ -98,8 +98,10 @@ class RoleRunner:
         approver: Approver | None = None,
         approval_mode: Callable[[], str] | None = None,
         activity: DelegateActivity | None = None,
+        session_identity: Callable[[], str | None] | None = None,
     ) -> None:
         self._backend = backend
+        self._session_identity = session_identity
         self._tools = tools
         self._config = cfg
         self._approver = approver
@@ -133,10 +135,24 @@ class RoleRunner:
         """Join even roles executing between parent stream event pulls."""
         wait_for_cleanup(self._idle)
 
-    def run(self, role: str, task: str) -> str:
+    def run(self, role: str, task: str, plan_id: str = "", step: int | None = None) -> str:
         # Imported lazily so registering the delegate tool can finish while the
         # approval gate itself is importing the tool registry.
         from .gate import ApprovalCancelled, make_gate
+        from . import progress
+        from .tools.progress import bind
+
+        sid = self._session_identity() if self._session_identity else None
+        if bool(plan_id) != (step is not None):
+            raise ValueError("Provide both plan_id and step")
+        tools = self._tools
+        if plan_id:
+            plan = progress.get(sid, plan_id) if sid else None
+            if plan is None or isinstance(step, bool) or step < 0 or step >= len(plan["steps"]):
+                raise ValueError("Unknown assigned plan step")
+            if plan["steps"][step]["status"] != "in_progress":
+                raise ValueError("Start the assigned step before delegation")
+            tools = bind(list(tools), lambda: sid, plan_id, step)
 
         agent_id, definition = agents.get_delegate(role)
         assigned = task.strip()
@@ -153,7 +169,11 @@ class RoleRunner:
         status = "failed"
         worker = None
         backend = None
+        claimed = False
         try:
+            if plan_id:
+                progress.claim(sid, plan_id, step, activity_id)
+                claimed = True
             control.check()
             approver = (_RoleApprover(self._approver, definition.name, self._activity, activity_id)
                         if self._approver is not None else None)
@@ -171,7 +191,7 @@ class RoleRunner:
             backend = spawn_backend(primary)
             control.check()
             worker = _DelegatedAgent(
-                backend.provider, system=system, tools=self._tools,
+                backend.provider, system=system, tools=tools,
                 max_iterations=self._config.max_steps, extra=backend.extra,
                 on_tool_call=make_gate(approver, allow_questions=False, allow_delegation=False),
                 activity=self._activity, activity_id=activity_id, control=control, **runtime,
@@ -202,6 +222,8 @@ class RoleRunner:
                     self._controls.pop(activity_id, None)
                     if not self._controls:
                         self._idle.set()
+                if claimed:
+                    progress.release(plan_id, step, activity_id, status)
         if not result:
             result = "(The role returned no text.)"
         return f"{definition.name} role result:\n{result}"
@@ -234,13 +256,13 @@ def set_runner(runner: Runner | None) -> None:
         _runner = runner
 
 
-def run(role: str, task: str) -> str:
+def run(role: str, task: str, plan_id: str = "", step: int | None = None) -> str:
     """Run through the currently installed primary-conversation coordinator."""
     with _runner_lock:
         runner = _runner
     if runner is None:
         return UNAVAILABLE
-    return runner.run(role, task)
+    return runner.run(role, task, plan_id, step) if plan_id or step is not None else runner.run(role, task)
 
 
 def stop_all() -> None:

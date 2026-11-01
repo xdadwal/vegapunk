@@ -53,4 +53,5 @@ def recover_runs() -> None:
     """Mark previous unfinished turns abandoned after acquiring the CLI lock."""
     with db.transaction(immediate=True) as conn:
         conn.execute("INSERT INTO execution_events(run_id,sequence,status,created_at) SELECT run_id,2,'abandoned',? FROM execution_runs WHERE status='running'", (db.utcnow(),))
+        conn.execute("UPDATE progress_claims SET active=0,status='abandoned' WHERE active=1")
         conn.execute("UPDATE execution_runs SET status='abandoned',finished_at=? WHERE status='running'", (db.utcnow(),))
