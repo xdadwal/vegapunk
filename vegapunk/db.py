@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     conversation_mode TEXT NOT NULL DEFAULT 'conversation',
     agent_id TEXT NOT NULL DEFAULT 'default',
     model_selector TEXT NOT NULL DEFAULT '',
-    effort TEXT NOT NULL DEFAULT ''
+    effort TEXT NOT NULL DEFAULT '',
+    session_id TEXT
 );
 CREATE TABLE IF NOT EXISTS execution_runs (
     run_id TEXT PRIMARY KEY,
@@ -200,6 +201,13 @@ CREATE TABLE IF NOT EXISTS lifecycle_checkpoints (
     body TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(session_id,sequence)
+);
+CREATE TABLE IF NOT EXISTS session_message_ids (
+    session_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    message_id TEXT NOT NULL UNIQUE,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY(session_id,ordinal)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
@@ -442,6 +450,9 @@ def _check_version(conn: turso.Connection) -> None:
             run_columns = {item[1] for item in conn.execute("PRAGMA table_info(execution_runs)").fetchall()}
             if "staged_input" not in run_columns:
                 conn.execute("ALTER TABLE execution_runs ADD COLUMN staged_input TEXT NOT NULL DEFAULT ''")
+        if found < 23:
+            from . import message_refs
+            message_refs.backfill(conn)
         if found < SCHEMA_VERSION:
             columns = {item[1] for item in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
             if "profile" not in columns:

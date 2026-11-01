@@ -67,6 +67,8 @@ def finish_run(run_id: str, status: str, messages: list[dict] | None = None) -> 
         if messages is not None:
             conn.execute("UPDATE sessions SET messages=?,turns=?,updated_at=? WHERE session_id=(SELECT session_id FROM execution_runs WHERE run_id=?)",
                          (json.dumps(messages), count_user_turns(messages), db.utcnow(), run_id))
+            from . import message_refs
+            message_refs.sync(conn, row[1], messages)
         conn.execute("INSERT INTO execution_events(run_id,sequence,status,created_at) VALUES (?,2,?,?)", (run_id, status, db.utcnow()))
         _checkpoint(conn, row[1], f"turn_{status}", run_id, status)
 

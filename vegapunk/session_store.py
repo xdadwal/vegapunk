@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import uuid4
 
-from . import agents, db
+from . import agents, db, message_refs
 from .transcript import count_user_turns
 from .backend import validate_effort
 
@@ -109,15 +109,19 @@ def save_session(name: str, messages: list[dict], *, conversation_mode: SessionM
     if effort:
         validate_effort(effort)
     now = db.utcnow()
-    db.execute(
-        "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, agent_id, model_selector, effort, session_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(slug) DO UPDATE SET "
-        "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at, "
-        "conversation_mode = excluded.conversation_mode, agent_id = excluded.agent_id, "
-        "model_selector = excluded.model_selector, effort = excluded.effort",
-        (name, json.dumps(messages), turns, now, now, conversation_mode, agent_id, model_selector, effort, str(uuid4())),
-    )
+    with db.transaction(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO sessions (slug, messages, turns, created_at, updated_at, conversation_mode, agent_id, model_selector, effort, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(slug) DO UPDATE SET "
+            "session_id = COALESCE(sessions.session_id, excluded.session_id), "
+            "messages = excluded.messages, turns = excluded.turns, updated_at = excluded.updated_at, "
+            "conversation_mode = excluded.conversation_mode, agent_id = excluded.agent_id, "
+            "model_selector = excluded.model_selector, effort = excluded.effort",
+            (name, json.dumps(messages), turns, now, now, conversation_mode, agent_id, model_selector, effort, str(uuid4())),
+        )
+        identity = conn.execute("SELECT session_id FROM sessions WHERE slug=?", (name,)).fetchone()[0]
+        message_refs.sync(conn, identity, messages)
 
 
 def session_identity(name: str) -> str:
@@ -202,6 +206,7 @@ def load_session(name: str) -> list[dict]:
 def delete_session(name: str) -> None:
     """Remove a session, its extraction work, and memories owned by that source."""
     with db.transaction() as conn:
+        conn.execute("DELETE FROM session_message_ids WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM context_summaries WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM tool_observations WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?)", (name,))
         conn.execute("DELETE FROM checkpoint_artifacts WHERE artifact_id IN (SELECT artifact_id FROM session_artifacts WHERE session_id IN (SELECT session_id FROM sessions WHERE slug=?))", (name,))
@@ -258,6 +263,7 @@ def rename_session(old: str, new: str, messages: list[dict], *, conversation_mod
                      (new, encoded, count_user_turns(messages), created, updated, mode, selected,
                       selected_model, selected_effort, identity))
         conn.execute("DELETE FROM sessions WHERE slug=?", (old,))
+        message_refs.sync(conn, identity, messages)
         conn.execute("UPDATE memory_candidates SET session_slug=? WHERE session_slug=?", (new, old))
         # An in-flight result uses the old slug and must not commit after rename.
         conn.execute("UPDATE memory_jobs SET session_slug=?,lease_token=NULL,lease_until=NULL,"
