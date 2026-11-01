@@ -130,7 +130,7 @@ def link_checkpoint(session_id: str, artifact_id: str, checkpoint_id: str) -> No
     with db.transaction(immediate=True) as conn:
         if not conn.execute("SELECT 1 FROM session_artifacts WHERE session_id=? AND artifact_id=?", (session_id, artifact_id)).fetchone():
             raise ValueError("Unknown artifact in this session")
-        if not conn.execute("SELECT 1 FROM progress_checkpoints WHERE session_id=? AND checkpoint_id=?", (session_id, checkpoint_id)).fetchone():
+        if not conn.execute("SELECT 1 FROM progress_checkpoints WHERE session_id=? AND checkpoint_id=? UNION ALL SELECT 1 FROM lifecycle_checkpoints WHERE session_id=? AND checkpoint_id=?", (session_id, checkpoint_id, session_id, checkpoint_id)).fetchone():
             raise ValueError("Unknown checkpoint in this session")
         conn.execute("INSERT OR IGNORE INTO checkpoint_artifacts VALUES (?,?)", (checkpoint_id, artifact_id))
 

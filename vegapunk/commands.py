@@ -592,6 +592,10 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
         conversation_mode = session_store.load_session_mode(name)
         agent_id = session_store.load_session_agent(name)
         model_selector, effort = session_store.load_session_execution(name)
+        sid = session_store.session_identity(name)
+        active_plan = progress.get(sid)
+        unknown = db.query("SELECT COUNT(*) FROM tool_observations WHERE session_id=? AND status='outcome_unknown'", (sid,))[0][0]
+        latest_checkpoint = progress.checkpoints(sid)[:1]
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
@@ -614,13 +618,16 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.current_name = name
     ctx.conversation_mode = conversation_mode
     if isinstance(ctx.session, Session):
-        ctx.session.session_id = session_store.session_identity(name)
+        ctx.session.session_id = sid
     ctx.agent_id = agent_id
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
         output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
                + (" Journal mode." if conversation_mode == "journal" else "")
                + (f" Agent: {agents.get_agent(agent_id).name}." if agent_id != "default" else "")
+               + (f" Active plan: {active_plan['id']} (revision {active_plan['revision']}); inspect /plan." if active_plan else "")
+               + (f" Latest checkpoint: {latest_checkpoint[0]['id']}; inspect /checkpoints." if latest_checkpoint else "")
+               + (f" {unknown} uncertain tool outcome(s); inspect /runs and current state before repeating actions." if unknown else "")
     )
 
 
@@ -633,7 +640,9 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
         observations = execution.tool_observations(session_store.session_identity(ctx.current_name))
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read runs: {exc}")
-    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)"
+    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}"
+                     + ("\nStaged model input:\n" + run.staged_input if run.staged_input else "")
+                     for run in runs) or "(no recorded runs)"
     if observations:
         text += "\nTool observations (completed means handler returned; inspect results):\n" + json.dumps(observations, ensure_ascii=False, indent=2)
     return CommandResult(output=text)
@@ -680,17 +689,25 @@ def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not read artifacts: {exc}")
 
 
-@command("checkpoints", "Show recent progress checkpoints: /checkpoints [list]")
+@command("checkpoints", "Show progress and lifecycle checkpoints: /checkpoints [list [offset]|show <id>]")
 def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
     if ctx.current_name is None:
         return CommandResult(output="(no checkpoints)")
     try:
-        rows = progress.checkpoints(session_store.session_identity(ctx.current_name))
         sid = session_store.session_identity(ctx.current_name)
+        words = arg.split()
+        if not words or words == ["list"]:
+            rows = progress.checkpoints(sid)
+        elif len(words) == 2 and words[0] == "list":
+            rows = progress.checkpoints(sid, int(words[1]))
+        elif len(words) == 2 and words[0] == "show":
+            rows = [progress.checkpoint(sid, words[1])]
+        else:
+            return CommandResult(output="Usage: /checkpoints [list [offset]|show <id>]")
         for row in rows:
             row["artifacts"] = artifacts.checkpoint_artifacts(sid, row["id"])
         return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
-    except (db.StoreError, session_store.SessionNotFound) as exc:
+    except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read checkpoints: {exc}")
 
 

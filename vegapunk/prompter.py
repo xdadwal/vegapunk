@@ -38,7 +38,7 @@ _SUBCOMMANDS = {
     "context": ["show"],
     "artifacts": ["list", "read", "search"],
     "plan": ["show"],
-    "checkpoints": ["list"],
+    "checkpoints": ["list", "show"],
     "agent": list(agents.AGENTS),
     "sessions": ["remove"],
     "schedule": ["list", "history", "add", "remove"],
@@ -141,6 +141,14 @@ class SlashCompleter(Completer):
                 options = [row[0] for row in db.query(
                     "SELECT artifact_id FROM session_artifacts WHERE session_id=? AND artifact_id LIKE ? ORDER BY artifact_id LIMIT 100",
                     (sid, word + "%"))] if sid else []
+            except (db.StoreError, SessionNotFound):
+                options = []
+        if head.lower() == "checkpoints" and len(rest) == 2 and rest[0] == "show" and self._session_identity:
+            try:
+                sid = self._session_identity()
+                options = [row[0] for row in db.query(
+                    "SELECT checkpoint_id FROM progress_checkpoints WHERE session_id=? AND checkpoint_id LIKE ? UNION ALL SELECT checkpoint_id FROM lifecycle_checkpoints WHERE session_id=? AND checkpoint_id LIKE ? ORDER BY checkpoint_id LIMIT 100",
+                    (sid, word + "%", sid, word + "%"))] if sid else []
             except (db.StoreError, SessionNotFound):
                 options = []
         for option in options:
