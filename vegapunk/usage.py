@@ -11,7 +11,7 @@ _ACTORS = ("main", "delegate", "summary")
 _FIELDS = ("completed_model_calls", "calls_without_usage", "reported_input_tokens",
            "reported_output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
            "retrieval_requests", "retrieval_result_bytes", "preparations", "failed_preparations",
-           "summary_cache_hits")
+           "summary_cache_hits", "estimated_input_tokens", "estimated_requests")
 _PREPARATION_FIELDS = {"retained_estimated_tokens", "proposed_estimated_tokens", "system_bytes",
                        "schema_bytes", "retained_message_bytes", "proposed_message_bytes",
                        "retained_tool_result_bytes", "proposed_tool_result_bytes", "memory_bytes",
@@ -26,12 +26,22 @@ def _empty() -> dict[str, dict[str, int]]:
 def _view(scope: dict[str, dict[str, int]]) -> dict:
     def visible(row: dict[str, int]) -> dict:
         result = dict(row)
+        total_input = row["reported_input_tokens"] + row["cache_read_input_tokens"] + row["cache_creation_input_tokens"]
+        result["total_input_tokens"] = total_input
+        result["estimator_error_fraction"] = ((row["estimated_input_tokens"] - total_input) / total_input
+             if total_input > 0 and row["estimated_requests"] == row["completed_model_calls"] and not row["calls_without_usage"] else None)
+        if not row["estimated_requests"]:
+            result["estimated_input_tokens"] = None
         if row["completed_model_calls"] == row["calls_without_usage"]:
+            result["total_input_tokens"] = None
             for key in _FIELDS[2:6]:
                 result[key] = None
         return result
     totals = {key: sum(row[key] for row in scope.values()) for key in _FIELDS}
-    return {**visible(totals), "by_actor": {actor: visible(row) for actor, row in scope.items()}}
+    total_view = visible(totals)
+    if any(row["estimated_requests"] != row["completed_model_calls"] or row["calls_without_usage"] for row in scope.values()):
+        total_view["estimator_error_fraction"] = None
+    return {**total_view, "by_actor": {actor: visible(row) for actor, row in scope.items()}}
 
 
 class UsageLedger:
@@ -39,7 +49,8 @@ class UsageLedger:
 
     Totals cover the current in-process conversation, with a separate latest-turn
     view. They do not estimate billing for failed attempts lacking usage events.
-    Cache counters remain separate: providers differ on whether input includes them.
+    Logpose normalizes input_tokens as uncached; cache categories stay visible and
+    total_input_tokens sums these normalized categories once, independently of price.
     """
 
     def __init__(self) -> None:
@@ -82,6 +93,9 @@ class UsageLedger:
         """Count cache reuse separately from actual summary-provider calls."""
         self._add(actor, {"preparations": 1, "failed_preparations": int(failed),
                           "summary_cache_hits": int(bool(report.get("summary_cache_hit")))})
+        estimate = report.get("proposed_estimated_tokens" if report.get("mode") == "bounded" else "retained_estimated_tokens")
+        if not failed and isinstance(estimate, int) and not isinstance(estimate, bool) and estimate >= 0:
+            self._add(actor, {"estimated_input_tokens": estimate, "estimated_requests": 1})
         with self._lock:
             self._latest[actor] = {"failed": failed, **{key: value for key, value in report.items()
                                    if key in _PREPARATION_FIELDS and isinstance(value, (int, bool))}}
@@ -93,5 +107,5 @@ class UsageLedger:
             latest = deepcopy(self._latest)
         return {"scope": "current in-process conversation; reset on new/restore",
                 "coverage": "completed model turns only; failed/partial attempts may have unreported cost",
-                "cache_semantics": "separate provider counters; do not add cache tokens to input blindly",
+                "cache_semantics": "Logpose input_tokens is uncached; total_input_tokens sums normalized uncached/read/write categories once",
                 "session": _view(session), "turn": _view(turn), "latest_preparation_by_actor": latest}

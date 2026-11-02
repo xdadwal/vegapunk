@@ -98,6 +98,14 @@ def test_large_delegate_result_is_retrievable_without_losing_stop_reason(stop_re
     assert "important finding" in result and "unresolved caveat" in result
 
 
+def test_short_delegate_result_preserves_abnormal_stop_status():
+    child = FakeProvider(says("Partial findings only", stop_reason="max_tokens"))
+    primary = replace(backend_for(), spawn_provider=lambda: child)
+    result = RoleRunner(lambda: primary, ALL_TOOLS).run("shaka", "review")
+    assert "stopped: max_tokens" in result
+    assert "Partial findings only" in result
+
+
 def test_role_runner_closes_spawned_provider_on_its_request_loop(tmp_path):
     class LoopAwareProvider(FakeProvider):
         def __init__(self):

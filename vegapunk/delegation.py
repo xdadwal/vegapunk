@@ -249,7 +249,10 @@ class RoleRunner:
             completeness = "complete" if saved["complete"] else "partial capture"
             result = (result[:800] + f"\n[Delegated result excerpt; status: {status}; {completeness}. "
                       f"Session artifact: {saved['id']}. Use read_artifact for details.]\n" + result[-800:])
-        return f"{definition.name} role result:\n{result}"
+        label = f"{definition.name} role result"
+        if status != "completed":
+            label += f" [{status}]"
+        return f"{label}:\n{result}"
 
 
 class _RoleApprover(Approver):
