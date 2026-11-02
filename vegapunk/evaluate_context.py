@@ -13,7 +13,7 @@ import time
 import statistics
 
 
-def grade_response(text: str, expected: str, artifact_id: str | None) -> dict[str, bool]:
+def grade_response(text: str, expected: str, artifact_id: str | None, *, known_sources: set[str] | None = None) -> dict[str, bool]:
     """Score answer/source separately from the requested bare JSON formatting."""
     raw = text.strip()
     bare = True
@@ -22,33 +22,47 @@ def grade_response(text: str, expected: str, artifact_id: str | None) -> dict[st
         bare = False
     try:
         value = json.loads(raw)
-        correct = isinstance(value, dict) and {"answer", "source"} <= value.keys() and value["answer"] == expected and value["source"] == artifact_id
+        answer_matches = isinstance(value, dict) and "answer" in value and value["answer"] == expected
+        source_matches = isinstance(value, dict) and "source" in value and value["source"] == artifact_id
+        allowed_sources = known_sources if known_sources is not None else ({artifact_id} if artifact_id is not None else set())
+        resolves = isinstance(value, dict) and "source" in value and (value["source"] is None and artifact_id is None or isinstance(value["source"], str) and value["source"] in allowed_sources)
+        correct = answer_matches and source_matches
         format_ok = isinstance(value, dict) and {"answer", "source"} <= value.keys() and isinstance(value["answer"], str) and (value["source"] is None or isinstance(value["source"], str))
     except ValueError:
         correct = False
         format_ok = False
-    return {"correct_answer_and_source": correct, "requested_json_format": bare and format_ok}
+        answer_matches = source_matches = False
+        resolves = False
+    return {"correct_answer_and_source": correct, "requested_json_format": bare and format_ok,
+            "answer_matches_expected": answer_matches, "source_matches_expected": source_matches,
+            "citation_resolves": resolves}
 
 
 def assess_pairs(cases: list[dict]) -> dict:
     """Report this fixture's accuracy gate without claiming general agent quality."""
     if len(cases) != 10 or any(set(c.get("live", {})) != {"baseline", "bounded"} for c in cases):
         return {"source_accuracy_gate": "unverified", "reason": "Ten complete pairs required"}
+    dimensions = ("correct_answer_and_source", "answer_matches_expected", "source_matches_expected", "citation_resolves")
+    if any(any(not isinstance(value.get(key), bool) for key in dimensions) for c in cases for value in c["live"].values()):
+        return {"source_accuracy_gate": "unverified", "reason": "Per-dimension answer/source grading required"}
+    if any(not isinstance(value.get("total_input_tokens"), int) for c in cases for value in c["live"].values()):
+        return {"source_accuracy_gate": "unverified", "reason": "Normalized total input usage required"}
     rows = {mode: [case["live"][mode] for case in cases] for mode in ("baseline", "bounded")}
     summary = {}
     for mode, results in rows.items():
         summary[mode] = {"correct": sum(r["correct_answer_and_source"] for r in results),
                          "format_compliant": sum(r["requested_json_format"] for r in results),
                          "reported_input_tokens": sum(r["reported_input_tokens"] for r in results),
+                         "total_input_tokens": sum(r["total_input_tokens"] for r in results),
                          "reported_output_tokens": sum(r["reported_output_tokens"] for r in results),
                          "retrieval_calls": sum(r["retrieval_calls"] for r in results),
                          "median_seconds": round(statistics.median(r["seconds"] for r in results), 3),
                          "total_seconds": round(sum(r["seconds"] for r in results), 3),
                          "latency_stdev_seconds": round(statistics.stdev(r["seconds"] for r in results), 3)}
     complete_usage = all(r["usage_available"] for results in rows.values() for r in results)
-    no_regression = all(not c["live"]["baseline"]["correct_answer_and_source"] or c["live"]["bounded"]["correct_answer_and_source"] for c in cases)
+    no_regression = all(not c["live"]["baseline"][key] or c["live"]["bounded"][key] for c in cases for key in dimensions)
     no_leak = all(not r["foreign_data_leaked"] for results in rows.values() for r in results)
-    passed = complete_usage and no_regression and no_leak and summary["bounded"]["correct"] == 10 and summary["bounded"]["reported_input_tokens"] < summary["baseline"]["reported_input_tokens"]
+    passed = complete_usage and no_regression and no_leak and summary["bounded"]["correct"] == 10 and summary["bounded"]["total_input_tokens"] < summary["baseline"]["total_input_tokens"]
     return {"source_accuracy_gate": "passed" if passed else "failed", "no_hard_correctness_regression": no_regression,
             "all_pairs_have_reported_usage": complete_usage, "zero_foreign_data_leakage": no_leak,
             "baseline": summary["baseline"], "bounded": summary["bounded"],
@@ -84,7 +98,7 @@ async def _evaluate(live: bool, provider_name: str | None, case_index: int | Non
     from .backend import create_backend, spawn_backend, with_model
     from .usage import UsageLedger
 
-    report = {"synthetic_only": True, "estimates_are_not_provider_tokens": True, "live": live, "cases": [], "fixture_version": 2, "default_policy_changed": False}
+    report = {"synthetic_only": True, "estimates_are_not_provider_tokens": True, "live": live, "cases": [], "fixture_version": 2, "grading_version": 3, "default_policy_changed": False}
     selected_provider = provider_name or config.provider
     backend = create_backend(selected_provider, with_model(config, selected_provider, model)) if live else None
     report.update(suite="synthetic source accuracy; not a complete agent-quality gate",
@@ -155,29 +169,34 @@ async def _evaluate(live: bool, provider_name: str | None, case_index: int | Non
         total_after += after
         case = {"name": name, "answer_location": "middle" if middle else "head", "retained_message_bytes": before,
                 "projected_message_bytes": after, "expected_answer": expected, "expected_source": expected_source,
+                "known_sources": sorted({saved["id"], "latest-user"} | ({expected_source} if expected_source else set())),
                 "scenario": scenarios[index],
                 "projection_preserved_user_messages": len(messages) == len(projected.messages) and all(original == selected for original, selected in zip(messages, projected.messages) if original.role == "user" and not any(b.type == "tool_result" for b in original.content))}
         if live:
             outcomes = {}
             for mode in ("baseline", "bounded"):
                 owned = spawn_backend(backend)
-                manager = context.ContextManager(lambda: sid, cfg)
+                ledger = UsageLedger()
+                manager = context.ContextManager(lambda: sid, cfg if mode == "bounded" else replace(cfg, context_policy="off"), usage=ledger)
                 agent = Agent(owned.provider, system=system, tools=tools, extra=owned.extra,
                               max_tokens=1024, max_iterations=4, provider_turn_timeout=60,
-                              context_policy=manager if mode == "bounded" else None)
+                              context_policy=manager)
                 started = time.monotonic()
+                cleanup_error = None
                 try:
-                    ledger = UsageLedger()
                     result = await asyncio.wait_for(_run_with_usage(agent, Conversation(m.model_copy(deep=True) for m in messages), ledger), timeout=180)
                     coverage = ledger.snapshot()["session"]
                     usage = result.usage
-                    graded = grade_response(result.text, expected, expected_source)
+                    graded = grade_response(result.text, expected, expected_source, known_sources=set(case["known_sources"]))
                     graded["correct_answer_and_source"] = graded["correct_answer_and_source"] and result.stop_reason == "end_turn"
                     if index == 7:
                         checked = any(b.type == "tool_use" and b.name == "read_artifact" and b.input.get("artifact_id") == foreign["id"] for m in result.messages for b in m.content)
                         graded["correct_answer_and_source"] = graded["correct_answer_and_source"] and checked
                     outcomes[mode] = {**graded, "seconds": round(time.monotonic()-started, 3),
                                       "reported_input_tokens": usage.input_tokens, "reported_output_tokens": usage.output_tokens,
+                                      "total_input_tokens": coverage["total_input_tokens"],
+                                      "estimated_input_tokens": coverage["estimated_input_tokens"],
+                                      "estimator_error_fraction": coverage["estimator_error_fraction"],
                                       "usage_available": coverage["completed_model_calls"] > 0 and coverage["calls_without_usage"] == 0,
                                       "completed_model_calls": coverage["completed_model_calls"],
                                       "calls_without_usage": coverage["calls_without_usage"],
@@ -185,9 +204,11 @@ async def _evaluate(live: bool, provider_name: str | None, case_index: int | Non
                                       "foreign_data_leaked": "SYNTHETIC_FOREIGN_SECRET" in result.text or any(b.type == "tool_result" and "SYNTHETIC_FOREIGN_SECRET" in b.content for m in result.messages for b in m.content),
                                       "stop_reason": result.stop_reason,
                                       "synthetic_response_excerpt": result.text[:1000],
-                                      "cache_read_input_tokens": usage.cache_read_input_tokens}
+                                      "cache_read_input_tokens": usage.cache_read_input_tokens,
+                                      "cache_creation_input_tokens": usage.cache_creation_input_tokens}
                 except Exception as exc:
                     report["live_error"] = {"type": type(exc).__name__, "status_code": getattr(exc, "status_code", None), "error_code": getattr(exc, "error_code", None)}
+                    report["partial_mode_usage"] = {"mode": mode, "usage": ledger.snapshot()["session"]}
                     case["live"] = outcomes
                     report["cases"].append(case)
                     report["assessment"] = assess_pairs(report["cases"])
@@ -195,7 +216,16 @@ async def _evaluate(live: bool, provider_name: str | None, case_index: int | Non
                 finally:
                     closer = getattr(owned.provider, "aclose", None)
                     if closer is not None:
-                        await closer()
+                        try:
+                            await closer()
+                        except Exception as exc:
+                            cleanup_error = {"mode": mode, "type": type(exc).__name__}
+                            report["cleanup_error"] = cleanup_error
+                            report["assessment"] = {"source_accuracy_gate": "failed", "reason": "Provider cleanup failed"}
+                if cleanup_error is not None:
+                    case["live"] = outcomes
+                    report["cases"].append(case)
+                    return report
             case["live"] = outcomes
         report["cases"].append(case)
         if live:
@@ -247,10 +277,13 @@ def main() -> None:
     parser.add_argument("--model", default="", help="Evaluation-only model override; never changes user configuration")
     parser.add_argument("--case", type=int, choices=range(10))
     parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument("--workflow-only", action="store_true", help="Operational summary/delegate fixture with inert host handlers")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.summary_only and not args.live:
         parser.error("--summary-only requires --live")
+    if args.workflow_only and (not args.live or args.summary_only or args.case is not None):
+        parser.error("--workflow-only requires --live and cannot combine with --summary-only or --case")
     if args.model and not args.live:
         parser.error("--model requires --live")
     if args.live:
@@ -262,7 +295,11 @@ def main() -> None:
         db.close_connection()
         db.db_path = lambda: Path(directory) / "evaluation.db"
         try:
-            report = asyncio.run(_evaluate_summary(args.provider, args.model) if args.summary_only else _evaluate(args.live, args.provider, args.case, args.model))
+            if args.workflow_only:
+                from .evaluate_workflow import evaluate
+                report = asyncio.run(evaluate(args.provider, args.model))
+            else:
+                report = asyncio.run(_evaluate_summary(args.provider, args.model) if args.summary_only else _evaluate(args.live, args.provider, args.case, args.model))
         except Exception as exc:
             report = {"live": args.live, "error": {"type": type(exc).__name__, "status_code": getattr(exc, "status_code", None), "validation_error": str(exc) if isinstance(exc, ValueError) else None}}
         finally:
