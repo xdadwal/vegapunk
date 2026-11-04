@@ -127,6 +127,9 @@ Vegapunk selects its renderer based on the output stream:
 
 The prompt supports persistent history, inline suggestions, tab completion for commands and their
 arguments, and arrow-key pickers for `/model`, `/sessions`, `/skill`, `/effort`, and agent questions.
+`/plan`, `/context`, `/artifacts`, `/checkpoints`, `/runs`, and `/memory show` display readable lists and
+labelled details. Artifact reads preserve Unicode and line breaks; terminal control characters
+are escaped. List pages and partial reads include commands to inspect or continue the results.
 Press
 `Esc`-`Enter` or `Ctrl-J` to insert a newline; `Ctrl-D`, `/exit`, and `/quit` all end the session.
 

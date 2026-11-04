@@ -68,13 +68,14 @@ def test_exact_boundaries_and_empty_snapshots(length):
 
 
 def test_artifacts_cli_reads_current_session_snapshot():
-    import json
     from vegapunk.commands import CommandContext, dispatch
 
     sid = identity("one")
     saved = artifacts.store_text(sid, "report", "evidence")
     ctx = CommandContext(session=None, current_name="one")
-    assert json.loads(dispatch(f"/artifacts read {saved['id']}", ctx).output)["text"] == "evidence"
+    output = dispatch(f"/artifacts read {saved['id']}", ctx).output
+    assert output.startswith("Artifact: report\n") and output.endswith("\n\nevidence")
+    assert saved['id'] in output
     assert "Could not read" in dispatch("/artifacts read missing", ctx).output
 
 

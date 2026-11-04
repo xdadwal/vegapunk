@@ -1,6 +1,5 @@
 """Plan history remains readable after completion without involving a model."""
 
-import json
 from prompt_toolkit.document import Document
 from prompt_toolkit.completion import CompleteEvent
 from vegapunk import progress, session_store
@@ -19,11 +18,14 @@ def test_plan_history_paginates_and_resolves_only_current_session():
         ids.add(plan["id"])
         progress.update(sid, plan["id"], 0, "cancelled", 1)
     ctx = CommandContext(session=None, current_name="one")
-    first = json.loads(dispatch("/plan history", ctx).output)
-    assert len(first["items"]) == 20 and first["next_offset"] == 20
-    assert len(json.loads(dispatch("/plan history 20", ctx).output)["items"]) == 1
-    assert all(not item["active"] for item in first["items"])
-    assert json.loads(dispatch(f"/plan show {plan['id']}", ctx).output)["id"] == plan["id"]
+    first = dispatch("/plan history", ctx).output
+    second = dispatch("/plan history 20", ctx).output
+    assert first.count("[finished]") == 20 and "Next page: /plan history 20" in first
+    assert second.count("[finished]") == 1 and "Next page:" not in second
+    assert {item for item in ids if item in first or item in second} == ids
+    assert "[active]" not in first
+    detail = dispatch(f"/plan show {plan['id']}", ctx).output
+    assert f"ID: {plan['id']}" in detail and "[cancelled] inspect" in detail
     assert other["id"] not in dispatch("/plan history", ctx).output
     assert "not found in this session" in dispatch(f"/plan show {other['id']}", ctx).output
     assert "Could not read plan" in dispatch("/plan history -1", ctx).output

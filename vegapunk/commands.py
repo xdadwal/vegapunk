@@ -33,6 +33,7 @@ from .backend import (
     with_model,
 )
 from .config import config
+from . import command_output
 from .session import Session
 
 # Sorted once: /model's listing shows each provider's Vegapunk alias beside it.
@@ -653,7 +654,7 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
                      + ("\nStaged model input:\n" + run.staged_input if run.staged_input else "")
                      for run in runs) or "(no recorded runs)"
     if observations:
-        text += "\nTool observations (completed means handler returned; inspect results):\n" + json.dumps(observations, ensure_ascii=False, indent=2)
+        text += "\n" + command_output.observations_view(observations)
     return CommandResult(output=text)
 
 
@@ -665,12 +666,12 @@ def _plan(ctx: CommandContext, arg: str) -> CommandResult:
         sid = session_store.session_identity(ctx.current_name)
         words = arg.split()
         if words and words[0] == "history" and len(words) <= 2:
-            return CommandResult(output=json.dumps(progress.history(sid, int(words[1]) if len(words) == 2 else 0), indent=2, ensure_ascii=False))
+            return CommandResult(output=command_output.plan_history_view(progress.history(sid, int(words[1]) if len(words) == 2 else 0)))
         if words and (words[0] != "show" or len(words) > 2):
             return CommandResult(output="Usage: /plan [show [id]|history [offset]]")
         plan = progress.get(sid, words[1] if len(words) == 2 else "")
         missing = "(plan not found in this session)" if len(words) == 2 else "(no active plan)"
-        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else missing)
+        return CommandResult(output=command_output.plan_view(plan) if plan else missing)
     except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read plan: {exc}")
 
@@ -680,7 +681,7 @@ def _context(ctx: CommandContext, arg: str) -> CommandResult:
     if arg not in {"", "show"}:
         return CommandResult(output="Usage: /context [show]")
     report = getattr(ctx.session, "context_report", {})
-    return CommandResult(output=json.dumps(report, indent=2) if report else "(no context policy report yet)")
+    return CommandResult(output=command_output.context_view(report) if report else "(no context policy report yet)")
 
 
 @command("artifacts", "Session snapshots: /artifacts [list|read <id> [cursor]|search <id> <query>]")
@@ -692,15 +693,18 @@ def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
         sid = session_store.session_identity(ctx.current_name)
         if sub in {"", "list"}:
             result = artifacts.list_artifacts(sid, int(rest) if rest else 0)
+            output = command_output.artifact_list_view(result)
         elif sub == "read":
             artifact_id, _, cursor = rest.partition(" ")
             result = artifacts.read(sid, artifact_id, int(cursor) if cursor else 0)
+            output = command_output.artifact_read_view(result)
         elif sub == "search":
             artifact_id, _, query = rest.partition(" ")
             result = artifacts.search(sid, artifact_id, query)
+            output = command_output.artifact_search_view(result, artifact_id)
         else:
             return CommandResult(output="Usage: /artifacts [list [offset]|read <id> [cursor]|search <id> <query>]")
-        return CommandResult(output=json.dumps(result, ensure_ascii=False, indent=2))
+        return CommandResult(output=output)
     except (ValueError, OSError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read artifacts: {exc}")
 
@@ -712,17 +716,19 @@ def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
     try:
         sid = session_store.session_identity(ctx.current_name)
         words = arg.split()
+        offset = 0
         if not words or words == ["list"]:
             rows = progress.checkpoints(sid)
         elif len(words) == 2 and words[0] == "list":
-            rows = progress.checkpoints(sid, int(words[1]))
+            offset = int(words[1])
+            rows = progress.checkpoints(sid, offset)
         elif len(words) == 2 and words[0] == "show":
             rows = [progress.checkpoint(sid, words[1])]
         else:
             return CommandResult(output="Usage: /checkpoints [list [offset]|show <id>]")
         for row in rows:
             row["artifacts"] = artifacts.checkpoint_artifacts(sid, row["id"])
-        return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
+        return CommandResult(output=command_output.checkpoints_view(rows, detail=bool(words and words[0] == "show"), offset=offset))
     except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read checkpoints: {exc}")
 

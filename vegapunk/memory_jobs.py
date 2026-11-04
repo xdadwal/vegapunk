@@ -10,7 +10,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
-from . import db, memory
+from . import command_output, db, memory
 from .config import config
 from .memory_extraction import Candidate, ExtractionError, ModelExtractor, Source, sources_from_messages
 
@@ -226,12 +226,13 @@ def show_candidate(prefix: str) -> str:
     if not rows:
         explicit = db.query("SELECT content FROM memory WHERE id LIKE ? || '%'", (prefix.lower(),))
         if len(explicit) == 1:
-            return "Explicitly saved memory (no extraction evidence): " + json.dumps(explicit[0][0])
+            return command_output.memory_view(explicit[0][0])
         if explicit:
             return "Ambiguous memory id; use more characters."
     if len(rows) != 1:
         return "No matching candidate." if not rows else "Ambiguous candidate id; use more characters."
-    return json.dumps(asdict(SavedCandidate(*rows[0])), ensure_ascii=False, indent=2)
+    candidate = asdict(SavedCandidate(*rows[0]))
+    return command_output.memory_view(candidate["content"], candidate)
 
 
 def retry_failed() -> None:
