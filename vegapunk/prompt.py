@@ -134,6 +134,10 @@ def system_prompt(
            "and update_plan_step as work starts, becomes blocked, or completes. Completion must "
            "cite evidence. Checkpoints persist independently of conversation rollback. "
            "Read the existing plan before continuing a resumed task. Keep simple requests direct.")
+        + ("" if journal else "\nBefore retrying an interrupted or uncertain action, use "
+           "get_tool_observations when available and inspect its result artifact and current state. "
+           "outcome_unknown is not evidence of failure; completed means a handler returned, "
+           "not that the requested action succeeded. Do not blindly repeat consequential actions.")
         + (memory.as_system_block() if include_memory else "")
         + ("" if journal else skills.as_system_block())
     )
