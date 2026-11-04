@@ -12,8 +12,10 @@ from .usage import UsageLedger
 
 _SYSTEM = (
     'Return only JSON {"notes":[{"text":"...","source":"message:block",'
-    '"quote":"exact source substring","kind":"decision|observation|uncertainty|next_action"}]}. '
+    '"quote":"exact source substring","kind":"uncertainty"}]}. '
     'Use at most 12 concise notes. Preserve decisions, unresolved failures, caveats and next actions. '
+    'Kind must be exactly one of decision, observation, uncertainty, next_action. '
+    'Each text and quote must contain 1 to 500 characters; choose short verbatim quotes, not whole long sources. '
     'Every note needs an exact supporting quote. Only tool_result sources can support observations; '
     'Copy source exactly from the source record id field (for example "2:0"); '
     'do not prefix it with a kind such as "tool_result:". Copy quote verbatim from that same record text. '
@@ -48,7 +50,10 @@ async def _write(function, *args):
 
 def parse(text: str, sources: list[dict]) -> list[dict]:
     """Reject unresolvable notes; quote support is not a semantic truth guarantee."""
-    value = json.loads(text)
+    raw = text.strip()
+    if raw.startswith("```json\n") and raw.endswith("\n```"):
+        raw = raw[len("```json\n"):-len("\n```")]
+    value = json.loads(raw)
     if not isinstance(value, dict) or set(value) != {"notes"} or not isinstance(value["notes"], list) or not 1 <= len(value["notes"]) <= 12:
         raise ValueError("Invalid summary notes")
     by_id = {s["id"]: s for s in sources}
@@ -78,7 +83,7 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage:
     sources, removed = [], set()
     for start, end in ranges:
         for index in range(start, end):
-            message = projected[index]
+            message = request.messages[index]
             genuine_user = message.role == "user" and not any(b.type == "tool_result" for b in message.content)
             if not genuine_user:
                 removed.add(index)
@@ -97,7 +102,7 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage:
     known = {row["ordinal"]: row for row in await asyncio.to_thread(message_refs.references, sid)}
     for source in sources:
         index = int(source["id"].split(":", 1)[0])
-        source["projected"] = projected[index] != request.messages[index]
+        source["projected"] = False  # Summary evidence always comes from canonical history.
         ref = known.get(index)
         if ref and ref["content_hash"] == message_refs.digest(request.messages[index].model_dump(mode="json")):
             source["message_id"] = ref["message_id"]
@@ -109,10 +114,11 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage:
     primary = backend()
     window = primary.context_window
     input_budget = min(cfg.context_input_budget, window - cfg.summary_max_output_tokens - 2048) if window > 0 else cfg.context_input_budget
-    if (len(payload.encode()) + len(_SYSTEM.encode())) // 3 > input_budget:
+    input_estimate = (len(payload.encode()) + len(_SYSTEM.encode())) // 3
+    if input_estimate > input_budget:
         raise ValueError("Summary source input exceeds its estimated input budget")
     canonical = json.dumps([request.messages[i].model_dump(mode="json") for start, end in ranges for i in range(start, end)], sort_keys=True)
-    digest = hashlib.sha256((f"v1\n{primary.model_label}\n{cfg.summary_max_output_tokens}\n" + canonical + payload).encode()).hexdigest()
+    digest = hashlib.sha256((f"v2-canonical\n{primary.model_label}\n{cfg.summary_max_output_tokens}\n" + _SYSTEM + canonical + payload).encode()).hexdigest()
     cached = await asyncio.to_thread(db.query, "SELECT source_artifact_id,notes FROM context_summaries WHERE session_id=? AND digest=?", (sid, digest))
     report = {"summary_cache_hit": bool(cached), "summary_provider_calls": 0}
     if cached:
@@ -130,6 +136,8 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage:
             agent = Agent(owned.provider, system=_SYSTEM, tools=[], max_iterations=1,
                           max_tokens=cfg.summary_max_output_tokens, extra=owned.extra,
                           retry_policy=RetryPolicy(max_attempts=1), provider_turn_timeout=60)
+            if usage is not None:
+                usage.preparation("summary", {"mode": "off", "retained_estimated_tokens": input_estimate})
             async def generate():
                 result = None
                 events = agent.stream(payload)

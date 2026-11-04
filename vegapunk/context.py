@@ -42,9 +42,30 @@ def eligible_ranges(messages: tuple, recent: int, include_recent: bool = False) 
     """Old complete exchanges whose blocks can be safely selected together."""
     starts = [i for i, m in enumerate(messages) if m.role == "user" and not any(b.type == "tool_result" for b in m.content)]
     cutoff = len(messages) if include_recent else (starts[-recent] if len(starts) >= recent else 0)
-    return [(start, end) for start, end in zip(starts, starts[1:] + [len(messages)]) if end <= cutoff and
-            not any((b.type == "thinking" and bool(b.signature)) or b.type not in {"text", "tool_use", "tool_result", "thinking"}
-                    for m in messages[start:end] for b in m.content)]
+    calls = Counter(b.id for m in messages for b in m.content if b.type == "tool_use")
+    results = Counter(b.tool_use_id for m in messages for b in m.content if b.type == "tool_result")
+    eligible = []
+    for start, end in zip(starts, starts[1:] + [len(messages)]):
+        if end > cutoff:
+            continue
+        blocks = [b for m in messages[start:end] for b in m.content]
+        if any((b.type == "thinking" and bool(b.signature)) or b.type not in {"text", "tool_use", "tool_result", "thinking"} for b in blocks):
+            continue
+        pending, valid = set(), True
+        for block in blocks:
+            if block.type == "tool_use":
+                if calls[block.id] != 1 or results[block.id] != 1:
+                    valid = False
+                    break
+                pending.add(block.id)
+            elif block.type == "tool_result":
+                if block.tool_use_id not in pending:
+                    valid = False
+                    break
+                pending.remove(block.tool_use_id)
+        if valid and not pending:
+            eligible.append((start, end))
+    return eligible
 
 
 def _project(request: ContextInput, sid: str | None, recent: int, include_recent: bool = False) -> tuple[tuple, int]:

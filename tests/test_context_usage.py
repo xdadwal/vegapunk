@@ -16,6 +16,7 @@ def test_usage_totals_do_not_add_cache_tokens_twice_and_survive_turn_boundary():
     assert view["session"]["reported_input_tokens"] == 120
     assert view["session"]["reported_output_tokens"] == 15
     assert view["session"]["cache_read_input_tokens"] == 80
+    assert view["session"]["total_input_tokens"] == 200
     assert view["session"]["completed_model_calls"] == 3
     assert view["session"]["calls_without_usage"] == 1
     assert view["session"]["retrieval_requests"] == 1
@@ -26,6 +27,34 @@ def test_usage_totals_do_not_add_cache_tokens_twice_and_survive_turn_boundary():
     assert ledger.snapshot()["session"]["completed_model_calls"] == 3
     ledger.clear()
     assert ledger.snapshot()["session"]["completed_model_calls"] == 0
+
+
+def test_total_input_uses_normalized_uncached_read_and_creation_categories():
+    ledger = UsageLedger()
+    ledger.observe("main", TurnEnd(stop_reason="end_turn", usage=Usage(input_tokens=10, cache_read_input_tokens=20, cache_creation_input_tokens=5)))
+    assert ledger.snapshot()["session"]["total_input_tokens"] == 35
+    assert ledger.snapshot()["session"]["reported_input_tokens"] == 10
+    ledger.clear()
+    assert ledger.snapshot()["session"]["total_input_tokens"] is None
+
+
+def test_estimator_error_is_reported_only_for_complete_matching_call_coverage():
+    ledger = UsageLedger()
+    ledger.preparation("main", {"mode": "bounded", "proposed_estimated_tokens": 70})
+    assert ledger.snapshot()["session"]["estimator_error_fraction"] is None
+    ledger.observe("main", TurnEnd(stop_reason="end_turn", usage=Usage(input_tokens=10, cache_read_input_tokens=20, cache_creation_input_tokens=5)))
+    view = ledger.snapshot()["session"]
+    assert view["estimated_input_tokens"] == 70
+    assert view["estimator_error_fraction"] == 1
+
+
+def test_actor_coverage_mismatches_cannot_cancel_in_aggregate_estimator_error():
+    ledger = UsageLedger()
+    ledger.preparation("main", {"mode": "off", "retained_estimated_tokens": 10})
+    ledger.preparation("main", {"mode": "off", "retained_estimated_tokens": 10})
+    ledger.observe("main", TurnEnd(stop_reason="end_turn", usage=Usage(input_tokens=10)))
+    ledger.observe("delegate", TurnEnd(stop_reason="end_turn", usage=Usage(input_tokens=10)))
+    assert ledger.snapshot()["session"]["estimator_error_fraction"] is None
 
 
 def test_concurrent_delegates_are_counted_independently():

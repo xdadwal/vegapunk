@@ -37,6 +37,24 @@ def test_observe_returns_identical_input_and_reports_proposed_reduction():
     assert prepared.diagnostics["proposed_estimated_tokens"] < prepared.diagnostics["retained_estimated_tokens"]
 
 
+def test_incomplete_tool_exchange_is_not_eligible_for_summary():
+    messages = (Message(role="user", content=[TextBlock(text="Inspect")]),
+                Message(role="assistant", content=[ToolUseBlock(id="pending", name="inspect", input={})]),
+                Message(role="user", content=[TextBlock(text="Continue")]))
+    assert context.eligible_ranges(messages, 1) == []
+
+
+def test_reversed_and_reused_tool_ids_are_not_eligible_for_summary():
+    messages = (Message(role="user", content=[TextBlock(text="Inspect")]),
+                Message(role="assistant", content=[ToolUseBlock(id="check", name="inspect", input={})]),
+                Message(role="user", content=[ToolResultBlock(tool_use_id="check", content="observed")]),
+                Message(role="user", content=[TextBlock(text="Continue")]))
+    reversed_pair = (messages[0], messages[2], messages[1], messages[3])
+    assert context.eligible_ranges(reversed_pair, 1) == []
+    repeated = messages[:3] + (Message(role="user", content=[TextBlock(text="Inspect again")]),) + messages[1:]
+    assert context.eligible_ranges(repeated, 1) == []
+
+
 def test_bounded_projects_only_tool_content_and_preserves_user_constraints():
     sid, saved = setup_artifact()
     original = request()

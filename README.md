@@ -164,7 +164,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
 | `/save <name>` | Rename the current conversation. |
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
-| `/plan [show]` | Inspect the current execution plan and dependency graph. |
+| `/plan [show [id] \| history [offset]]` | Inspect the current plan, resolve a prior plan, or list twenty scoped history entries. |
 | `/checkpoints [list [offset] \| show <id>]` | Inspect plan and execution snapshots; list pages contain up to 50 rows. |
 | `/artifacts [list\|read <id> [cursor]\|search <id> <query>]` | Inspect session text snapshots with bounded retrieval. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
@@ -399,13 +399,17 @@ the model still receives the original history. `off` disables projection diagnos
 the latest user turn, split into main, delegate, and summary calls. It counts raw
 completed model turns once, including hidden interview retries and rejected summaries.
 Missing usage is `null` with an explicit missing-call count. Failed/partial attempts
-without completion usage may still incur cost and are outside these totals. Cache
-counters are separate because providers differ on whether input already includes them;
-these counters are not a price estimate. Retrieval requests and returned bytes are
+without completion usage may still incur cost and are outside these totals. Logpose
+normalizes `input_tokens` as uncached input: `reported_input_tokens` retains that
+meaning, while `total_input_tokens` adds normalized uncached, cache-read and cache-write
+categories once. Native provider counters are normalized by Logpose, not guessed here.
+These counters are not a price estimate. Retrieval requests and returned bytes are
 reported separately. Totals reset on `/new` or restore and do not survive a restart;
 existing runtime logs retain provider metadata. Latest preparation measurements include
 memory/skill bytes when assembled by Vegapunk; those overlap system bytes, while tool
-result bytes overlap history. Component sizes are not additive token counts.
+result bytes overlap history. Component sizes are not additive token counts. Estimator
+error against normalized total input is shown only when every completed call has a
+matching estimate and reported usage.
 Experimental `bounded` mode replaces eligible older large tool results with excerpts and
 retrievable artifact IDs, adds compact plan/checkpoint state, and selects relevant personal
 memory. Original conversation history and artifacts remain intact. Signed/opaque exchanges,
@@ -419,7 +423,10 @@ Persisted messages have separate stable IDs and content hashes; provider message
 unchanged. IDs survive append and rename. Editing an earlier message renews IDs from
 that point onward, and stale or foreign-session references fail to resolve. Summary
 source artifacts include these IDs when their canonical message hash matches, and
-label projected excerpts. Unsaved or transformed sources retain artifact-local labels.
+label projected excerpts. New summaries use full canonical source text, including
+content omitted from request previews; if that source cannot fit the summarizer's
+budget, the turn fails explicitly. Incomplete or ambiguously paired tool exchanges
+are retained. Unsaved or transformed sources retain artifact-local labels.
 Schema 23 indexes existing parseable transcripts without rewriting them; malformed
 rows are preserved with a warning so they can still be inspected or removed.
 See [the synthetic evaluation](docs/evaluations/context-efficiency.md) before opting in;

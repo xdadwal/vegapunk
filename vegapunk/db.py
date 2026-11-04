@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS progress_operations (
     result TEXT NOT NULL,
     PRIMARY KEY(plan_id,operation_id)
 );
+CREATE INDEX IF NOT EXISTS idx_plan_checkpoint_history ON progress_checkpoints(session_id,plan_id,created_at);
 CREATE TABLE IF NOT EXISTS progress_claims (
     plan_id TEXT NOT NULL,
     step INTEGER NOT NULL,

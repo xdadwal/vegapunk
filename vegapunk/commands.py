@@ -657,14 +657,21 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=text)
 
 
-@command("plan", "Show the current plan: /plan [show]")
+@command("plan", "Inspect plans: /plan [show [id]|history [offset]]")
 def _plan(ctx: CommandContext, arg: str) -> CommandResult:
     if ctx.current_name is None:
         return CommandResult(output="(no active plan)")
     try:
-        plan = progress.get(session_store.session_identity(ctx.current_name))
-        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else "(no active plan)")
-    except (db.StoreError, session_store.SessionNotFound) as exc:
+        sid = session_store.session_identity(ctx.current_name)
+        words = arg.split()
+        if words and words[0] == "history" and len(words) <= 2:
+            return CommandResult(output=json.dumps(progress.history(sid, int(words[1]) if len(words) == 2 else 0), indent=2, ensure_ascii=False))
+        if words and (words[0] != "show" or len(words) > 2):
+            return CommandResult(output="Usage: /plan [show [id]|history [offset]]")
+        plan = progress.get(sid, words[1] if len(words) == 2 else "")
+        missing = "(plan not found in this session)" if len(words) == 2 else "(no active plan)"
+        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else missing)
+    except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read plan: {exc}")
 
 
