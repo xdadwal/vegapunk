@@ -310,20 +310,20 @@ generated schemas and can call them as part of a multi-step turn.
 
 | Tool | Purpose | Approval |
 | --- | --- | :---: |
-| `read_file` | Read a text file inside the workspace. | — |
-| `list_dir` | List a directory inside the workspace. | — |
+| `read_file` | Read up to 200 lines / 12000 characters, with a continuation cursor for large files and long lines. | — |
+| `list_dir` | List up to 100 directory entries by default; continue with the returned name cursor. | — |
 | `grep` | Search workspace content or filenames. | — |
 | `write_file` | Create or overwrite a file. | Required |
 | `edit_file` | Replace an exact snippet in an existing file. | Required |
 | `run_shell` | Run a shell command in the workspace. | Required |
-| `fetch_url` | Fetch a page and extract readable text. | — |
+| `fetch_url` | Stream up to 2 MiB of decompressed page bytes and extract readable text; partial captures are labelled. | — |
 | `search_web` | Search through Z.ai Coding Plan MCP or keyless DuckDuckGo. | — |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
 | `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and inline Ctrl+N notes. | — |
-| `delegate` | Run a bounded specialist role in a background thread and wait for its result. | — |
+| `delegate` | Run a bounded specialist role; large responses become artifact-backed excerpts in saved sessions. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a workspace write/shell tool runs, an inline approval menu offers
