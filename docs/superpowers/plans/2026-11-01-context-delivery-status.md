@@ -39,18 +39,24 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
   to the current in-process conversation, clearing on new/restore; existing runtime
   logs retain historical provider metadata. It does not claim complete billing for
   failed/partial attempts that never report usage, or add provider cache counts twice.
-- Summary sources use message/block ordinals protected by a canonical-content digest
-  and immutable source artifact. The proposed persistent `session_message_ids` map
-  is not implemented; do not expose these ordinals as stable cross-edit identifiers.
+- Stable-message-reference branch implements the separate `session_message_ids` map.
+  Appends/renames preserve IDs; edits renew the changed suffix. Lookup checks session
+  identity and canonical hash. Summary source artifacts attach IDs/hash only when
+  their original canonical message matches, and label projected excerpts. Ordinals
+  remain artifact-local positions, never persistent cross-edit identity. Schema 23
+  backfills valid old transcripts; malformed data is preserved with a warning.
 - Memory pin/supersede controls are explicit. `last_verified_at` is reserved metadata;
   no freshness verifier or semantic entailment checker exists. A matching quote
   does not prove a generated note or proposed next action is justified.
-- Further broad live evaluation and real interactive resume/cancel smoke coverage
-  remain required before claiming the entire original plan is complete or enabling
-  bounded mode by default. Deterministic tests cover the principal failure boundaries,
+- Further open-ended live evaluation remains required before enabling bounded mode
+  by default. Actual SIGINT and fresh-process rename/resume smoke tests passed in
+  plain and Rich PTYs, retaining completed effects and evidence without replay. An
+  abrupt-exit smoke test retained an unknown action correctly but exposed an older
+  overlong provisional-name lookup bug; a focused follow-up fix is required.
+  Deterministic tests cover the principal failure boundaries,
   including a 40-turn history, a 1 MiB result, retrieval, corrections, and scope denial.
 
-Latest local verification including the expanded evaluator: 1,074 Vegapunk tests
+Latest local verification including stable message references: 1,082 Vegapunk tests
 pass; Logpose's 950 tests pass. Independent reviews cleared the context policy,
 bounded tool payloads, and lifecycle snapshot changes. The bounded-download path
 also passed a real local HTTP smoke test. These are local results, not hosted CI.

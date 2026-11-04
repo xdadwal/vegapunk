@@ -412,6 +412,13 @@ are generated with a separate tool-free model call. Quotes and source IDs are va
 this does not establish semantic truth. Invalid notes are retained as rejected artifacts
 and never reused. If mandatory context still exceeds budget or summarization fails, the
 turn stops with an explicit error. Summary generation can add cost and latency.
+Persisted messages have separate stable IDs and content hashes; provider messages are
+unchanged. IDs survive append and rename. Editing an earlier message renews IDs from
+that point onward, and stale or foreign-session references fail to resolve. Summary
+source artifacts include these IDs when their canonical message hash matches, and
+label projected excerpts. Unsaved or transformed sources retain artifact-local labels.
+Schema 23 indexes existing parseable transcripts without rewriting them; malformed
+rows are preserved with a warning so they can still be inspected or removed.
 See [the synthetic evaluation](docs/evaluations/context-efficiency.md) before opting in;
 bounded mode remains experimental and is not enabled by default.
 The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current

@@ -7,7 +7,7 @@ import json
 from logpose import Agent, RunEnd
 from logpose.retry import RetryPolicy
 
-from . import artifacts, db
+from . import artifacts, db, message_refs
 from .usage import UsageLedger
 
 _SYSTEM = (
@@ -94,6 +94,14 @@ async def summarize(request, projected: tuple, sid: str, cfg, backend, *, usage:
                                     "tool_call_id": block.tool_use_id if block.type == "tool_result" else None})
     if not removed:
         raise ValueError("Nothing eligible for historical compaction")
+    known = {row["ordinal"]: row for row in await asyncio.to_thread(message_refs.references, sid)}
+    for source in sources:
+        index = int(source["id"].split(":", 1)[0])
+        source["projected"] = projected[index] != request.messages[index]
+        ref = known.get(index)
+        if ref and ref["content_hash"] == message_refs.digest(request.messages[index].model_dump(mode="json")):
+            source["message_id"] = ref["message_id"]
+            source["content_hash"] = ref["content_hash"]
     kept_messages = tuple(m for i, m in enumerate(projected) if i not in removed)
     if _sizes(request, kept_messages, request.system)["estimated_tokens"] >= cfg.context_input_budget:
         raise ValueError("Mandatory user context leaves no room for a summary")
