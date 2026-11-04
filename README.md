@@ -164,14 +164,15 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/sessions [name \| remove <name>]` | Pick or list recent sessions, resume one, or remove one. |
 | `/save <name>` | Rename the current conversation. |
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
-| `/plan [show]` | Inspect the current execution plan and dependency graph. |
-| `/checkpoints [list]` | Inspect recent immutable progress snapshots. |
+| `/plan [show [id] \| history [offset]]` | Inspect the current plan, resolve a prior plan, or list twenty scoped history entries. |
+| `/checkpoints [list [offset] \| show <id>]` | Inspect plan and execution snapshots; list pages contain up to 50 rows. |
 | `/artifacts [list\|read <id> [cursor]\|search <id> <query>]` | Inspect session text snapshots with bounded retrieval. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
 | `/skill <name>` | Include a skill's instructions with the next message. |
 | `/schedule [list \| add <seconds> <prompt> \| remove <id>]` | Manage recurring prompts; the minimum interval is 60 seconds. |
-| `/memory [list \| review \| jobs \| pause \| resume]` | Inspect personalization and control background extraction; see the workflow below. |
+| `/memory [list \| review \| jobs \| pause \| resume \| pin <id> \| unpin <id> \| supersede <old-id> <new-id>]` | Inspect personalization, manage explicit memory priorities, and control background extraction. |
+| `/context [show]` | Inspect the latest request's retained/proposed context estimates and budget diagnostics without inference. |
 | `/new` | Start a fresh conversation. Alias: `/reset`. |
 | `/agent [name]` | List or select a Vegapunk agent and apply its model/effort defaults. |
 | `/journal` | Start a fresh journal entry with a gentle, user-led conversation style. |
@@ -309,20 +310,20 @@ generated schemas and can call them as part of a multi-step turn.
 
 | Tool | Purpose | Approval |
 | --- | --- | :---: |
-| `read_file` | Read a text file inside the workspace. | — |
-| `list_dir` | List a directory inside the workspace. | — |
+| `read_file` | Read up to 200 lines / 12000 characters, with a continuation cursor for large files and long lines. | — |
+| `list_dir` | List up to 100 directory entries by default; continue with the returned name cursor. | — |
 | `grep` | Search workspace content or filenames. | — |
 | `write_file` | Create or overwrite a file. | Required |
 | `edit_file` | Replace an exact snippet in an existing file. | Required |
 | `run_shell` | Run a shell command in the workspace. | Required |
-| `fetch_url` | Fetch a page and extract readable text. | — |
+| `fetch_url` | Stream up to 2 MiB of decompressed page bytes and extract readable text; partial captures are labelled. | — |
 | `search_web` | Search through Z.ai Coding Plan MCP or keyless DuckDuckGo. | — |
 | `remember` | Store a durable fact or preference. | — |
 | `recall` | Search saved memories. | — |
 | `use_skill` | Load a skill's full instructions. | — |
 | `schedule_task` | Create a recurring prompt. | — |
 | `ask_user` | Ask a needed question with 1–5 choices, a recommendation, custom input, and inline Ctrl+N notes. | — |
-| `delegate` | Run a bounded specialist role in a background thread and wait for its result. | — |
+| `delegate` | Run a bounded specialist role; large responses become artifact-backed excerpts in saved sessions. | — |
 
 All file paths and shell commands are confined to `VEGAPUNK_WORKSPACE`, which defaults to the
 directory where Vegapunk was launched. Before a workspace write/shell tool runs, an inline approval menu offers
@@ -353,8 +354,17 @@ variables. Its scheduler worker inherits that environment. Library imports do no
   Interrupted first turns remain discoverable in `/sessions`; `/runs` shows their original
   request and recorded outcome. On restart, unfinished turns are marked abandoned and are
   never replayed automatically. Stable internal session IDs survive renaming. Removing a
-  session also removes its run records. This records turn outcomes, not individual tool
-  effects; action-level checkpoints are a later implementation stage.
+  session also removes its run records. Turn start/end, interruption/failure, approved tool intent/outcome, and
+  recovery of abandoned turns automatically snapshot the active plan (if any) and
+  latest observed action. Tool-outcome checkpoints link the saved result artifact.
+  These records survive transcript rollback and never trigger automatic replay.
+  Recovery keeps the original user request separate from expanded staged-skill input;
+  `/runs` displays both when present. Older records retain their original stored text.
+  New provisional names respect the normal slug limit. Existing longer names can still
+  be resumed or removed exactly as displayed, without being redirected to a shorter
+  session that happens to share their prefix.
+  Resume reports the active plan, latest checkpoint ID, and uncertain actions;
+  the prompt status row shows compact active-plan progress.
 
 For substantial work the primary agent can use `create_plan`, `get_plan`,
 `update_plan_step`, and `revise_plan`. Plans have stable step IDs, optional dependency
@@ -392,7 +402,44 @@ Capture preserves decoded text rather than binary output. Other tools retain the
 normalized result snapshots; data discarded before an instrumented capture cannot
 be recovered. Shell timeouts kill the POSIX command group, including children that
 still hold its output pipe open.
-Automatic model context offloading is not enabled yet.
+Context preparation defaults to `observe`: `/context` estimates a smaller request while
+the model still receives the original history. `off` disables projection diagnostics.
+`/context` also reports cumulative usage for the current in-process conversation and
+the latest user turn, split into main, delegate, and summary calls. It counts raw
+completed model turns once, including hidden interview retries and rejected summaries.
+Missing usage is `null` with an explicit missing-call count. Failed/partial attempts
+without completion usage may still incur cost and are outside these totals. Logpose
+normalizes `input_tokens` as uncached input: `reported_input_tokens` retains that
+meaning, while `total_input_tokens` adds normalized uncached, cache-read and cache-write
+categories once. Native provider counters are normalized by Logpose, not guessed here.
+These counters are not a price estimate. Retrieval requests and returned bytes are
+reported separately. Totals reset on `/new` or restore and do not survive a restart;
+existing runtime logs retain provider metadata. Latest preparation measurements include
+memory/skill bytes when assembled by Vegapunk; those overlap system bytes, while tool
+result bytes overlap history. Component sizes are not additive token counts. Estimator
+error against normalized total input is shown only when every completed call has a
+matching estimate and reported usage.
+Experimental `bounded` mode replaces eligible older large tool results with excerpts and
+retrievable artifact IDs, adds compact plan/checkpoint state, and selects relevant personal
+memory. Original conversation history and artifacts remain intact. Signed/opaque exchanges,
+user messages, and results without complete, unambiguous stored evidence are preserved.
+If the estimated input budget is still exceeded, optional source-quoted historical notes
+are generated with a separate tool-free model call. Quotes and source IDs are validated;
+this does not establish semantic truth. Invalid notes are retained as rejected artifacts
+and never reused. If mandatory context still exceeds budget or summarization fails, the
+turn stops with an explicit error. Summary generation can add cost and latency.
+Persisted messages have separate stable IDs and content hashes; provider messages are
+unchanged. IDs survive append and rename. Editing an earlier message renews IDs from
+that point onward, and stale or foreign-session references fail to resolve. Summary
+source artifacts include these IDs when their canonical message hash matches, and
+label projected excerpts. New summaries use full canonical source text, including
+content omitted from request previews; if that source cannot fit the summarizer's
+budget, the turn fails explicitly. Incomplete or ambiguously paired tool exchanges
+are retained. Unsaved or transformed sources retain artifact-local labels.
+Schema 23 indexes existing parseable transcripts without rewriting them; malformed
+rows are preserved with a warning so they can still be inspected or removed.
+See [the synthetic evaluation](docs/evaluations/context-efficiency.md) before opting in;
+bounded mode remains experimental and is not enabled by default.
 The `/artifacts read` and `/artifacts search` dropdowns suggest IDs from the current
 session only. Suggestions are local, prefix-filtered, and capped at 100 matches.
 `register_file_artifact` remembers a workspace text-file reference and its baseline hash;
@@ -454,6 +501,9 @@ Set `VEGAPUNK_MEMORY_REVIEW=review` to review every extracted candidate before a
 /memory list                 # active facts and memory IDs
 /memory show <memory-id>     # inspect an active memory's extraction evidence
 /memory forget <memory-id>
+/memory pin <memory-id>       # always select this active fact in bounded mode
+/memory unpin <memory-id>
+/memory supersede <old-id> <new-id> # explicitly retire an outdated fact
 /memory pause
 /memory resume
 /memory retry                # retry jobs that exhausted automatic attempts
@@ -562,6 +612,12 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_TOOL_TIMEOUT` | `300` | Tool-handler deadline in seconds; `0` disables it. |
 | `VEGAPUNK_SHELL_TIMEOUT` | `30` | Shell command timeout in seconds. |
 | `VEGAPUNK_OUTPUT_CAP` | `10000` | Maximum tool-output characters returned to the model. |
+| `VEGAPUNK_CONTEXT_POLICY` | `observe` | Request preparation: `off`, `observe`, or experimental `bounded`. |
+| `VEGAPUNK_CONTEXT_INPUT_BUDGET` | `32768` | Estimated input tokens (UTF-8 bytes / 3), capped by the known model window minus output reserve and 2048 safety margin. |
+| `VEGAPUNK_CONTEXT_RECENT_TURNS` | `4` | Prefer keeping this many recent complete user exchanges; budget pressure may project older results within them, preserving the newest two results. |
+| `VEGAPUNK_MEMORY_CONTEXT_BUDGET` | `1200` | Estimated selected-memory budget in bounded mode. Pinned overflow fails explicitly. |
+| `VEGAPUNK_CONTEXT_SUMMARIES` | `true` | Allow source-quoted historical summaries when bounded mode exceeds budget. Observe/off never generate summaries. |
+| `VEGAPUNK_SUMMARY_MAX_OUTPUT_TOKENS` | `2048` | Output limit for a separately owned, tool-free summary call. |
 
 ### Interface
 

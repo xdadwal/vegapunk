@@ -510,14 +510,25 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
     sub, _, rest = arg.partition(" ")
     sub, rest = sub.lower(), rest.strip()
     usage = ("Usage: /memory [list|review|jobs|pause|resume|retry] or "
-             "/memory show|approve|reject <candidate-id> or /memory forget <memory-id>")
+             "/memory show|approve|reject <candidate-id>, /memory pin|unpin|forget <memory-id>, "
+             "or /memory supersede <old-id> <new-id>")
     try:
+        if sub in {"pin", "unpin", "supersede"}:
+            from . import memory_context
+            if sub == "supersede":
+                old, _, new = rest.partition(" ")
+                memory_context.supersede(memory_context.resolve(old), memory_context.resolve(new.strip()))
+            else:
+                memory_context.pin(memory_context.resolve(rest), sub == "pin")
+            return CommandResult(output="Memory context flags updated; this does not verify the fact.")
         if sub in {"", "jobs"} and not rest:
             return CommandResult(output=memory_jobs.job_status())
         if sub == "list" and not rest:
             facts = memory.list_memory()
+            flags = {row[0]: (row[1], row[2]) for row in db.query("SELECT memory_id,pinned,superseded_by FROM memory_context_flags")}
             return CommandResult(output="\n".join(
                 f"  {m.id[:8]} [{m.created_at[:10]}] {json.dumps(m.content, ensure_ascii=False)}"
+                + (f" (superseded by {flags[m.id][1]})" if flags.get(m.id, (0, None))[1] else " (pinned)" if flags.get(m.id, (0, None))[0] else "")
                 for m in facts) or "(no active memories)")
         if sub == "review" and not rest:
             pending = memory_jobs.candidates()
@@ -539,7 +550,7 @@ def _memory(ctx: CommandContext, arg: str) -> CommandResult:
         if sub == "retry" and not rest:
             memory_jobs.retry_failed()
             return CommandResult(output="Failed memory jobs queued for retry.\n" + memory_jobs.job_status())
-    except db.StoreError as exc:
+    except (db.StoreError, ValueError) as exc:
         return CommandResult(output=f"Could not manage memory: {exc}")
     return CommandResult(output=usage)
 
@@ -570,17 +581,30 @@ def _save(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(output=f"Saved as '{name}'.")
 
 
+def _stored_session_name(arg: str) -> str:
+    """Resolve displayed legacy names before normalizing new user input."""
+    requested = arg.strip()
+    return requested if session_store.exists(requested) else session_store.slugify(requested)
+
+
 def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     name = session_store.slugify(arg)
-    if not name:
+    if not arg.strip():
         if _interactive():
             return _pick_session(ctx)
         return CommandResult(output="Usage: /sessions <name>")
     try:
+        name = _stored_session_name(arg)
+        if not name:
+            return CommandResult(output="Usage: /sessions <name>")
         messages = session_store.load_session(name)
         conversation_mode = session_store.load_session_mode(name)
         agent_id = session_store.load_session_agent(name)
         model_selector, effort = session_store.load_session_execution(name)
+        sid = session_store.session_identity(name)
+        active_plan = progress.get(sid)
+        unknown = db.query("SELECT COUNT(*) FROM tool_observations WHERE session_id=? AND status='outcome_unknown'", (sid,))[0][0]
+        latest_checkpoint = progress.checkpoints(sid)[:1]
     except session_store.SessionNotFound:
         return CommandResult(output=f"No session '{name}'.\n{_format_sessions()}")
     except db.StoreError as exc:
@@ -603,13 +627,16 @@ def _resume(ctx: CommandContext, arg: str) -> CommandResult:
     ctx.current_name = name
     ctx.conversation_mode = conversation_mode
     if isinstance(ctx.session, Session):
-        ctx.session.session_id = session_store.session_identity(name)
+        ctx.session.session_id = sid
     ctx.agent_id = agent_id
     ctx.pending_skill = None  # staged state belongs to the conversation it was staged in
     return CommandResult(
         output=f"Resumed '{name}' ({transcript.count_user_turns(messages)} turns)."
                + (" Journal mode." if conversation_mode == "journal" else "")
                + (f" Agent: {agents.get_agent(agent_id).name}." if agent_id != "default" else "")
+               + (f" Active plan: {active_plan['id']} (revision {active_plan['revision']}); inspect /plan." if active_plan else "")
+               + (f" Latest checkpoint: {latest_checkpoint[0]['id']}; inspect /checkpoints." if latest_checkpoint else "")
+               + (f" {unknown} uncertain tool outcome(s); inspect /runs and current state before repeating actions." if unknown else "")
     )
 
 
@@ -622,21 +649,38 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
         observations = execution.tool_observations(session_store.session_identity(ctx.current_name))
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read runs: {exc}")
-    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)"
+    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}"
+                     + ("\nStaged model input:\n" + run.staged_input if run.staged_input else "")
+                     for run in runs) or "(no recorded runs)"
     if observations:
         text += "\nTool observations (completed means handler returned; inspect results):\n" + json.dumps(observations, ensure_ascii=False, indent=2)
     return CommandResult(output=text)
 
 
-@command("plan", "Show the current plan: /plan [show]")
+@command("plan", "Inspect plans: /plan [show [id]|history [offset]]")
 def _plan(ctx: CommandContext, arg: str) -> CommandResult:
     if ctx.current_name is None:
         return CommandResult(output="(no active plan)")
     try:
-        plan = progress.get(session_store.session_identity(ctx.current_name))
-        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else "(no active plan)")
-    except (db.StoreError, session_store.SessionNotFound) as exc:
+        sid = session_store.session_identity(ctx.current_name)
+        words = arg.split()
+        if words and words[0] == "history" and len(words) <= 2:
+            return CommandResult(output=json.dumps(progress.history(sid, int(words[1]) if len(words) == 2 else 0), indent=2, ensure_ascii=False))
+        if words and (words[0] != "show" or len(words) > 2):
+            return CommandResult(output="Usage: /plan [show [id]|history [offset]]")
+        plan = progress.get(sid, words[1] if len(words) == 2 else "")
+        missing = "(plan not found in this session)" if len(words) == 2 else "(no active plan)"
+        return CommandResult(output=json.dumps(plan, indent=2, ensure_ascii=False) if plan else missing)
+    except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read plan: {exc}")
+
+
+@command("context", "Show context policy diagnostics: /context [show]")
+def _context(ctx: CommandContext, arg: str) -> CommandResult:
+    if arg not in {"", "show"}:
+        return CommandResult(output="Usage: /context [show]")
+    report = getattr(ctx.session, "context_report", {})
+    return CommandResult(output=json.dumps(report, indent=2) if report else "(no context policy report yet)")
 
 
 @command("artifacts", "Session snapshots: /artifacts [list|read <id> [cursor]|search <id> <query>]")
@@ -661,17 +705,25 @@ def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not read artifacts: {exc}")
 
 
-@command("checkpoints", "Show recent progress checkpoints: /checkpoints [list]")
+@command("checkpoints", "Show progress and lifecycle checkpoints: /checkpoints [list [offset]|show <id>]")
 def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
     if ctx.current_name is None:
         return CommandResult(output="(no checkpoints)")
     try:
-        rows = progress.checkpoints(session_store.session_identity(ctx.current_name))
         sid = session_store.session_identity(ctx.current_name)
+        words = arg.split()
+        if not words or words == ["list"]:
+            rows = progress.checkpoints(sid)
+        elif len(words) == 2 and words[0] == "list":
+            rows = progress.checkpoints(sid, int(words[1]))
+        elif len(words) == 2 and words[0] == "show":
+            rows = [progress.checkpoint(sid, words[1])]
+        else:
+            return CommandResult(output="Usage: /checkpoints [list [offset]|show <id>]")
         for row in rows:
             row["artifacts"] = artifacts.checkpoint_artifacts(sid, row["id"])
         return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
-    except (db.StoreError, session_store.SessionNotFound) as exc:
+    except (db.StoreError, session_store.SessionNotFound, ValueError) as exc:
         return CommandResult(output=f"Could not read checkpoints: {exc}")
 
 
@@ -683,9 +735,12 @@ def _sessions(ctx: CommandContext, arg: str) -> CommandResult:
         return _pick_session(ctx) if _interactive() else CommandResult(output=_format_sessions())
     if sub == "remove":
         name = session_store.slugify(rest)
-        if not name:
+        if not rest.strip():
             return CommandResult(output="Usage: /sessions remove <name>")
         try:
+            name = _stored_session_name(rest)
+            if not name:
+                return CommandResult(output="Usage: /sessions remove <name>")
             if not session_store.exists(name):
                 return CommandResult(output=f"No session '{name}' to remove.\n{_format_sessions()}")
             session_store.delete_session(name)

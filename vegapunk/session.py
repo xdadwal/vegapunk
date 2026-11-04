@@ -104,11 +104,14 @@ class Session:
         self.session_id: str | None = None
         self._tools = tools
         self._system_prompt = system_prompt
+        self._prompt_component_sizes: dict[str, int] = {}
         self._max_steps = max_steps
         # Guards side-effecting tools. None means no gate — fail-closed, so a
         # guarded tool is blocked rather than run unattended.
         self._approver = approver
         self._turn_prepared = False
+        from .usage import UsageLedger
+        self.usage = UsageLedger()
         self._agent = self._build_agent()
         self._titler: Agent | None = None
         # One renderer for both channels of a turn: the trace writes through it
@@ -127,6 +130,9 @@ class Session:
         from .tools.progress import bind
         from .tools.artifacts import bind as bind_artifacts
         from .execution import tool_observer
+        from .context import ContextManager
+
+        self._context_manager = ContextManager(lambda: self.session_id, window=lambda: self._backend.context_window, backend=lambda: self._backend, usage=self.usage, components=lambda: self._prompt_component_sizes)
 
         return InteractiveAgent(
             self._backend.provider,
@@ -136,6 +142,8 @@ class Session:
             extra=self._backend.extra,
             on_tool_call=make_gate(self._approver),
             tool_observer=tool_observer(lambda: self.session_id),
+            context_policy=self._context_manager,
+            usage=self.usage,
             **agent_runtime_options(config, "interactive"),
         )
 
@@ -186,6 +194,11 @@ class Session:
         """The session's shared tool approver, also used by joined delegates."""
         return self._approver
 
+    @property
+    def context_report(self) -> dict:
+        """Latest policy diagnostics; excludes prompts, source bodies and tool arguments."""
+        return {**self._context_manager.report, "usage": self.usage.snapshot()}
+
     def cancel(self) -> None:
         """Cancel the active turn and release manual approvals before draining."""
         from . import delegation
@@ -209,6 +222,7 @@ class Session:
         from . import delegation
 
         delegation.prepare_turn()
+        self.usage.begin_turn()
         self._agent.prepare_turn()
         if self._approver is not None:
             self._approver.begin_turn()
@@ -244,7 +258,7 @@ class Session:
         """The current instructions, so temporary modes can restore a caller's prompt."""
         return self._system_prompt
 
-    def set_system_prompt(self, system_prompt: str) -> None:
+    def set_system_prompt(self, system_prompt: str, *, components: dict[str, int] | None = None) -> None:
         """Replace the instructions sent on subsequent turns.
 
         Approval mode can change without restarting the conversation. Keep the
@@ -252,6 +266,7 @@ class Session:
         the same instructions.
         """
         self._system_prompt = system_prompt
+        self._prompt_component_sizes = dict(components or {})
         self._agent.system = system_prompt
 
     def swap_backend(self, backend: Backend) -> None:
@@ -303,6 +318,8 @@ class Session:
         """
         self._conversation.clear()
         self.session_id = None
+        self._context_manager.report = {}
+        self.usage.clear()
         self.context_tokens = None  # a fresh conversation has no footprint yet
         self._last_reasoning = ""
 
@@ -320,6 +337,8 @@ class Session:
             self.swap_backend(backend)
         self._conversation = restored
         self.session_id = None
+        self._context_manager.report = {}
+        self.usage.clear()
         # Unknown until the next turn reports it — saved sessions don't carry
         # token counts, and a stale number would describe the old conversation.
         self.context_tokens = None

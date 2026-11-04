@@ -76,6 +76,36 @@ def test_role_runner_uses_isolated_provider_and_complete_tool_set(monkeypatch, t
     assert captured["closed"] is not None
 
 
+@pytest.mark.parametrize("stop_reason", ["end_turn", "max_tokens"])
+def test_large_delegate_result_is_retrievable_without_losing_stop_reason(stop_reason):
+    from vegapunk import artifacts, session_store
+    session_store.save_session("delegated", [])
+    sid = session_store.session_identity("delegated")
+    body = "important finding\n" + "evidence\n" * 2000 + "unresolved caveat"
+    child = FakeProvider(says(body, stop_reason=stop_reason))
+    primary = replace(backend_for(), spawn_provider=lambda: child)
+    result = RoleRunner(lambda: primary, ALL_TOOLS, session_identity=lambda: sid).run("shaka", "review")
+    assert len(result) < 2500
+    assert "Session artifact:" in result
+    saved = artifacts.list_artifacts(sid)["items"][0]
+    page = artifacts.read(sid, saved["id"])
+    recovered = page["text"]
+    while page["next_cursor"] is not None:
+        page = artifacts.read(sid, saved["id"], page["next_cursor"])
+        recovered += page["text"]
+    assert recovered == body
+    assert ("status: completed" if stop_reason == "end_turn" else "status: stopped: max_tokens") in result
+    assert "important finding" in result and "unresolved caveat" in result
+
+
+def test_short_delegate_result_preserves_abnormal_stop_status():
+    child = FakeProvider(says("Partial findings only", stop_reason="max_tokens"))
+    primary = replace(backend_for(), spawn_provider=lambda: child)
+    result = RoleRunner(lambda: primary, ALL_TOOLS).run("shaka", "review")
+    assert "stopped: max_tokens" in result
+    assert "Partial findings only" in result
+
+
 def test_role_runner_closes_spawned_provider_on_its_request_loop(tmp_path):
     class LoopAwareProvider(FakeProvider):
         def __init__(self):

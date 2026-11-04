@@ -25,6 +25,7 @@ from .delegate_activity import DelegateActivity
 from . import terminal
 from .tool_runtime import joined_tool
 from .run_control import RunControl, RunCancelled, wait_for_cleanup
+from .usage import UsageLedger
 
 UNAVAILABLE = (
     "Delegation is unavailable outside the primary interactive conversation. "
@@ -38,7 +39,8 @@ _DELEGATE_PROMPT = (
     "evidence is needed. Guarded actions follow the primary session's approval policy; "
     "the shared UI obtains any required approval. Do not ask questions or delegate further. "
     "Return concise findings, evidence, caveats, and any useful next action to the primary "
-    "agent. Do not address the user or claim the overall request is complete."
+    "agent. Store lengthy details in session artifacts and return their IDs with a compact summary. "
+    "Do not address the user or claim the overall request is complete."
 )
 
 
@@ -52,18 +54,22 @@ class _DelegatedAgent(Agent):
     """An agent that owns the separately spawned provider handed to it."""
 
     def __init__(self, *args, activity: DelegateActivity | None = None,
-                 activity_id: str = "", control: RunControl | None = None, **kwargs) -> None:
+                 activity_id: str = "", control: RunControl | None = None,
+                 usage: UsageLedger | None = None, **kwargs) -> None:
         kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
         super().__init__(*args, **kwargs)
         self._activity = activity
         self._activity_id = activity_id
         self._control = control or RunControl()
+        self._usage = usage
 
     async def stream(self, prompt: str | Message | None = None, *,
                      conversation: Conversation | None = None) -> AsyncIterator[Event]:
         events = self._control.stream(super().stream(prompt, conversation=conversation))
         try:
             async for event in events:
+                if self._usage is not None:
+                    self._usage.observe("delegate", event)
                 if self._activity is not None:
                     if isinstance(event, TurnEnd):
                         self._activity.usage(self._activity_id, event)
@@ -99,9 +105,11 @@ class RoleRunner:
         approval_mode: Callable[[], str] | None = None,
         activity: DelegateActivity | None = None,
         session_identity: Callable[[], str | None] | None = None,
+        usage: UsageLedger | None = None,
     ) -> None:
         self._backend = backend
         self._session_identity = session_identity
+        self._usage = usage
         self._tools = tools
         self._config = cfg
         self._approver = approver
@@ -143,6 +151,7 @@ class RoleRunner:
         from .tools.progress import bind
         from .tools.artifacts import bind as bind_artifacts
         from .execution import tool_observer
+        from .context import ContextManager
 
         sid = self._session_identity() if self._session_identity else None
         if bool(plan_id) != (step is not None):
@@ -186,9 +195,10 @@ class RoleRunner:
                 mode = "unattended"
             primary = self._backend()
             self._activity.model(activity_id, primary.model_label)
+            components: dict[str, int] = {}
             system = prompt.system_prompt(
                 self._config, mode=mode, agent_id=agent_id,
-                delegation=False, include_memory=False,
+                delegation=False, include_memory=False, component_sizes=components,
             ) + _DELEGATE_PROMPT
             # Resolve policy/logging before allocating a separately owned client.
             runtime = agent_runtime_options(self._config, "interactive")
@@ -199,7 +209,9 @@ class RoleRunner:
                 max_iterations=self._config.max_steps, extra=backend.extra,
                 on_tool_call=make_gate(approver, allow_questions=False, allow_delegation=False),
                 activity=self._activity, activity_id=activity_id, control=control, **runtime,
+                usage=self._usage,
                 tool_observer=tool_observer(lambda: sid),
+                context_policy=ContextManager(lambda: sid, self._config, window=lambda: primary.context_window, backend=lambda: primary, usage=self._usage, actor="delegate", components=lambda: components),
             )
             outcome = run_sync(worker, assigned)
             result = outcome.text.strip()
@@ -231,7 +243,16 @@ class RoleRunner:
                     progress.release(plan_id, step, activity_id, status)
         if not result:
             result = "(The role returned no text.)"
-        return f"{definition.name} role result:\n{result}"
+        if len(result) > 4000 and sid:
+            from . import artifacts
+            saved = artifacts.store_text(sid, f"{definition.name} delegated result ({status}; model claim)", result)
+            completeness = "complete" if saved["complete"] else "partial capture"
+            result = (result[:800] + f"\n[Delegated result excerpt; status: {status}; {completeness}. "
+                      f"Session artifact: {saved['id']}. Use read_artifact for details.]\n" + result[-800:])
+        label = f"{definition.name} role result"
+        if status != "completed":
+            label += f" [{status}]"
+        return f"{label}:\n{result}"
 
 
 class _RoleApprover(Approver):

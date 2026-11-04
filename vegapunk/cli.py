@@ -61,6 +61,19 @@ def _status_line(ctx: CommandContext) -> str:
         left += " · journal"
     if ctx.agent_id != "default":
         left += f" · {agents.get_agent(ctx.agent_id).name}"
+    sid = getattr(ctx.session, "session_id", None)
+    if sid:
+        from . import progress
+        try:
+            plan = progress.get(sid)
+            if plan:
+                done = sum(s["status"] == "completed" for s in plan["steps"])
+                active = next((s["title"] for s in plan["steps"] if s["status"] == "in_progress"), "")
+                left += f" · Plan {done}/{len(plan['steps'])}"
+                if active:
+                    left += " · " + " ".join(active.split())[:24]
+        except db.StoreError:
+            left += " · plan unavailable"
     right = _context_gauge(ctx.session.context_tokens, ctx.session.context_window)
     # Right-align by padding to the terminal's current width; clamp so the
     # two sides never fuse when the window is narrow. len() counts code
@@ -127,7 +140,7 @@ def main(
     ctx = CommandContext(session=session, approval_policy=approval_policy)
     provided_prompt: str | None = None
 
-    def refresh_prompt() -> None:
+    def refresh_prompt(memory_query: str | None = None) -> None:
         nonlocal provided_prompt
         custom_mode = ctx.conversation_mode == "journal" or ctx.agent_id != "default"
         if not owns_session and custom_mode and provided_prompt is None:
@@ -135,9 +148,16 @@ def main(
             # their custom prompt returns with default agent and regular mode.
             provided_prompt = session.system_prompt
         if owns_session or custom_mode:
-            session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode,
+            components: dict[str, int] = {}
+            system = prompt.system_prompt(config, mode=approval_policy.mode,
                                                           conversation_mode=ctx.conversation_mode,
-                                                          agent_id=ctx.agent_id))
+                                                          agent_id=ctx.agent_id,
+                                                          **({"component_sizes": components} if isinstance(session, Session) else {}),
+                                                          **({"memory_query": memory_query} if config.context_policy == "bounded" else {}))
+            if isinstance(session, Session):
+                session.set_system_prompt(system, components=components)
+            else:
+                session.set_system_prompt(system)
         elif provided_prompt is not None:
             session.set_system_prompt(provided_prompt)
             provided_prompt = None
@@ -205,6 +225,7 @@ def main(
                           approver=getattr(session, "approver", None),
                           approval_mode=lambda: approval_policy.mode,
                           activity=activity,
+                          usage=getattr(session, "usage", None),
                           session_identity=lambda: getattr(session, "session_id", None)))
     warned_worker_died = False
     try:
@@ -243,6 +264,8 @@ def main(
                     return
                 continue
 
+            memory_query = user_input
+            staged_input = ""
             if ctx.pending_skill is not None:
                 # A /skill staging rides this message: body first, imperatively
                 # framed (the channel this model follows), then the request. The
@@ -254,6 +277,7 @@ def main(
                     f"[Skill '{name}' — follow these instructions for this request:]\n"
                     f"{body}\n[End of skill instructions. The request:]\n{user_input}"
                 )
+                staged_input = user_input
                 ctx.pending_skill = None
 
             events = None
@@ -262,15 +286,15 @@ def main(
                 if isinstance(session, Session) and ctx.current_name is None:
                     from uuid import uuid4
 
-                    name = f"untitled-{uuid4().hex}"
+                    name = session_store.slugify(f"untitled-{uuid4().hex}")
                     session_store.save_session(name, session.messages, conversation_mode=ctx.conversation_mode,
                                                agent_id=ctx.agent_id, model_selector=session.backend.selector,
                                                effort=current_effort(session.backend))
                     ctx.current_name = ctx.provisional_name = name
                 if isinstance(session, Session):
                     session.session_id = session_store.session_identity(ctx.current_name)
-                    run_id = execution.start_run(session.session_id, user_input)
-                refresh_prompt()
+                    run_id = execution.start_run(session.session_id, memory_query, staged_input=staged_input)
+                refresh_prompt(memory_query)
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.

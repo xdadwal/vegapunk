@@ -25,6 +25,7 @@ from logpose import (
 from .gate import DELEGATION_TOOL, QUESTION_TOOL
 from .tool_runtime import joined_tool
 from .run_control import RunControl, RunCancelled as TurnCancelled
+from .usage import UsageLedger
 
 QUESTION_BATCH_BLOCKED = (
     "Blocked: ask_user must be the only tool call in a step. Read the user's answer, "
@@ -55,10 +56,11 @@ def _final_answer(text: str) -> str | None:
 class InteractiveAgent(Agent):
     """An Agent that turns a user question into a barrier between tool steps."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args, usage: UsageLedger | None = None, **kwargs) -> None:
         kwargs["tools"] = [joined_tool(tool) for tool in kwargs.get("tools", ())]
         super().__init__(*args, **kwargs)
         self._control = RunControl()
+        self._usage = usage
 
     def prepare_turn(self) -> None:
         self._control.reset()
@@ -167,6 +169,8 @@ class InteractiveAgent(Agent):
                         event = await anext(turn_stream)
                     except StopAsyncIteration:
                         break
+                    if self._usage is not None:
+                        self._usage.observe("main", event)
                     if isinstance(event, ToolResult) and event.name == QUESTION_TOOL:
                         interview_active = True
                         yield event

@@ -101,6 +101,12 @@ class Config:
     # Cap on tool output (chars) fed back to the model, to protect the context
     # window; anything longer is truncated with a visible marker.
     output_char_cap: int = int(os.getenv("VEGAPUNK_OUTPUT_CAP", "10000"))
+    context_policy: str = _choice("VEGAPUNK_CONTEXT_POLICY", "observe", {"off", "observe", "bounded"})
+    context_input_budget: int = _positive_int("VEGAPUNK_CONTEXT_INPUT_BUDGET", 32768)
+    context_recent_turns: int = _positive_int("VEGAPUNK_CONTEXT_RECENT_TURNS", 4)
+    memory_context_budget: int = _positive_int("VEGAPUNK_MEMORY_CONTEXT_BUDGET", 1200)
+    context_summaries: bool = _choice("VEGAPUNK_CONTEXT_SUMMARIES", "true", {"true", "false"}) == "true"
+    summary_max_output_tokens: int = _positive_int("VEGAPUNK_SUMMARY_MAX_OUTPUT_TOKENS", 2048)
 
     # How many think->act->observe steps the agent may take in one turn before
     # it stops. Higher gives the model room for real multi-step tasks and to

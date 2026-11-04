@@ -67,6 +67,20 @@ def get(session_id: str, plan_id: str = "") -> dict | None:
     return json.loads(rows[0][0]) if rows else None
 
 
+def history(session_id: str, offset: int = 0) -> dict:
+    """List twenty plan summaries, including finished plans, within one session."""
+    if offset < 0:
+        raise ValueError("Plan offset must be nonnegative")
+    rows = db.query("SELECT p.body,p.active,(SELECT MIN(c.created_at) FROM progress_checkpoints c WHERE c.session_id=p.session_id AND c.plan_id=p.plan_id) AS created FROM session_plans p WHERE p.session_id=? ORDER BY created DESC,p.plan_id DESC LIMIT 21 OFFSET ?", (session_id, offset))
+    items = []
+    for encoded, active, created in rows[:20]:
+        plan = json.loads(encoded)
+        items.append({"id": plan["id"], "title": plan["title"][:200], "revision": plan["revision"],
+                      "active": bool(active), "created_at": created, "steps": len(plan["steps"]),
+                      "completed": sum(step["status"] == "completed" for step in plan["steps"])})
+    return {"items": items, "next_offset": offset + 20 if len(rows) > 20 else None}
+
+
 def update(session_id: str, plan_id: str, step: int, status: str, expected_revision: int,
            outcome: str = "", evidence: list[str] | None = None, operation_id: str = "") -> dict:
     """Validate a transition and append a checkpoint in one transaction."""
@@ -163,10 +177,21 @@ def revise(session_id: str, plan_id: str, expected_revision: int, reason: str,
     return plan
 
 
-def checkpoints(session_id: str) -> list[dict]:
+def checkpoints(session_id: str, offset: int = 0) -> list[dict]:
     """Return up to fifty recent checkpoints, scoped to the session."""
-    return [{"id": row[0], "reason": row[1], "plan": json.loads(row[2])} for row in
-            db.query("SELECT checkpoint_id,reason,body FROM progress_checkpoints WHERE session_id=? ORDER BY created_at DESC LIMIT 50", (session_id,))]
+    if offset < 0:
+        raise ValueError("Checkpoint offset must be nonnegative")
+    rows = db.query("SELECT checkpoint_id,reason,body,kind FROM (SELECT checkpoint_id,reason,body,created_at,'plan' AS kind FROM progress_checkpoints WHERE session_id=? UNION ALL SELECT checkpoint_id,reason,body,created_at,'lifecycle' AS kind FROM lifecycle_checkpoints WHERE session_id=?) ORDER BY created_at DESC,checkpoint_id DESC LIMIT 50 OFFSET ?", (session_id, session_id, offset))
+    return [{"id": row[0], "reason": row[1], **({"plan": json.loads(row[2])} if row[3] == "plan" else json.loads(row[2]))} for row in rows]
+
+
+def checkpoint(session_id: str, checkpoint_id: str) -> dict:
+    """Resolve an exact checkpoint ID within its owning session."""
+    rows = db.query("SELECT reason,body,'plan' FROM progress_checkpoints WHERE session_id=? AND checkpoint_id=? UNION ALL SELECT reason,body,'lifecycle' FROM lifecycle_checkpoints WHERE session_id=? AND checkpoint_id=?", (session_id, checkpoint_id, session_id, checkpoint_id))
+    if not rows:
+        raise ValueError("Unknown checkpoint in this session")
+    reason, body, kind = rows[0]
+    return {"id": checkpoint_id, "reason": reason, **({"plan": json.loads(body)} if kind == "plan" else json.loads(body))}
 
 
 def claim(session_id: str, plan_id: str, step: int, owner: str) -> None:
