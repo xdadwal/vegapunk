@@ -18,7 +18,7 @@ from typing import Callable
 
 from logpose import provider_catalog, provider_status
 
-from . import agents, db, execution, memory, memory_jobs, menu, progress, scheduler, session_store, skills, transcript
+from . import agents, artifacts, db, execution, memory, memory_jobs, menu, progress, scheduler, session_store, skills, transcript
 from .approval import ApprovalPolicy
 from .backend import (
     ALIASES,
@@ -619,9 +619,13 @@ def _runs(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output="(no recorded runs)")
     try:
         runs = execution.list_runs(session_store.session_identity(ctx.current_name))
+        observations = execution.tool_observations(session_store.session_identity(ctx.current_name))
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read runs: {exc}")
-    return CommandResult(output="\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)")
+    text = "\n".join(f"{run.run_id} [{run.status}] {run.request}" for run in runs) or "(no recorded runs)"
+    if observations:
+        text += "\nTool observations (completed means handler returned; inspect results):\n" + json.dumps(observations, ensure_ascii=False, indent=2)
+    return CommandResult(output=text)
 
 
 @command("plan", "Show the current plan: /plan [show]")
@@ -635,12 +639,37 @@ def _plan(ctx: CommandContext, arg: str) -> CommandResult:
         return CommandResult(output=f"Could not read plan: {exc}")
 
 
+@command("artifacts", "Session snapshots: /artifacts [list|read <id> [cursor]|search <id> <query>]")
+def _artifacts(ctx: CommandContext, arg: str) -> CommandResult:
+    if ctx.current_name is None:
+        return CommandResult(output="(no session artifacts)")
+    sub, _, rest = arg.partition(" ")
+    try:
+        sid = session_store.session_identity(ctx.current_name)
+        if sub in {"", "list"}:
+            result = artifacts.list_artifacts(sid, int(rest) if rest else 0)
+        elif sub == "read":
+            artifact_id, _, cursor = rest.partition(" ")
+            result = artifacts.read(sid, artifact_id, int(cursor) if cursor else 0)
+        elif sub == "search":
+            artifact_id, _, query = rest.partition(" ")
+            result = artifacts.search(sid, artifact_id, query)
+        else:
+            return CommandResult(output="Usage: /artifacts [list [offset]|read <id> [cursor]|search <id> <query>]")
+        return CommandResult(output=json.dumps(result, ensure_ascii=False, indent=2))
+    except (ValueError, OSError, session_store.SessionNotFound) as exc:
+        return CommandResult(output=f"Could not read artifacts: {exc}")
+
+
 @command("checkpoints", "Show recent progress checkpoints: /checkpoints [list]")
 def _checkpoints(ctx: CommandContext, arg: str) -> CommandResult:
     if ctx.current_name is None:
         return CommandResult(output="(no checkpoints)")
     try:
         rows = progress.checkpoints(session_store.session_identity(ctx.current_name))
+        sid = session_store.session_identity(ctx.current_name)
+        for row in rows:
+            row["artifacts"] = artifacts.checkpoint_artifacts(sid, row["id"])
         return CommandResult(output=json.dumps(rows, indent=2, ensure_ascii=False) if rows else "(no checkpoints)")
     except (db.StoreError, session_store.SessionNotFound) as exc:
         return CommandResult(output=f"Could not read checkpoints: {exc}")

@@ -98,6 +98,8 @@ def _format_results(query: str, results: list[str]) -> str:
         return f"No web results for {query!r}. Try different or broader search terms."
 
     body = "\n\n".join(results)
+    from ..output_capture import record
+    record(f"Web results for {query!r}:\n\n{body}")
     if len(body) > config.output_char_cap:
         body = body[: config.output_char_cap] + "\n...[truncated]"
     return f"Web results for {query!r}:\n\n{body}"

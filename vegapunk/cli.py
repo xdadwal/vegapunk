@@ -154,6 +154,7 @@ def main(
             status=lambda: _status_line(ctx),
             toggle_approval=toggle_approval,
             effort_levels=lambda: supported_effort_levels(ctx.session.backend),
+            session_identity=lambda: session_store.session_identity(ctx.current_name) if ctx.current_name else None,
         )
     if _is_rich_session(session):
         print(

@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 20
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -133,6 +133,51 @@ CREATE TABLE IF NOT EXISTS progress_claims (
     status TEXT NOT NULL,
     PRIMARY KEY(plan_id,step,owner)
 );
+CREATE TABLE IF NOT EXISTS session_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    captured_bytes INTEGER NOT NULL,
+    digest TEXT NOT NULL,
+    complete INTEGER NOT NULL,
+    characters INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_artifacts ON session_artifacts(session_id,created_at);
+CREATE TABLE IF NOT EXISTS artifact_chunks (
+    artifact_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY(artifact_id,position)
+);
+CREATE TABLE IF NOT EXISTS artifact_files (
+    artifact_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifact_workspaces (
+    artifact_id TEXT PRIMARY KEY,
+    root TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoint_artifacts (
+    checkpoint_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id,artifact_id)
+);
+CREATE TABLE IF NOT EXISTS tool_observations (
+    observation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    runtime_run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    status TEXT NOT NULL,
+    artifact_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(runtime_run_id,tool_call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_observations_session ON tool_observations(session_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
     id TEXT PRIMARY KEY,
