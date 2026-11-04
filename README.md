@@ -364,6 +364,15 @@ independent verification. Use unique operation IDs for retry-safe mutations. Del
 can be assigned an in-progress step through `delegate(plan_id=…, step=…)`; only that
 step can be updated by the child, and an active assignment prevents duplicate delegation.
 
+Main and delegated agent prompts require traceable support for consequential factual
+claims and completion claims. Agents evaluate evidence as supported, limited,
+conflicting, or unsupported, comparing direct support, claim-specific authority,
+freshness, and independent corroboration. Unvisited links, summaries, and artifact IDs
+alone do not establish truth. Citations remain proportional to the task; personal
+conversation and creative work do not require them. This is model guidance, not an
+automatic fact checker. See the [evidence evaluation rubric](docs/evaluations/evidence-quality.md)
+for review criteria and future paired-evaluation fixtures.
+
 `register_artifact` stores immutable session text snapshots; `list_artifacts`,
 `read_artifact`, and `search_artifact` retrieve them without repeating the original action.
 Snapshots are stored in the existing database, survive session renaming/resumption, and
