@@ -132,6 +132,10 @@ labelled details. Artifact reads preserve Unicode and line breaks; terminal cont
 are escaped. List pages and partial reads include commands to inspect or continue the results.
 Press
 `Esc`-`Enter` or `Ctrl-J` to insert a newline; `Ctrl-D`, `/exit`, and `/quit` all end the session.
+`Ctrl+Backspace` deletes the previous word; `Ctrl+W` and `Alt+Backspace` also support
+word deletion. The prompt accepts Ctrl-H/BS and extended Ctrl+Backspace encodings;
+ordinary Backspace uses DEL. If your terminal sends BS for ordinary Backspace,
+configure that key to send DEL (`0x7f`) so the two actions can be distinguished.
 
 Press `Shift`-`Tab` to toggle approval mode without submitting or changing the current draft.
 `manual` prompts before guarded tools run; `auto` allows them for the rest of the session until you

@@ -19,6 +19,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import History
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings.named_commands import get_by_name
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
@@ -177,6 +178,28 @@ class Prompter(ABC):
 
 def _build_key_bindings(toggle_approval: Callable[[], str] | None = None) -> KeyBindings:
     kb = KeyBindings()
+
+    def delete_word(event) -> None:
+        if event.current_buffer.selection_state:
+            event.current_buffer.cut_selection()
+        else:
+            get_by_name("unix-word-rubout").call(event)
+
+    @kb.add(Keys.ControlH)
+    def _(event) -> None:
+        # The parser aliases BS (common Ctrl+Backspace) and DEL (Backspace).
+        # Retain the original byte to distinguish them in the main composer.
+        if event.key_sequence[-1].data == "\x08":
+            delete_word(event)
+        elif event.current_buffer.selection_state:
+            event.current_buffer.cut_selection()
+        else:
+            get_by_name("backward-delete-char").call(event)
+
+    # CSI-u and xterm modifyOtherKeys report the modifier explicitly. Bind
+    # their decoded characters locally instead of mutating the global parser.
+    for sequence in ("[127;5u", "[8;5u", "[27;5;127~", "[27;5;8~"):
+        kb.add(Keys.Escape, *sequence)(delete_word)
 
     # Insert a literal newline for deliberate multi-line composition; plain
     # Enter still submits (multiline=False). Ctrl-J (\n) works in every
