@@ -37,6 +37,13 @@ def test_ctrl_backspace_deletes_previous_word(tmp_path, key):
         assert _prompter(tmp_path, inp).prompt() == "hello there"
 
 
+@pytest.mark.parametrize("key", ["\x1b\x7f", "\x1b\x08", "\x1b[127;3u", "\x1b[8;3u", "\x1b[27;3;127~", "\x1b[27;3;8~"])
+def test_macos_option_backspace_deletes_unicode_word(tmp_path, key):
+    with create_pipe_input() as inp:
+        inp.send_text("hello café   " + key + "there\r")
+        assert _prompter(tmp_path, inp).prompt() == "hello there"
+
+
 def test_plain_backspace_still_deletes_one_character(tmp_path):
     with create_pipe_input() as inp:
         inp.send_text("hello world\x7f\r")
@@ -61,7 +68,7 @@ def test_ctrl_backspace_handles_unicode_layout_cursor_and_repetition(tmp_path, t
         assert _prompter(tmp_path, inp).prompt() == expected
 
 
-@pytest.mark.parametrize("key", ["\x08", "\x7f", "\x1b[127;5u"])
+@pytest.mark.parametrize("key", ["\x08", "\x7f", "\x1b[127;5u", "\x1b\x7f", "\x1b[127;3u"])
 def test_backspace_deletes_selection_without_surrounding_text(tmp_path, key):
     with create_pipe_input() as inp:
         inp.send_text("one two\x01" + "\x1b[1;2C" * 3 + key + "\r")

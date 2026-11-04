@@ -196,10 +196,15 @@ def _build_key_bindings(toggle_approval: Callable[[], str] | None = None) -> Key
         else:
             get_by_name("backward-delete-char").call(event)
 
-    # CSI-u and xterm modifyOtherKeys report the modifier explicitly. Bind
-    # their decoded characters locally instead of mutating the global parser.
-    for sequence in ("[127;5u", "[8;5u", "[27;5;127~", "[27;5;8~"):
-        kb.add(Keys.Escape, *sequence)(delete_word)
+    # macOS Option is Alt/Meta: legacy terminals prefix Backspace with Escape.
+    kb.add(Keys.Escape, Keys.ControlH)(delete_word)
+
+    # CSI-u and xterm modifyOtherKeys encode Alt/Option as 3 and Control as 5.
+    # Bind decoded characters locally instead of mutating the global parser.
+    for modifier in (3, 5):
+        for code in (8, 127):
+            for sequence in (f"[{code};{modifier}u", f"[27;{modifier};{code}~"):
+                kb.add(Keys.Escape, *sequence)(delete_word)
 
     # Insert a literal newline for deliberate multi-line composition; plain
     # Enter still submits (multiline=False). Ctrl-J (\n) works in every
