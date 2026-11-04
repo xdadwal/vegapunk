@@ -17,20 +17,22 @@ checkboxes describe the specification, not an up-to-date delivery ledger.
   source-quoted cached summaries, explicit memory priorities, synthetic evaluator.
 - #77: bounded file ranges/cursors, directory pages, streamed capped web downloads,
   artifact-backed large delegate results, and explicit partial/stop status.
-- Lifecycle checkpoint branch: automatic snapshots at turn/tool/recovery boundaries,
+- #78: automatic snapshots at turn/tool/recovery boundaries,
   exact checkpoint lookup/pagination/completion, linked outcome artifacts, compact
   plan status, resume warnings, and distinct original/staged recovery input.
 
-The stack is #74 → #76 → #77 → lifecycle checkpoint branch. #75 is independent.
+The stack is #74 → #76 → #77 → #78 → #79 (usage accounting). #75 is independent.
 User data, configuration, and unrelated installer/prompt drafts are outside this stack.
 
 ## Remaining gates and limitations
 
-- Default stays **observe**. A ten-case paired Z.ai lookup experiment is narrower
-  than the full task-quality rubric; the second provider returned HTTP 400 before a
-  valid pair. Cross-provider enablement is unverified. See
+- Default stays **observe**. Both Z.ai and Codex completed ten varied source-accuracy
+  pairs, including correction, uncertainty, scoped denial, and active-plan retrieval.
+  The Codex error was an unsupported configured model for this subscription; an
+  evaluation-only catalog-listed override worked. Both strict source gates failed
+  on an `ANSWER:` value-format mismatch. Open-ended task quality remains unverified. See
   `../../evaluations/context-efficiency.md` for results, grading limitations, and costs.
-- Usage-accounting branch adds a content-free ledger shared by main/delegate/summary
+- #79 adds a content-free ledger shared by main/delegate/summary
   execution, latest-turn and conversation totals, retrieval counters, cache reuse,
   missing usage, and exact assembled memory/skill byte measurements. Raw completions
   are counted before rendering or summary validation. Ruling: this ledger is scoped
@@ -48,7 +50,7 @@ User data, configuration, and unrelated installer/prompt drafts are outside this
   bounded mode by default. Deterministic tests cover the principal failure boundaries,
   including a 40-turn history, a 1 MiB result, retrieval, corrections, and scope denial.
 
-Latest local verification including usage accounting: 1,070 Vegapunk tests
+Latest local verification including the expanded evaluator: 1,074 Vegapunk tests
 pass; Logpose's 950 tests pass. Independent reviews cleared the context policy,
 bounded tool payloads, and lifecycle snapshot changes. The bounded-download path
 also passed a real local HTTP smoke test. These are local results, not hosted CI.
