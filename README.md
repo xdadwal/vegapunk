@@ -392,6 +392,17 @@ be recovered. Shell timeouts kill the POSIX command group, including children th
 still hold its output pipe open.
 Context preparation defaults to `observe`: `/context` estimates a smaller request while
 the model still receives the original history. `off` disables projection diagnostics.
+`/context` also reports cumulative usage for the current in-process conversation and
+the latest user turn, split into main, delegate, and summary calls. It counts raw
+completed model turns once, including hidden interview retries and rejected summaries.
+Missing usage is `null` with an explicit missing-call count. Failed/partial attempts
+without completion usage may still incur cost and are outside these totals. Cache
+counters are separate because providers differ on whether input already includes them;
+these counters are not a price estimate. Retrieval requests and returned bytes are
+reported separately. Totals reset on `/new` or restore and do not survive a restart;
+existing runtime logs retain provider metadata. Latest preparation measurements include
+memory/skill bytes when assembled by Vegapunk; those overlap system bytes, while tool
+result bytes overlap history. Component sizes are not additive token counts.
 Experimental `bounded` mode replaces eligible older large tool results with excerpts and
 retrievable artifact IDs, adds compact plan/checkpoint state, and selects relevant personal
 memory. Original conversation history and artifacts remain intact. Signed/opaque exchanges,

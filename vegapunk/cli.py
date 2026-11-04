@@ -148,10 +148,16 @@ def main(
             # their custom prompt returns with default agent and regular mode.
             provided_prompt = session.system_prompt
         if owns_session or custom_mode:
-            session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode,
+            components: dict[str, int] = {}
+            system = prompt.system_prompt(config, mode=approval_policy.mode,
                                                           conversation_mode=ctx.conversation_mode,
                                                           agent_id=ctx.agent_id,
-                                                          **({"memory_query": memory_query} if config.context_policy == "bounded" else {})))
+                                                          **({"component_sizes": components} if isinstance(session, Session) else {}),
+                                                          **({"memory_query": memory_query} if config.context_policy == "bounded" else {}))
+            if isinstance(session, Session):
+                session.set_system_prompt(system, components=components)
+            else:
+                session.set_system_prompt(system)
         elif provided_prompt is not None:
             session.set_system_prompt(provided_prompt)
             provided_prompt = None
@@ -219,6 +225,7 @@ def main(
                           approver=getattr(session, "approver", None),
                           approval_mode=lambda: approval_policy.mode,
                           activity=activity,
+                          usage=getattr(session, "usage", None),
                           session_identity=lambda: getattr(session, "session_id", None)))
     warned_worker_died = False
     try:

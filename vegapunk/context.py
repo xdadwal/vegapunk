@@ -10,6 +10,7 @@ from logpose import ContextInput, PreparedContext
 
 from . import db
 from .config import Config, config
+from .usage import Actor, UsageLedger
 
 
 class ContextBudgetError(ValueError):
@@ -21,6 +22,7 @@ def _sizes(request: ContextInput, messages: tuple, system: str | None) -> dict[s
     history = json.dumps([m.model_dump(mode="json") for m in messages], ensure_ascii=False)
     system_bytes, schema_bytes, message_bytes = (len((system or "").encode()), len(schemas.encode()), len(history.encode()))
     return {"system_bytes": system_bytes, "schema_bytes": schema_bytes, "message_bytes": message_bytes,
+            "tool_result_bytes": sum(len(b.content.encode("utf-8")) for m in messages for b in m.content if b.type == "tool_result"),
             "estimated_tokens": (system_bytes + schema_bytes + message_bytes + 2) // 3}
 
 
@@ -104,14 +106,30 @@ class ContextManager:
     """Per-agent policy; default observe mode sends the original request unchanged."""
 
     def __init__(self, identity: Callable[[], str | None], cfg: Config = config,
-                 window: Callable[[], int] | None = None, backend: Callable | None = None) -> None:
+                 window: Callable[[], int] | None = None, backend: Callable | None = None,
+                 usage: UsageLedger | None = None, actor: Actor = "main",
+                 components: Callable[[], dict[str, int]] | None = None) -> None:
         self.identity, self.cfg, self.window = identity, cfg, window
         if cfg.context_policy not in {"off", "observe", "bounded"} or cfg.context_input_budget < 1 or cfg.context_recent_turns < 1:
             raise ValueError("Invalid context policy configuration")
         self.report: dict[str, int | str | bool] = {}
         self.backend = backend
+        self.usage, self.actor = usage, actor
+        self.components = components
 
     async def __call__(self, request: ContextInput) -> PreparedContext:
+        self.report = {}
+        try:
+            prepared = await self._prepare(request)
+        except BaseException:
+            if self.usage is not None:
+                self.usage.preparation(self.actor, self.report, failed=True)
+            raise
+        if self.usage is not None:
+            self.usage.preparation(self.actor, self.report)
+        return prepared
+
+    async def _prepare(self, request: ContextInput) -> PreparedContext:
         sid = self.identity()
         before = _sizes(request, request.messages, request.system)
         mode = self.cfg.context_policy
@@ -139,9 +157,12 @@ class ContextManager:
                        "proposed_estimated_tokens": after["estimated_tokens"],
                        "system_bytes": before["system_bytes"], "schema_bytes": before["schema_bytes"],
                        "retained_message_bytes": before["message_bytes"], "proposed_message_bytes": after["message_bytes"],
+                       "retained_tool_result_bytes": before["tool_result_bytes"], "proposed_tool_result_bytes": after["tool_result_bytes"],
                        "artifact_replacements": changed, "estimated_input_budget": budget,
                        "estimated_budget_exceeded": after["estimated_tokens"] > budget,
                        "known_model_window": window}
+        self.report.update({k: v for k, v in (self.components() if self.components else {}).items() if k in {"memory_bytes", "skills_bytes"}})
+        self.report["component_semantics"] = "memory/skills overlap system; tool results overlap history; byte estimates are not additive token counts"
         system = proposed_system if mode == "bounded" else request.system
         if mode == "bounded" and budget <= 0:
             raise ContextBudgetError("Configured output reserve leaves no input budget in the known model window")
@@ -151,10 +172,12 @@ class ContextManager:
                 summary_budget = min(budget, window - self.cfg.summary_max_output_tokens - 2048) if window > 0 else budget
                 if summary_budget <= 0:
                     raise ValueError("No input budget for a summary within the known model window")
-                projected, system, summary_report = await summarize(replace(request, system=system), projected, sid, replace(self.cfg, context_input_budget=summary_budget), self.backend)
+                projected, system, summary_report = await summarize(replace(request, system=system), projected, sid, replace(self.cfg, context_input_budget=summary_budget), self.backend, usage=self.usage)
                 self.report.update(summary_report)
                 after = _sizes(request, projected, system)
                 self.report["proposed_estimated_tokens"] = after["estimated_tokens"]
+                self.report["proposed_message_bytes"] = after["message_bytes"]
+                self.report["proposed_tool_result_bytes"] = after["tool_result_bytes"]
                 self.report["estimated_budget_exceeded"] = after["estimated_tokens"] > budget
             except asyncio.CancelledError:
                 raise
@@ -165,4 +188,5 @@ class ContextManager:
                 raise ContextBudgetError("Context exceeds budget and a sourced summary could not be prepared; no history was silently dropped") from exc
         if mode == "bounded" and after["estimated_tokens"] > budget:
             raise ContextBudgetError("Retained context exceeds the estimated input budget; inspect /context, adjust the budget, or start a fresh session. No history was silently dropped.")
+        self.report["proposed_system_bytes"] = after["system_bytes"]
         return PreparedContext(projected if mode == "bounded" else request.messages, system, self.report)
