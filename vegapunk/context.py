@@ -90,7 +90,7 @@ def _task_state(sid: str) -> dict:
                          "steps": len(plan["steps"]), "completed": sum(s["status"] == "completed" for s in plan["steps"]),
                          "active": [{"id": s.get("id"), "title": s["title"][:120]} for s in active[:8]],
                          "additional_active_steps": max(0, len(active)-8)}
-    checkpoints = db.query("SELECT checkpoint_id,reason FROM progress_checkpoints WHERE session_id=? ORDER BY created_at DESC LIMIT 1", (sid,))
+    checkpoints = db.query("SELECT checkpoint_id,reason FROM (SELECT checkpoint_id,reason,created_at FROM progress_checkpoints WHERE session_id=? UNION ALL SELECT checkpoint_id,reason,created_at FROM lifecycle_checkpoints WHERE session_id=?) ORDER BY created_at DESC LIMIT 1", (sid, sid))
     if checkpoints:
         state["checkpoint"] = {"id": checkpoints[0][0], "reason": checkpoints[0][1][:200]}
     unknown = db.query("SELECT observation_id,tool_name FROM tool_observations WHERE session_id=? AND status='outcome_unknown' ORDER BY created_at DESC LIMIT 6", (sid,))

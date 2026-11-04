@@ -165,7 +165,7 @@ Lines beginning with `/` are handled by the REPL rather than sent to the model.
 | `/save <name>` | Rename the current conversation. |
 | `/runs` | Show recorded requests and turn outcomes for the current conversation. |
 | `/plan [show]` | Inspect the current execution plan and dependency graph. |
-| `/checkpoints [list]` | Inspect recent immutable progress snapshots. |
+| `/checkpoints [list [offset] \| show <id>]` | Inspect plan and execution snapshots; list pages contain up to 50 rows. |
 | `/artifacts [list\|read <id> [cursor]\|search <id> <query>]` | Inspect session text snapshots with bounded retrieval. |
 | `/history [n]` | Show the latest `n` turns; the default is five. |
 | `/reason` | Show the reasoning supplied for the last completed turn. |
@@ -354,8 +354,14 @@ variables. Its scheduler worker inherits that environment. Library imports do no
   Interrupted first turns remain discoverable in `/sessions`; `/runs` shows their original
   request and recorded outcome. On restart, unfinished turns are marked abandoned and are
   never replayed automatically. Stable internal session IDs survive renaming. Removing a
-  session also removes its run records. This records turn outcomes, not individual tool
-  effects; action-level checkpoints are a later implementation stage.
+  session also removes its run records. Turn start/end, interruption/failure, approved tool intent/outcome, and
+  recovery of abandoned turns automatically snapshot the active plan (if any) and
+  latest observed action. Tool-outcome checkpoints link the saved result artifact.
+  These records survive transcript rollback and never trigger automatic replay.
+  Recovery keeps the original user request separate from expanded staged-skill input;
+  `/runs` displays both when present. Older records retain their original stored text.
+  Resume reports the active plan, latest checkpoint ID, and uncertain actions;
+  the prompt status row shows compact active-plan progress.
 
 For substantial work the primary agent can use `create_plan`, `get_plan`,
 `update_plan_step`, and `revise_plan`. Plans have stable step IDs, optional dependency

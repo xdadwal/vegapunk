@@ -65,7 +65,7 @@ except ImportError:  # non-Unix; the single-process guard becomes a no-op with a
 
 from .config import config
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Sessions store the message list as a JSON blob; memory rows carry an open
 # ``kind`` and an optional embedding for semantic recall. Kept free of SQL
@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS execution_runs (
     request TEXT NOT NULL,
     status TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    staged_input TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS execution_events (
     run_id TEXT NOT NULL,
@@ -190,6 +191,15 @@ CREATE TABLE IF NOT EXISTS context_summaries (
     source_artifact_id TEXT NOT NULL,
     notes TEXT NOT NULL,
     PRIMARY KEY(session_id,digest)
+);
+CREATE TABLE IF NOT EXISTS lifecycle_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id,sequence)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_progress_claim ON progress_claims(plan_id,step) WHERE active=1;
 CREATE TABLE IF NOT EXISTS memory (
@@ -428,6 +438,10 @@ def _check_version(conn: turso.Connection) -> None:
             for (slug,) in conn.execute("SELECT slug FROM sessions WHERE session_id IS NULL").fetchall():
                 conn.execute("UPDATE sessions SET session_id=? WHERE slug=?", (str(uuid4()), slug))
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_identity ON sessions(session_id)")
+        if found < 22:
+            run_columns = {item[1] for item in conn.execute("PRAGMA table_info(execution_runs)").fetchall()}
+            if "staged_input" not in run_columns:
+                conn.execute("ALTER TABLE execution_runs ADD COLUMN staged_input TEXT NOT NULL DEFAULT ''")
         if found < SCHEMA_VERSION:
             columns = {item[1] for item in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
             if "profile" not in columns:
