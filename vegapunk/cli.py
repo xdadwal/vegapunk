@@ -286,7 +286,7 @@ def main(
                 if isinstance(session, Session) and ctx.current_name is None:
                     from uuid import uuid4
 
-                    name = f"untitled-{uuid4().hex}"
+                    name = session_store.slugify(f"untitled-{uuid4().hex}")
                     session_store.save_session(name, session.messages, conversation_mode=ctx.conversation_mode,
                                                agent_id=ctx.agent_id, model_selector=session.backend.selector,
                                                effort=current_effort(session.backend))
