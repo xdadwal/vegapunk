@@ -127,7 +127,7 @@ def main(
     ctx = CommandContext(session=session, approval_policy=approval_policy)
     provided_prompt: str | None = None
 
-    def refresh_prompt() -> None:
+    def refresh_prompt(memory_query: str | None = None) -> None:
         nonlocal provided_prompt
         custom_mode = ctx.conversation_mode == "journal" or ctx.agent_id != "default"
         if not owns_session and custom_mode and provided_prompt is None:
@@ -137,7 +137,8 @@ def main(
         if owns_session or custom_mode:
             session.set_system_prompt(prompt.system_prompt(config, mode=approval_policy.mode,
                                                           conversation_mode=ctx.conversation_mode,
-                                                          agent_id=ctx.agent_id))
+                                                          agent_id=ctx.agent_id,
+                                                          **({"memory_query": memory_query} if config.context_policy == "bounded" else {})))
         elif provided_prompt is not None:
             session.set_system_prompt(provided_prompt)
             provided_prompt = None
@@ -243,6 +244,7 @@ def main(
                     return
                 continue
 
+            memory_query = user_input
             if ctx.pending_skill is not None:
                 # A /skill staging rides this message: body first, imperatively
                 # framed (the channel this model follows), then the request. The
@@ -270,7 +272,7 @@ def main(
                 if isinstance(session, Session):
                     session.session_id = session_store.session_identity(ctx.current_name)
                     run_id = execution.start_run(session.session_id, user_input)
-                refresh_prompt()
+                refresh_prompt(memory_query)
                 # send() is a generator — nothing runs until the first next().
                 # The loop guarantees the whole reply arrives as TextDeltas, so
                 # rendering is just: print what you're handed, as you're handed it.

@@ -143,6 +143,7 @@ class RoleRunner:
         from .tools.progress import bind
         from .tools.artifacts import bind as bind_artifacts
         from .execution import tool_observer
+        from .context import ContextManager
 
         sid = self._session_identity() if self._session_identity else None
         if bool(plan_id) != (step is not None):
@@ -200,6 +201,7 @@ class RoleRunner:
                 on_tool_call=make_gate(approver, allow_questions=False, allow_delegation=False),
                 activity=self._activity, activity_id=activity_id, control=control, **runtime,
                 tool_observer=tool_observer(lambda: sid),
+                context_policy=ContextManager(lambda: sid, self._config, window=lambda: primary.context_window, backend=lambda: primary),
             )
             outcome = run_sync(worker, assigned)
             result = outcome.text.strip()

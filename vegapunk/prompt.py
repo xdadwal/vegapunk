@@ -70,10 +70,16 @@ def system_prompt(
     agent_id: str = "default",
     delegation: bool = True,
     include_memory: bool = True,
+    memory_query: str | None = None,
 ) -> str:
     """Return the complete system prompt with current memory and skills."""
     validate_session_mode(conversation_mode)
     journal = conversation_mode == "journal"
+    if include_memory and cfg.context_policy == "bounded" and memory_query is not None:
+        from .memory_context import as_system_block
+        memory_block = as_system_block(memory_query, cfg.memory_context_budget)
+    else:
+        memory_block = memory.as_system_block() if include_memory else ""
     return (
         (_JOURNAL_PROMPT if journal else cfg.system_prompt)
         + agents.system_block(agent_id)
@@ -108,6 +114,6 @@ def system_prompt(
            "get_tool_observations when available and inspect its result artifact and current state. "
            "outcome_unknown is not evidence of failure; completed means a handler returned, "
            "not that the requested action succeeded. Do not blindly repeat consequential actions.")
-        + (memory.as_system_block() if include_memory else "")
+        + memory_block
         + ("" if journal else skills.as_system_block())
     )
