@@ -359,10 +359,10 @@ def test_active_memory_id_can_show_its_extraction_evidence():
     from vegapunk import memory_jobs
     save()
     memory_jobs.process_one(extract_one, now=NOW)
-    shown = json.loads(memory_jobs.show_candidate(memory.list_memory()[0].id))
-    assert shown["quote"] == "I prefer concise replies"
-    assert shown["session_slug"] == "chat"
-    assert shown["status"] == "active"
+    shown = memory_jobs.show_candidate(memory.list_memory()[0].id)
+    assert "Source quote:\nI prefer concise replies" in shown
+    assert "Source session: chat" in shown
+    assert "Status: active" in shown
 
 
 def test_live_lease_blocks_other_worker_and_late_lease_owner_cannot_commit():
