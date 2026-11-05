@@ -19,6 +19,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import History
 from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings.named_commands import get_by_name
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import Output
 
@@ -27,6 +28,7 @@ from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
 from .session_store import SessionNotFound, list_sessions
+from .terminal_keys import enhanced_keyboard
 
 # The slash commands the REPL understands, offered as completions — derived from
 # the command registry so they never drift from what the REPL actually handles.
@@ -178,6 +180,33 @@ class Prompter(ABC):
 def _build_key_bindings(toggle_approval: Callable[[], str] | None = None) -> KeyBindings:
     kb = KeyBindings()
 
+    def delete_word(event) -> None:
+        if event.current_buffer.selection_state:
+            event.current_buffer.cut_selection()
+        else:
+            get_by_name("unix-word-rubout").call(event)
+
+    @kb.add(Keys.ControlH)
+    def _(event) -> None:
+        # The parser aliases BS (common Ctrl+Backspace) and DEL (Backspace).
+        # Retain the original byte to distinguish them in the main composer.
+        if event.key_sequence[-1].data == "\x08":
+            delete_word(event)
+        elif event.current_buffer.selection_state:
+            event.current_buffer.cut_selection()
+        else:
+            get_by_name("backward-delete-char").call(event)
+
+    # macOS Option is Alt/Meta: legacy terminals prefix Backspace with Escape.
+    kb.add(Keys.Escape, Keys.ControlH)(delete_word)
+
+    # CSI-u and xterm modifyOtherKeys encode Alt/Option as 3 and Control as 5.
+    # Bind decoded characters locally instead of mutating the global parser.
+    for modifier in (3, 5):
+        for code in (8, 127):
+            for sequence in (f"[{code};{modifier}u", f"[27;{modifier};{code}~"):
+                kb.add(Keys.Escape, *sequence)(delete_word)
+
     # Insert a literal newline for deliberate multi-line composition; plain
     # Enter still submits (multiline=False). Ctrl-J (\n) works in every
     # terminal; Esc-Enter (\x1b\r) is what Option+Enter sends on macOS.
@@ -245,7 +274,8 @@ class PromptToolkitPrompter(Prompter):
     def prompt(self) -> str:
         # prompt_toolkit raises EOFError on Ctrl-D and KeyboardInterrupt on
         # Ctrl-C, exactly like builtins.input().
-        return self._session.prompt()
+        with enhanced_keyboard(self._session.app.input, self._session.app.output):
+            return self._session.prompt()
 
 
 class ScriptedPrompter(Prompter):
