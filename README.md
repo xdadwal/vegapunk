@@ -137,10 +137,10 @@ Press
 accepts Ctrl-H/BS, legacy Alt/Option prefixes, and extended modified-Backspace encodings;
 ordinary Backspace uses DEL. If your terminal sends BS for ordinary Backspace,
 configure that key to send DEL (`0x7f`) so the two actions can be distinguished.
-In iTerm2, if Option+Delete still behaves like ordinary Backspace, add a mapping under
-Settings → Profiles → Keys → Key Mappings: shortcut **Option+Delete**, action **Send Hex Code**,
-value `0x1b 0x7f`. This sends Escape+Backspace, which the prompt recognizes as word deletion.
-See [iTerm2's key-mapping documentation](https://iterm2.com/documentation-preferences-profiles-keys.html).
+During input, Vegapunk requests enhanced keyboard reporting from compatible terminals
+(including iTerm2) so Option/Control modifiers can be distinguished without custom key mappings.
+It restores the preceding keyboard mode when input finishes or is interrupted. Legacy terminals
+continue using their existing key encodings.
 
 Press `Shift`-`Tab` to toggle approval mode without submitting or changing the current draft.
 `manual` prompts before guarded tools run; `auto` allows them for the rest of the session until you

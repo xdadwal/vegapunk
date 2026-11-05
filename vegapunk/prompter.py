@@ -28,6 +28,7 @@ from .backend import EFFORT_LEVELS, backend_names, cached_models
 from .commands import REGISTRY as _COMMAND_REGISTRY
 from .db_history import DbHistory
 from .session_store import SessionNotFound, list_sessions
+from .terminal_keys import enhanced_keyboard
 
 # The slash commands the REPL understands, offered as completions — derived from
 # the command registry so they never drift from what the REPL actually handles.
@@ -273,7 +274,8 @@ class PromptToolkitPrompter(Prompter):
     def prompt(self) -> str:
         # prompt_toolkit raises EOFError on Ctrl-D and KeyboardInterrupt on
         # Ctrl-C, exactly like builtins.input().
-        return self._session.prompt()
+        with enhanced_keyboard(self._session.app.input, self._session.app.output):
+            return self._session.prompt()
 
 
 class ScriptedPrompter(Prompter):
