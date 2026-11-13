@@ -621,7 +621,7 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_PROVIDER_MAX_ATTEMPTS` | `3` | Total provider attempts for a turn; `1` disables retries. |
 | `VEGAPUNK_PROVIDER_TURN_TIMEOUT` | Provider default | Complete provider-turn deadline in seconds; `0` disables it. |
 | `VEGAPUNK_MAX_CONCURRENT_TOOLS` | `8` | Concurrent tool handlers allowed per agent. |
-| `VEGAPUNK_TOOL_TIMEOUT` | Disabled | Tool-handler deadline in seconds; `0` disables it. |
+| `VEGAPUNK_TOOL_TIMEOUT` | `600` | Tool-handler deadline in seconds; `0` disables it. |
 | `VEGAPUNK_SHELL_TIMEOUT` | `600` | Shell command timeout in seconds. |
 | `VEGAPUNK_OUTPUT_CAP` | `100000` | Maximum tool-output characters returned to the model. |
 | `VEGAPUNK_CONTEXT_POLICY` | `observe` | Request preparation: `off`, `observe`, or experimental `bounded`. |

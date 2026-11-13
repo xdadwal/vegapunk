@@ -126,10 +126,7 @@ class Config:
     provider_max_attempts: int = _positive_int("VEGAPUNK_PROVIDER_MAX_ATTEMPTS", 3)
     provider_turn_timeout: float | None | Literal["default"] = _provider_turn_timeout()
     max_concurrent_tools: int = _positive_int("VEGAPUNK_MAX_CONCURRENT_TOOLS", 8)
-    # No tool deadline by default: long-running tool work is expected, and the
-    # shell timeout plus provider-turn timeout cover the bounded cases. Set
-    # VEGAPUNK_TOOL_TIMEOUT to a positive value to impose one.
-    tool_timeout: float | None = _optional_timeout("VEGAPUNK_TOOL_TIMEOUT", None)
+    tool_timeout: float | None = _optional_timeout("VEGAPUNK_TOOL_TIMEOUT", 600.0)
 
     # Color in the CLI: "auto" (color only when the stream is a terminal),
     # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR

@@ -113,7 +113,7 @@ def test_max_steps_defaults_to_an_effectively_unbounded_backstop(monkeypatch):
 def test_relaxed_limits_defaults(monkeypatch):
     try:
         cfg = _reloaded_config(monkeypatch)
-        assert cfg.tool_timeout is None
+        assert cfg.tool_timeout == 600.0
         assert cfg.shell_timeout == 600.0
         assert cfg.output_char_cap == 100000
     finally:
