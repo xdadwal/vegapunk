@@ -103,9 +103,27 @@ def test_foreground_memory_is_reserved_for_explicit_requests(monkeypatch):
         _restore(monkeypatch)
 
 
-def test_max_steps_defaults_to_a_multi_step_budget(monkeypatch):
+def test_max_steps_defaults_to_an_effectively_unbounded_backstop(monkeypatch):
     try:
-        assert _reloaded_config(monkeypatch).max_steps == 25
+        assert _reloaded_config(monkeypatch).max_steps == 10000
+    finally:
+        _restore(monkeypatch)
+
+
+def test_relaxed_limits_defaults(monkeypatch):
+    try:
+        cfg = _reloaded_config(monkeypatch)
+        assert cfg.tool_timeout is None
+        assert cfg.shell_timeout == 600.0
+        assert cfg.output_char_cap == 100000
+    finally:
+        _restore(monkeypatch)
+
+
+def test_tool_timeout_env_override_and_disable(monkeypatch):
+    try:
+        assert _reloaded_config(monkeypatch, VEGAPUNK_TOOL_TIMEOUT="120").tool_timeout == 120.0
+        assert _reloaded_config(monkeypatch, VEGAPUNK_TOOL_TIMEOUT="0").tool_timeout is None
     finally:
         _restore(monkeypatch)
 
@@ -137,7 +155,7 @@ def test_runtime_policy_defaults_are_safe(monkeypatch):
         assert cfg.provider_max_attempts == 3
         assert cfg.provider_turn_timeout == "default"
         assert cfg.max_concurrent_tools == 8
-        assert cfg.tool_timeout == 300
+        assert cfg.tool_timeout is None
     finally:
         _restore(monkeypatch)
 
