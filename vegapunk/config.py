@@ -45,9 +45,12 @@ def _choice(name: str, default: str, choices: set[str]) -> str:
     return value
 
 
-def _optional_timeout(name: str, default: float) -> float | None:
-    """Read a positive timeout; zero explicitly disables it."""
-    value = float(os.getenv(name, str(default)))
+def _optional_timeout(name: str, default: float | None) -> float | None:
+    """Read a positive timeout; zero or a None default disables it."""
+    raw = os.getenv(name)
+    if raw is None and default is None:
+        return None
+    value = float(raw if raw is not None else default)
     if value < 0:
         raise ValueError(f"{name} must be non-negative, got {value!r}.")
     return None if value == 0 else value
@@ -95,12 +98,15 @@ class Config:
     # Coding Plan search uses the existing ZAI_KEY; no separately billed REST fallback.
     search_provider: str = os.getenv("VEGAPUNK_SEARCH_PROVIDER", "auto").strip().lower()
 
-    # How long a shell command may run before it's killed (seconds).
-    shell_timeout: float = float(os.getenv("VEGAPUNK_SHELL_TIMEOUT", "30"))
+    # How long a shell command may run before it's killed (seconds). The
+    # generous default assumes long-running builds/tests are normal agent work;
+    # set it lower to keep hung commands from blocking a turn.
+    shell_timeout: float = float(os.getenv("VEGAPUNK_SHELL_TIMEOUT", "600"))
 
     # Cap on tool output (chars) fed back to the model, to protect the context
-    # window; anything longer is truncated with a visible marker.
-    output_char_cap: int = int(os.getenv("VEGAPUNK_OUTPUT_CAP", "10000"))
+    # window; anything longer is truncated with a visible marker. The default
+    # is high enough that only genuinely huge outputs are clipped.
+    output_char_cap: int = int(os.getenv("VEGAPUNK_OUTPUT_CAP", "100000"))
     context_policy: str = _choice("VEGAPUNK_CONTEXT_POLICY", "observe", {"off", "observe", "bounded"})
     context_input_budget: int = _positive_int("VEGAPUNK_CONTEXT_INPUT_BUDGET", 32768)
     context_recent_turns: int = _positive_int("VEGAPUNK_CONTEXT_RECENT_TURNS", 4)
@@ -109,10 +115,9 @@ class Config:
     summary_max_output_tokens: int = _positive_int("VEGAPUNK_SUMMARY_MAX_OUTPUT_TOKENS", 2048)
 
     # How many think->act->observe steps the agent may take in one turn before
-    # it stops. Higher gives the model room for real multi-step tasks and to
-    # recover from failed steps; the limit exists as the runaway-loop backstop,
-    # not as a working budget.
-    max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "25"))
+    # it stops. The default is high enough to be effectively unbounded for real
+    # work while still acting as the runaway-loop backstop.
+    max_steps: int = int(os.getenv("VEGAPUNK_MAX_STEPS", "10000"))
 
     # Logpose applies these to every provider turn and tool call. They live in
     # Vegapunk's config namespace so applications embedding the library retain
@@ -121,7 +126,10 @@ class Config:
     provider_max_attempts: int = _positive_int("VEGAPUNK_PROVIDER_MAX_ATTEMPTS", 3)
     provider_turn_timeout: float | None | Literal["default"] = _provider_turn_timeout()
     max_concurrent_tools: int = _positive_int("VEGAPUNK_MAX_CONCURRENT_TOOLS", 8)
-    tool_timeout: float | None = _optional_timeout("VEGAPUNK_TOOL_TIMEOUT", 300.0)
+    # No tool deadline by default: long-running tool work is expected, and the
+    # shell timeout plus provider-turn timeout cover the bounded cases. Set
+    # VEGAPUNK_TOOL_TIMEOUT to a positive value to impose one.
+    tool_timeout: float | None = _optional_timeout("VEGAPUNK_TOOL_TIMEOUT", None)
 
     # Color in the CLI: "auto" (color only when the stream is a terminal),
     # "always" (even when piped — for `| less -R`), or "never". The NO_COLOR

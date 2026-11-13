@@ -617,13 +617,13 @@ Every application setting can be overridden with an environment variable.
 | `VEGAPUNK_API_KEY` | `not-needed` | API key passed to the optional local embeddings client. |
 | `VEGAPUNK_WORKSPACE` | Current directory | Root available to filesystem and shell tools. |
 | `VEGAPUNK_MAX_OUTPUT_TOKENS` | `16000` | Maximum model output per turn, including reasoning. |
-| `VEGAPUNK_MAX_STEPS` | `25` | Maximum think-act-observe iterations per turn. |
+| `VEGAPUNK_MAX_STEPS` | `10000` | Maximum think-act-observe iterations per turn. |
 | `VEGAPUNK_PROVIDER_MAX_ATTEMPTS` | `3` | Total provider attempts for a turn; `1` disables retries. |
 | `VEGAPUNK_PROVIDER_TURN_TIMEOUT` | Provider default | Complete provider-turn deadline in seconds; `0` disables it. |
 | `VEGAPUNK_MAX_CONCURRENT_TOOLS` | `8` | Concurrent tool handlers allowed per agent. |
-| `VEGAPUNK_TOOL_TIMEOUT` | `300` | Tool-handler deadline in seconds; `0` disables it. |
-| `VEGAPUNK_SHELL_TIMEOUT` | `30` | Shell command timeout in seconds. |
-| `VEGAPUNK_OUTPUT_CAP` | `10000` | Maximum tool-output characters returned to the model. |
+| `VEGAPUNK_TOOL_TIMEOUT` | Disabled | Tool-handler deadline in seconds; `0` disables it. |
+| `VEGAPUNK_SHELL_TIMEOUT` | `600` | Shell command timeout in seconds. |
+| `VEGAPUNK_OUTPUT_CAP` | `100000` | Maximum tool-output characters returned to the model. |
 | `VEGAPUNK_CONTEXT_POLICY` | `observe` | Request preparation: `off`, `observe`, or experimental `bounded`. |
 | `VEGAPUNK_CONTEXT_INPUT_BUDGET` | `32768` | Estimated input tokens (UTF-8 bytes / 3), capped by the known model window minus output reserve and 2048 safety margin. |
 | `VEGAPUNK_CONTEXT_RECENT_TURNS` | `4` | Prefer keeping this many recent complete user exchanges; budget pressure may project older results within them, preserving the newest two results. |

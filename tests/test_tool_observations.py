@@ -121,10 +121,12 @@ def test_shell_artifact_preserves_text_beyond_preview_limit(tmp_path, monkeypatc
     from dataclasses import replace
     from tests.fake_provider import session_for, call, wants, says
     from vegapunk.approval import CLIApprover, ApprovalPolicy
+    import vegapunk.tools.shell as shell_module
     from vegapunk.tools import workspace
     from vegapunk.tools.shell import run_shell
 
-    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=tmp_path))
+    monkeypatch.setattr(workspace, "config", replace(workspace.config, workspace_root=tmp_path, output_char_cap=10000))
+    monkeypatch.setattr(shell_module, "config", replace(shell_module.config, workspace_root=tmp_path, output_char_cap=10000))
     session_store.save_session("one", [])
     sid = session_store.session_identity("one")
     command = f"{shlex.quote(sys.executable)} -c \"print('x'*20000 + 'TAIL')\""
