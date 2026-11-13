@@ -30,6 +30,61 @@ def test_plain_line_submits(tmp_path):
         assert _prompter(tmp_path, inp).prompt() == "hello world"
 
 
+@pytest.mark.parametrize("key", ["\x08", "\x1b[127;5u", "\x1b[8;5u", "\x1b[27;5;127~", "\x1b[27;5;8~"])
+def test_ctrl_backspace_deletes_previous_word(tmp_path, key):
+    with create_pipe_input() as inp:
+        inp.send_text("hello world" + key + "there\r")
+        assert _prompter(tmp_path, inp).prompt() == "hello there"
+
+
+@pytest.mark.parametrize("key", ["\x1b\x7f", "\x1b\x08", "\x1b[127;3u", "\x1b[8;3u", "\x1b[27;3;127~", "\x1b[27;3;8~"])
+def test_macos_option_backspace_deletes_unicode_word(tmp_path, key):
+    with create_pipe_input() as inp:
+        inp.send_text("hello café   " + key + "there\r")
+        assert _prompter(tmp_path, inp).prompt() == "hello there"
+
+
+def test_plain_backspace_still_deletes_one_character(tmp_path):
+    with create_pipe_input() as inp:
+        inp.send_text("hello world\x7f\r")
+        assert _prompter(tmp_path, inp).prompt() == "hello worl"
+
+
+@pytest.mark.parametrize("key", ["\x17", "\x1b\x7f"])
+def test_existing_word_deletion_shortcuts_still_work(tmp_path, key):
+    with create_pipe_input() as inp:
+        inp.send_text("hello world" + key + "\r")
+        assert _prompter(tmp_path, inp).prompt() == "hello "
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("", ""), ("hello café   ", "hello "), ("first\nsecond", "first\n"),
+    ("one two three\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D", "one three"),
+    ("one two\x08", ""),
+])
+def test_ctrl_backspace_handles_unicode_layout_cursor_and_repetition(tmp_path, text, expected):
+    with create_pipe_input() as inp:
+        inp.send_text(text + "\x08\r")
+        assert _prompter(tmp_path, inp).prompt() == expected
+
+
+@pytest.mark.parametrize("key", ["\x08", "\x7f", "\x1b[127;5u", "\x1b\x7f", "\x1b[127;3u"])
+def test_backspace_deletes_selection_without_surrounding_text(tmp_path, key):
+    with create_pipe_input() as inp:
+        inp.send_text("one two\x01" + "\x1b[1;2C" * 3 + key + "\r")
+        assert _prompter(tmp_path, inp).prompt() == " two"
+
+
+def test_ctrl_backspace_edits_recalled_history_without_mutating_it():
+    history = InMemoryHistory()
+    history.append_string("one two")
+    with create_pipe_input() as inp:
+        inp.send_text("\x1b[A\x08three\r")
+        prompter = PromptToolkitPrompter(history=history, input=inp, output=DummyOutput())
+        assert prompter.prompt() == "one three"
+    assert "one two" in list(history.load_history_strings())
+
+
 def test_ctrl_j_inserts_newline(tmp_path):
     # "\n" is Ctrl-J, bound to insert a newline; "\r" is Enter, which submits.
     with create_pipe_input() as inp:
