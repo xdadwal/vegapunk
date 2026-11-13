@@ -155,7 +155,7 @@ def test_runtime_policy_defaults_are_safe(monkeypatch):
         assert cfg.provider_max_attempts == 3
         assert cfg.provider_turn_timeout == "default"
         assert cfg.max_concurrent_tools == 8
-        assert cfg.tool_timeout is None
+        assert cfg.tool_timeout == 600.0
     finally:
         _restore(monkeypatch)
 
