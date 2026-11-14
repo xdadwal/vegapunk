@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..config import config
+from .deadline import register_terminator
 from .registry import tool
 
 _SEARCH_URL = "https://html.duckduckgo.com/html/"
@@ -71,7 +72,13 @@ def search_web(query: str, max_results: int = 5) -> str:
         return _format_results(query, results)
 
     try:
-        response = _post(
+        if _post is requests.post:
+            session = requests.Session()
+            register_terminator(session.close)
+            poster = session.post
+        else:
+            poster = _post
+        response = poster(
             _SEARCH_URL, data={"q": query}, headers=_HEADERS, timeout=15, allow_redirects=True
         )
         response.raise_for_status()
@@ -172,6 +179,8 @@ def _rpc_message(response: requests.Response, request_id: int | None) -> object:
 def _zai_search(query: str, max_results: int, key: str) -> list[str]:
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json, text/event-stream"}
     with _session() as client:
+        if hasattr(client, "close"):
+            register_terminator(client.close)
         initial = _rpc(client, headers, "initialize", {
             "protocolVersion": "2024-11-05", "capabilities": {},
             "clientInfo": {"name": "vegapunk", "version": "0.1.0"},

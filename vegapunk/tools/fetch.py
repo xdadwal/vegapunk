@@ -13,6 +13,7 @@ from requests.compat import chardet
 from bs4 import BeautifulSoup
 
 from ..config import config
+from .deadline import register_terminator
 from .registry import tool
 
 # A realistic browser User-Agent + Accept headers. Sites commonly 403 the
@@ -42,9 +43,17 @@ def fetch_url(url: str) -> str:
     # Single-user local tool: fetching arbitrary hosts (incl. localhost / private
     # IPs) is an accepted risk here. On a shared or cloud host, restrict to
     # http(s) and reject private/link-local addresses before fetching.
+    # A dedicated session gives the deadline handle a concrete terminator:
+    # closing it force-closes the sockets a timed-out request is blocked on.
+    if _get is requests.get:
+        session = requests.Session()
+        register_terminator(session.close)
+        getter = session.get
+    else:
+        getter = _get
     response = None
     try:
-        response = _get(url, headers=_HEADERS, timeout=15, allow_redirects=True, stream=True)
+        response = getter(url, headers=_HEADERS, timeout=15, allow_redirects=True, stream=True)
         response.raise_for_status()
         body = bytearray()
         complete = True
