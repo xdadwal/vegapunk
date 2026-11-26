@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from vegapunk.auth.routes import router as auth_router
 from vegapunk.config import Settings
 from vegapunk.db import connect, migrate, prepare_data_dir
 
@@ -20,6 +21,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(title="Vegapunk", lifespan=lifespan)
     app.state.settings = settings
+    app.include_router(auth_router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
