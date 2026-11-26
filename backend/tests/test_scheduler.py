@@ -71,8 +71,8 @@ def test_a_cycle_ingests_every_collector_and_records_success(db_path):
         Fake("docker", [LISTING, ContainerSample("a", 1.0, 2, 3)]),
     )
     scheduler(db_path, host, docker).run_once()
-    assert scalar(db_path, "SELECT count(*) FROM host_metrics") == 1
-    assert scalar(db_path, "SELECT count(*) FROM container_metrics") == 1
+    assert scalar(db_path, "SELECT count(*) FROM host_metrics WHERE res = 0") == 1
+    assert scalar(db_path, "SELECT count(*) FROM container_metrics WHERE res = 0") == 1
     rows = status(db_path)
     assert set(rows) == {"host", "docker"}
     assert rows["docker"]["last_success_at"] == T0.isoformat() == rows["docker"]["last_attempt_at"]
@@ -83,7 +83,7 @@ def test_a_failing_collector_does_not_stop_the_others(db_path):
     scheduler(
         db_path, Fake("docker", DockerError("Can't reach Docker")), Fake("host", [SAMPLE])
     ).run_once()
-    assert scalar(db_path, "SELECT count(*) FROM host_metrics") == 1
+    assert scalar(db_path, "SELECT count(*) FROM host_metrics WHERE res = 0") == 1
     docker = status(db_path)["docker"]
     assert docker["last_error"] == "Can't reach Docker" and docker["last_success_at"] is None
 

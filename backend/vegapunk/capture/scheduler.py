@@ -5,16 +5,18 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vegapunk.capture.collectors import Collector
 from vegapunk.capture.ingest import ingest
+from vegapunk.capture.rollup import prune, rollup
 from vegapunk.db import connect, transaction
 
 log = logging.getLogger(__name__)
 
 THREAD_NAME = "vegapunk-capture"
+PRUNE_EVERY = timedelta(hours=1)
 
 
 def _utcnow() -> datetime:
@@ -35,6 +37,7 @@ class Scheduler:
         self._clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._last_prune: datetime | None = None
 
     def run_once(self) -> None:
         """One cycle. A source that fails never stops the others, and nothing escapes."""
@@ -45,27 +48,30 @@ class Scheduler:
             log.exception("Capture could not open the database")
             return
         try:
+            stored = False
             for collector in self._collectors:
                 try:
-                    self._run_collector(conn, collector, now)
+                    stored |= self._run_collector(conn, collector, now)
                 except Exception:
                     log.exception("Capture failed for %s", collector.name)
+            self._maintain(conn, now, stored)
         finally:
             conn.close()
 
-    def _run_collector(self, conn: sqlite3.Connection, collector: Collector, now: datetime) -> None:
+    def _run_collector(self, conn: sqlite3.Connection, collector: Collector, now: datetime) -> bool:
+        """Returns True if the collector's records were stored."""
         try:
             records = collector.collect(now)
         except Exception as exc:
             log.warning("Capture from %s failed: %s", collector.name, exc)
             self._failed(conn, collector.name, now, str(exc) or type(exc).__name__)
-            return
+            return False
         try:
             ingest(conn, now, records)
         except Exception as exc:
             log.exception("Capture from %s could not be stored", collector.name)
             self._failed(conn, collector.name, now, f"Couldn't store data: {exc}")
-            return
+            return False
         with transaction(conn):
             conn.execute(
                 "INSERT INTO capture_status (source, last_attempt_at, last_success_at, last_error) "
@@ -74,6 +80,17 @@ class Scheduler:
                 "last_success_at = excluded.last_success_at, last_error = NULL",
                 (collector.name, now.isoformat(), now.isoformat()),
             )
+        return True
+
+    def _maintain(self, conn: sqlite3.Connection, now: datetime, stored: bool) -> None:
+        try:
+            if stored:
+                rollup(conn, now)
+            if self._last_prune is None or now - self._last_prune >= PRUNE_EVERY:
+                prune(conn, now)
+                self._last_prune = now
+        except Exception:
+            log.exception("Capture maintenance failed")
 
     @staticmethod
     def _failed(conn: sqlite3.Connection, source: str, now: datetime, error: str) -> None:
