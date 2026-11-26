@@ -7,7 +7,7 @@ The first version (scope in [`AGENTS.md`](../../AGENTS.md)) is built in five mil
 | 1 | Foundation | Run Vegapunk as a container, create the admin account, sign in, edit your profile | [2026-11-26-m1-foundation.md](2026-11-26-m1-foundation.md) |
 | 2 | Capture and read-only screens | See the host's CPU, memory, storage and every container, with trends | [2026-11-26-m2-capture.md](2026-11-26-m2-capture.md) |
 | 3 | AI provider and agent chat | Connect a provider and ask the agent about the host | [2026-11-26-m3-agent.md](2026-11-26-m3-agent.md) |
-| 4 | Findings | Get findings from scheduled and background checks, with diagnosis and evidence | To write |
+| 4 | Findings | Get findings from scheduled and background checks, with diagnosis and evidence | [2026-11-27-m4-findings.md](2026-11-27-m4-findings.md) |
 | 5 | Release | Install a published image by following the README | To write |
 
 ## Milestone 2: Capture and read-only screens
