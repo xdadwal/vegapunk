@@ -15,7 +15,8 @@ LINE_CAP = 2_000
 SCRUB_CAP = 300
 
 _PRIVATE_KEY = re.compile(
-    r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----.*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|\Z)",
+    r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----"
+    r".*?(?:-----END [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----|\Z)",
     re.DOTALL,
 )
 _AUTH_HEADER = re.compile(
@@ -33,15 +34,21 @@ _TOKEN_SHAPES = re.compile(
 )
 _KEYWORD_VALUE = re.compile(
     r"(?i)((?:password|passwd|pwd|secret|token|api[_\-]?key|access[_\-]?key|private[_\-]?key|credential)"
-    r"[\w.\-]{0,64}[\"']?\s{0,3}[:=]\s{0,3})"
-    r"(\"[^\"\n]{0,500}\"|'[^'\n]{0,500}'|[^\s\"',;&]{1,500})"
+    r"[\w.\-]{0,64}\\?[\"']?\s{0,3}[:=]\s{0,3})"
+    r"(\\\"[^\"\\\n]{0,500}\\\""  # a value inside an escaped string: \"value\"
+    r"|\"(?:[^\"\\\n]|\\.){0,500}\""  # "value", which may hold \" inside
+    r"|'(?:[^'\\\n]|\\.){0,500}'"
+    r"|[^\s\"',;&][^\s\",;&]{0,499})"  # a bare value; an apostrophe may be part of it
 )
 
 
 def _keep_quotes(match: re.Match[str]) -> str:
     """Replace a value but keep its quote marks, so JSON-looking lines still read."""
     value = match.group(2)
-    quote = value[0] if value[0] in "\"'" else ""
+    if value.startswith('\\"'):
+        quote = '\\"'
+    else:
+        quote = value[0] if value[0] in "\"'" else ""
     return f"{match.group(1)}{quote}{REDACTED}{quote}"
 
 

@@ -1,8 +1,10 @@
 """AI provider settings and the conversation list, in SQLite."""
 
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from vegapunk.api.queries import z
 from vegapunk.crypto import CryptoError, decrypt, encrypt, key_hint
@@ -46,9 +48,22 @@ def normalise_base_url(value: str) -> str:
         raise ValueError(f"Base URL can be up to {MAX_URL:,} characters.")
     if any(c.isspace() for c in url):
         raise ValueError("Base URL can't contain spaces.")
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Zs", "Zl", "Zp") for c in url):
+        raise ValueError("Base URL can't contain control or invisible characters.")
     scheme, sep, rest = url.partition("://")
     if scheme not in ("http", "https") or not sep or not rest.strip("/"):
         raise ValueError("Base URL must start with http:// or https:// and name a server.")
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018  (raises for a port outside 0-65535)
+    except ValueError:
+        raise ValueError("Base URL isn't a valid address.") from None
+    if not parts.hostname:
+        raise ValueError("Base URL must name a server.")
+    if "@" in parts.netloc:
+        raise ValueError("Base URL can't contain a username or password. Use the API key field.")
+    if "?" in url or "#" in url:
+        raise ValueError("Base URL can't contain a query or fragment.")
     return url.rstrip("/")
 
 

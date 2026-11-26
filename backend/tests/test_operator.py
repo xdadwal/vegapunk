@@ -80,10 +80,10 @@ def test_a_tool_call_streams_a_running_step_then_a_done_step_with_its_label(read
     steps = [e for e in events if e["type"] == "step"]
     label = "Read the status of the containers"
     assert steps == [
-        {"type": "step", "id": "t1", "label": label, "status": "running"},
-        {"type": "step", "id": "t1", "label": label, "status": "done"},
+        {"type": "step", "id": "s1", "label": label, "status": "running"},
+        {"type": "step", "id": "s1", "label": label, "status": "done"},
     ]
-    assert text_of(events) == "Checking.`db` is stopped."
+    assert text_of(events) == "Checking.\n\n`db` is stopped."
     assert types(events)[-1] == "done"
     # the model really was handed the tool's result
     assert "web" in provider.requests[1].messages[-1].content[0].content
@@ -331,7 +331,7 @@ def test_text_in_a_tool_result_cannot_make_the_agent_do_anything(ready):
     # the attack text arrived as a tool result, nothing else ran, and the attempt was refused
     assert attack in provider.requests[1].messages[-1].content[0].content
     assert docker.calls == [("a", 100)]
-    assert [e["status"] for e in events if e["type"] == "step" and e["id"] == "t2"] == [
+    assert [e["status"] for e in events if e["type"] == "step" and e["id"] == "s2"] == [
         "running",
         "failed",
     ]
@@ -351,7 +351,7 @@ def test_a_follow_up_can_recall_an_earlier_long_tool_output(ready):
     op = make_operator(ready, provider, docker=docker)
     cid = conversation_id(run(collect(op, "read the logs")))
     events = run(collect(op, "what did line 7 say?", cid))
-    recall = [e for e in events if e["type"] == "step" and e["id"] == "R1"]
+    recall = [e for e in events if e["type"] == "step" and e["id"] == "s1"]
     assert [e["status"] for e in recall] == ["running", "done"]
     assert recall[0]["label"] == "Read earlier tool output"
     assert types(events)[-1] == "done"
@@ -503,3 +503,29 @@ def test_delete_removes_the_session_and_the_row_and_is_refused_while_busy(ready)
         run(op.delete(cid))
     with pytest.raises(UnknownConversation):
         run(op.delete("../x"))
+
+
+# ---- step ids and text across turns
+def test_steps_get_their_own_ids_even_when_the_server_reuses_one(ready):
+    provider = FakeProvider(
+        [
+            Turn.tool("host_overview", id="call_0"),
+            Turn.tool("list_containers", id="call_0"),
+            Turn.text("Done."),
+        ]
+    )
+    events = run(collect(make_operator(ready, provider), "hi"))
+    steps = [(e["id"], e["status"]) for e in events if e["type"] == "step"]
+    assert steps == [("s1", "running"), ("s1", "done"), ("s2", "running"), ("s2", "done")]
+
+
+def test_text_from_separate_turns_is_not_glued_together(ready):
+    provider = FakeProvider(
+        [
+            Turn.tool("host_overview", id="t1", text="Let me check."),
+            Turn.text("All fine."),
+        ]
+    )
+    events = run(collect(make_operator(ready, provider), "hi"))
+    shown = "".join(e["text"] for e in events if e["type"] == "text")
+    assert shown == "Let me check.\n\nAll fine."

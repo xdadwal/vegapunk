@@ -54,6 +54,7 @@ export default function Agent() {
   const [ownId, setOwnId] = useState<string | null>(null) // a conversation this page started itself
   const [rejectedNow, setRejectedNow] = useState(false)
   const abort = useRef<AbortController | null>(null)
+  const sentAt = useRef(0)
   const requestRef = useRef(request)
   useEffect(() => {
     requestRef.current = request
@@ -84,6 +85,23 @@ export default function Agent() {
       ignore = true
     }
   }, [cParam, ownId, attempt])
+
+  // The address lost its conversation (the Agent link in the side nav, or New conversation):
+  // show an empty thread, so what is on screen is what the next message goes to.
+  const [seenParam, setSeenParam] = useState(cParam)
+  if (seenParam !== cParam) {
+    setSeenParam(cParam)
+    if (cParam === null) {
+      setMessages([])
+      setLoaded(null)
+      setOwnId(null)
+      setNotice(null)
+      setDraftError(null)
+    }
+  }
+  useEffect(() => {
+    if (cParam === null) abort.current?.abort()
+  }, [cParam])
 
   // Leaving the page ends any answer being written.
   useEffect(() => () => abort.current?.abort(), [])
@@ -126,6 +144,7 @@ export default function Agent() {
     setStreaming(true)
     const controller = new AbortController()
     abort.current = controller
+    sentAt.current = Date.now()
     let started = false
     try {
       await streamChat(
@@ -239,7 +258,12 @@ export default function Agent() {
         onSubmit={(text) => void send(text)}
       />
       {streaming ? (
-        <Button onClick={() => abort.current?.abort()}>
+        <Button
+          onClick={() => {
+            // Send turns into Stop in the same place, so a double-click on Send must not stop it.
+            if (Date.now() - sentAt.current > 500) abort.current?.abort()
+          }}
+        >
           <Icon icon={Square} />
           Stop
         </Button>

@@ -137,6 +137,14 @@ async def test_ai(body: TestIn, request: Request, _: Admin_) -> dict:
             return _unreachable(url)
         hint = "Check the Base URL; it usually ends in /v1. " if exc.status_code == 404 else ""
         return {"ok": False, "code": "error", "message": hint + scrub_secret(exc.message, key)}
+    except ValueError:  # a 200 that isn't JSON, such as a web page
+        return {
+            "ok": False,
+            "code": "error",
+            "message": (
+                "That server didn't answer like an OpenAI-compatible API. Check the Base URL."
+            ),
+        }
     except Exception as exc:
         return {"ok": False, "code": "error", "message": scrub_secret(str(exc), key)}
     finally:

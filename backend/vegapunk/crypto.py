@@ -31,6 +31,7 @@ def _create(path: Path) -> None:
     try:
         try:
             os.write(fd, Fernet.generate_key())
+            os.fsync(fd)  # on disk before it can be linked into place
         finally:
             os.close(fd)
         try:

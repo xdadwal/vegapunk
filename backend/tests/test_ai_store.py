@@ -213,3 +213,42 @@ def test_make_title(message, title):
 def test_make_title_cuts_long_text_with_an_ellipsis():
     title = make_title("word " * 100)
     assert len(title) == 60 and title.endswith("…")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://h\x00/v1",
+        "http://ho\u200bst/v1",
+        "http://host:99999/v1",
+        "http://?",
+        "http://host/v1?x=1",
+        "http://host/v1#top",
+        "http://user:pw@host/v1",
+        "http://@host/v1",
+        "http:///v1",
+    ],
+)
+def test_base_urls_that_could_not_work_are_refused(url):
+    from vegapunk.ai.store import normalise_base_url
+
+    with pytest.raises(ValueError):
+        normalise_base_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:11434/v1/",
+        "https://api.openai.com/v1",
+        "http://[::1]:8080/v1",
+        "http://host.docker.internal:9101/v1",
+    ],
+)
+def test_ordinary_base_urls_are_kept(url):
+    from vegapunk.ai.store import normalise_base_url
+
+    assert normalise_base_url(url) == url.rstrip("/")

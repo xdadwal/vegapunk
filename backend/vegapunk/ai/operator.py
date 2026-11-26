@@ -237,22 +237,30 @@ class Operator:
                     session_ttl=SESSION_TTL,
                 )
                 labels: dict[str, str] = {}
+                step_ids: dict[str, str] = {}  # the provider's id -> ours, unique per answer
                 produced = False
+                break_before_text = False
                 usage = None
                 async with agent.session(cid) as handle:
                     async with aclosing(agent.stream(message, session=handle)) as events:
                         async for event in events:
                             if isinstance(event, TextDelta):
+                                if break_before_text and event.text.strip():
+                                    yield {"type": "text", "text": "\n\n"}
+                                    break_before_text = False
                                 produced = produced or bool(event.text.strip())
                                 yield {"type": "text", "text": event.text}
                             elif isinstance(event, ToolCall):
-                                labels[event.id] = step_label(event.name, event.input)
-                                yield self._step(event.id, labels[event.id], "running")
+                                # Servers may reuse (or omit) ids from one turn to the next.
+                                sid = f"s{len(step_ids) + 1}"
+                                step_ids[event.id] = sid
+                                labels[sid] = step_label(event.name, event.input)
+                                break_before_text = produced
+                                yield self._step(sid, labels[sid], "running")
                             elif isinstance(event, ToolResult):
-                                label = labels.get(event.id) or step_label(event.name, {})
-                                yield self._step(
-                                    event.id, label, "failed" if event.is_error else "done"
-                                )
+                                sid = step_ids.get(event.id) or f"s{len(step_ids) + 1}"
+                                label = labels.get(sid) or step_label(event.name, {})
+                                yield self._step(sid, label, "failed" if event.is_error else "done")
                             elif isinstance(event, RunEnd):
                                 usage = event.result.usage
                 if not produced:

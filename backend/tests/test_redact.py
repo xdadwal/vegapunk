@@ -143,3 +143,22 @@ def test_scrub_secret_without_a_secret_still_redacts_and_cuts():
 
 def test_scrub_secret_does_not_mangle_text_for_a_short_secret():
     assert scrub_secret("the quick fox", "abc") == "the quick fox"
+
+
+def test_json_inside_a_json_log_string_is_redacted():
+    out = redact('{"msg":"body: {\\"user\\":\\"a\\",\\"password\\":\\"hunter2\\"}"}')
+    assert "hunter2" not in out and "[redacted]" in out
+
+
+def test_an_escaped_quote_inside_a_value_does_not_leak_the_rest():
+    out = redact('"password":"hunter2 with \\" quote and more"')
+    assert "hunter2" not in out and "quote and more" not in out
+
+
+def test_a_bare_value_with_an_apostrophe_is_wholly_redacted():
+    assert redact("password=it's-secret ok") == "password=[redacted] ok"
+
+
+def test_pgp_private_key_blocks_are_redacted():
+    text = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----\nafter"
+    assert redact(text) == "[redacted]\nafter"

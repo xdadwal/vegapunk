@@ -113,3 +113,15 @@ def test_the_key_file_is_not_world_readable_even_when_created_under_a_loose_umas
     finally:
         os.umask(old)
     assert stat.S_IMODE((tmp_path / "secret.key").stat().st_mode) == 0o600
+
+
+def test_the_key_is_flushed_to_disk_before_it_is_linked_into_place(tmp_path, monkeypatch):
+    import os
+
+    from vegapunk import crypto
+
+    synced = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real(fd))[1])
+    crypto.load_or_create_key(tmp_path)
+    assert synced

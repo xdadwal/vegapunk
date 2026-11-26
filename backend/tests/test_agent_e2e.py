@@ -70,8 +70,8 @@ def test_end_to_end_tool_call_then_answer(settings):
     label = "Read the status of the containers"
     steps = [e for e in events if e["type"] == "step"]
     assert [(s["id"], s["label"], s["status"]) for s in steps] == [
-        ("call_1", label, "running"),
-        ("call_1", label, "done"),
+        ("s1", label, "running"),
+        ("s1", label, "done"),
     ]
     assert "".join(e["text"] for e in events if e["type"] == "text") == "`db` is stopped."
     assert events[-1]["usage"] == {"input_tokens": 20, "output_tokens": 10}

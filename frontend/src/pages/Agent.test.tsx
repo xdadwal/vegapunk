@@ -8,6 +8,8 @@ import type { AiSettings, ChatEvent } from '../types'
 const CID = 'c'.repeat(32)
 const line = (event: ChatEvent) => JSON.stringify(event) + '\n'
 const enc = new TextEncoder()
+// Stop ignores clicks right after Send (a double-click must not stop the answer)
+const later = () => new Promise((resolve) => setTimeout(resolve, 550))
 
 const ANSWER: ChatEvent[] = [
   { type: 'conversation', id: CID, title: 'Is anything wrong?' },
@@ -170,6 +172,7 @@ describe('Agent page', () => {
     })
     expect(await screen.findByText('Part of an answer')).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    await later()
     await user.click(screen.getByRole('button', { name: 'Stop' }))
     expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true)
     expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
@@ -181,7 +184,9 @@ describe('Agent page', () => {
   it('says Stopped. when there was nothing to keep', async () => {
     agentPage({ chat: { stream: () => {} } })
     const user = await ask()
-    await user.click(await screen.findByRole('button', { name: 'Stop' }))
+    await screen.findByRole('button', { name: 'Stop' })
+    await later()
+    await user.click(screen.getByRole('button', { name: 'Stop' }))
     expect(await screen.findByText('Stopped.')).toBeVisible()
   })
 
@@ -444,5 +449,35 @@ describe('Agent page: safety and wiring', () => {
     const link = within(nav).getByRole('link', { name: 'Agent' })
     expect(link).toHaveAttribute('href', '/agent')
     expect(link).toHaveAttribute('aria-current', 'page')
+  })
+})
+
+describe('Agent page: review fixes', () => {
+  it('shows an empty thread when the Agent link is used while a conversation is open', async () => {
+    const stored = {
+      id: CID,
+      title: 'Old',
+      updated_at: '2026-01-01T12:00:00Z',
+      available: true,
+      messages: [{ role: 'user', text: 'old question', steps: [] }],
+    }
+    const { sent } = agentPage({ conversation: { body: stored } }, `/agent?c=${CID}`)
+    expect(await screen.findByText('old question')).toBeVisible()
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    await userEvent.click(within(nav).getByRole('link', { name: 'Agent' }))
+    expect(await screen.findByText('Ask about this host')).toBeVisible()
+    expect(screen.queryByText('old question')).not.toBeInTheDocument()
+    await userEvent.type(await composer(), 'fresh{Enter}')
+    await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(1))
+    expect(sent('POST /agent/chat')[0]).toEqual({ message: 'fresh', conversation_id: null })
+  })
+
+  it('does not stop an answer when Send is double-clicked', async () => {
+    const { fetchMock } = agentPage({ chat: { stream: () => {} } })
+    const box = await composer()
+    await userEvent.type(box, 'hello')
+    await userEvent.dblClick(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByRole('button', { name: 'Stop' })
+    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(false)
   })
 })
