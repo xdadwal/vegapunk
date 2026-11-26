@@ -133,3 +133,11 @@ export type FindingChecks = {
 }
 
 export type FindingList = { items: FindingItem[]; open_count: number; checks: FindingChecks }
+
+export type EvidenceLine = { source: 'log' | 'metric'; text: string; at: string | null }
+
+export type FindingDetail = FindingItem & {
+  diagnosis: string
+  suggested_fix: string
+  evidence: EvidenceLine[]
+}

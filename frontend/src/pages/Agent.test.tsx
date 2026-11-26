@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { CONFIGURED, aiSettings } from '../test-fixtures'
+import { CONFIGURED, aiSettings, findingDetail } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 import type { AiSettings, ChatEvent } from '../types'
 
@@ -24,14 +24,16 @@ type Options = {
   settings?: AiSettings | (() => AiSettings)
   chat?: Parameters<typeof stubApi>[0][string]
   conversation?: Parameters<typeof stubApi>[0][string]
+  extra?: Parameters<typeof stubApi>[0]
 }
 
-function agentPage({ settings = CONFIGURED, chat, conversation }: Options = {}, path = '/agent') {
+function agentPage({ settings = CONFIGURED, chat, conversation, extra }: Options = {}, path = '/agent') {
   const routes: Parameters<typeof stubApi>[0] = {
     'GET /setup/status': { body: { admin_created: true } },
     'GET /me': { body: ADMIN },
     'GET /settings/ai': typeof settings === 'function' ? () => ({ body: settings() }) : { body: settings },
     'POST /agent/chat': chat ?? { stream: ANSWER.map(line) },
+    ...extra,
   }
   if (conversation) routes[`GET /agent/conversations/${CID}`] = conversation
   const api = stubApi(routes)
@@ -480,5 +482,57 @@ describe('Agent page: review fixes', () => {
     await userEvent.dblClick(screen.getByRole('button', { name: 'Send' }))
     await screen.findByRole('button', { name: 'Stop' })
     expect(chatCall(fetchMock)![1].signal!.aborted).toBe(false)
+  })
+})
+
+describe('Agent page: about a finding', () => {
+  const FINDING = { body: findingDetail({ id: 'f1', title: 'web keeps restarting' }) }
+  const QUESTION = 'Tell me more about this finding: web keeps restarting. What should I check first?'
+
+  it('fills the box with a question, sends nothing, and drops the param', async () => {
+    const { sent } = agentPage({ extra: { 'GET /findings/f1': FINDING } }, '/agent?about=f1')
+    await vi.waitFor(async () => expect(await composer()).toHaveValue(QUESTION))
+    await vi.waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/agent$/))
+    expect(sent('POST /agent/chat')).toHaveLength(0)
+  })
+
+  it('leaves the box empty and shows no error for an unknown id', async () => {
+    agentPage(
+      { extra: { 'GET /findings/nope': { status: 404, body: { detail: 'No such finding.' } } } },
+      '/agent?about=nope',
+    )
+    expect(await composer()).toHaveValue('')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(await composer()).toHaveValue('')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not overwrite a draft already typed', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    agentPage(
+      {
+        extra: {
+          'GET /findings/f1': async () => {
+            await gate
+            return FINDING
+          },
+        },
+      },
+      '/agent?about=f1',
+    )
+    await userEvent.type(await composer(), 'my own words')
+    release()
+    await vi.waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/agent$/))
+    expect(await composer()).toHaveValue('my own words')
+  })
+
+  it('ignores about when a conversation is in the address', async () => {
+    const stored = { id: CID, title: 't', updated_at: '2026-11-26T15:00:00Z', available: true, messages: [] }
+    const { fetchMock } = agentPage({ conversation: { body: stored } }, `/agent?c=${CID}&about=f1`)
+    expect(await composer()).toHaveValue('')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/findings/f1'))).toBe(false)
+    expect(await composer()).toHaveValue('')
   })
 })

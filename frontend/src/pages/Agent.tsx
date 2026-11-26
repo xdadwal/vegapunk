@@ -42,6 +42,7 @@ export default function Agent() {
   const { request } = useAuth()
   const [params, setParams] = useSearchParams()
   const cParam = params.get('c')
+  const aboutParam = params.get('about')
   const settings = usePolling<AiSettings>('/settings/ai', { intervalMs: 30_000 })
 
   const [messages, setMessages] = useState<Msg[]>([])
@@ -56,6 +57,7 @@ export default function Agent() {
   const abort = useRef<AbortController | null>(null)
   const sentAt = useRef(0)
   const requestRef = useRef(request)
+  const hasSent = useRef(false) // something was sent from this page
   useEffect(() => {
     requestRef.current = request
   }, [request])
@@ -85,6 +87,34 @@ export default function Agent() {
       ignore = true
     }
   }, [cParam, ownId, attempt])
+
+  // Arriving from a finding (?about=<id>): put a question about it in the box. It is never sent,
+  // and only goes in an empty box on a page where nothing has been sent. An unknown id does nothing.
+  useEffect(() => {
+    if (!aboutParam || cParam) return
+    let ignore = false
+    requestRef.current<{ title: string }>(`/findings/${encodeURIComponent(aboutParam)}`).then(
+      (finding) => {
+        if (ignore) return
+        const tail = ' What should I check first?'
+        const head = 'Tell me more about this finding: '
+        const title = [...finding.title].slice(0, MAX_MESSAGE - head.length - tail.length - 1).join('')
+        if (!hasSent.current) setDraft((current) => (current === '' ? `${head}${title}.${tail}` : current))
+        setParams(
+          (current) => {
+            const next = new URLSearchParams(current)
+            next.delete('about')
+            return next
+          },
+          { replace: true },
+        )
+      },
+      () => {},
+    )
+    return () => {
+      ignore = true
+    }
+  }, [aboutParam, cParam, setParams])
 
   // The address lost its conversation (the Agent link in the side nav, or New conversation):
   // show an empty thread, so what is on screen is what the next message goes to.
@@ -133,6 +163,7 @@ export default function Agent() {
     }
     setDraftError(null)
     setNotice(null)
+    hasSent.current = true
     const before = messages
     const conversationId = ownId ?? cParam
     setMessages([

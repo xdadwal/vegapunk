@@ -1,0 +1,19 @@
+.finding-article {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 860px;
+}
+
+.finding-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+.finding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

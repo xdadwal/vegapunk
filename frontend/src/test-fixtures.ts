@@ -1,4 +1,4 @@
-import type { AiSettings, ContainerDetail, ContainerItem, FindingItem, FindingList, Host, Source } from './types'
+import type { AiSettings, ContainerDetail, ContainerItem, FindingDetail, FindingItem, FindingList, Host, Source } from './types'
 
 export const GIB = 1024 ** 3
 
@@ -147,5 +147,18 @@ export function findingList(items: FindingItem[] = [], over: Partial<FindingList
       running: false,
       ...over,
     },
+  }
+}
+
+export function findingDetail(over: Partial<FindingDetail> = {}): FindingDetail {
+  return {
+    ...findingItem(),
+    diagnosis: 'The web container exits with code 137 every few minutes.',
+    suggested_fix: 'Raise the memory limit to 1 GiB.',
+    evidence: [
+      { source: 'log', text: 'fatal: out of memory', at: '2026-11-26T13:48:02Z' },
+      { source: 'metric', text: 'Memory at 98% of its limit', at: null },
+    ],
+    ...over,
   }
 }
