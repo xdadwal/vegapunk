@@ -12,8 +12,10 @@ import re
 import tempfile
 from collections.abc import Callable, Collection, Sequence
 from contextlib import aclosing
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from logpose import (
     Agent,
@@ -95,33 +97,39 @@ class CheckReport(BaseModel):
     findings: list[ReportedFinding]
 
 
-def investigation_agent_factory(
-    *,
-    config: AiConfig,
-    settings: Settings,
-    docker: DockerHost,
-    started_at: datetime,
-    host: dict | None,
-    make_agent: Callable[..., Agent] = default_make_agent,
-) -> AgentFactory:
-    """A factory `investigate` calls once, with a throwaway database path and what the
-    prompt needs to know about this check."""
+@dataclass(frozen=True)
+class InvestigationAgentFactory:
+    """Builds the agent for one check. It carries the saved provider settings, so
+    `investigate` always knows the key to scrub from error text (`secret`)."""
 
-    def make(db_path: Path, *, focus_summary: str | None, open_subjects: Sequence[str]) -> Agent:
+    config: AiConfig
+    settings: Settings
+    docker: DockerHost
+    started_at: datetime
+    host: dict | None
+    make_agent: Callable[..., Agent] = default_make_agent
+
+    @property
+    def secret(self) -> str | None:
+        return self.config.api_key
+
+    def __call__(
+        self, db_path: Path, *, focus_summary: str | None, open_subjects: Sequence[str]
+    ) -> Agent:
         return build_agent(
-            make_agent,
-            config=config,
+            self.make_agent,
+            config=self.config,
             system=build_investigation_prompt(
-                host,
-                config.instructions,
+                self.host,
+                self.config.instructions,
                 focus_summary=focus_summary,
                 open_subjects=open_subjects,
             ),
             tools=build_tools(
-                settings.db_path,
-                docker,
-                interval=settings.capture_interval,
-                started_at=started_at,
+                self.settings.db_path,
+                self.docker,
+                interval=self.settings.capture_interval,
+                started_at=self.started_at,
             ),
             on_tool_call=make_gate((*TOOL_NAMES, RECALL_TOOL), MAX_TOOL_CALLS),
             max_iterations=MAX_ITERATIONS,
@@ -131,7 +139,35 @@ def investigation_agent_factory(
             session_ttl=None,
         )
 
-    return make
+
+def investigation_agent_factory(
+    *,
+    config: AiConfig,
+    settings: Settings,
+    docker: DockerHost,
+    started_at: datetime,
+    host: dict | None,
+    make_agent: Callable[..., Agent] = default_make_agent,
+) -> InvestigationAgentFactory:
+    """The factory `investigate` calls once, with a throwaway database path and what the
+    prompt needs to know about this check."""
+    return InvestigationAgentFactory(config, settings, docker, started_at, host, make_agent)
+
+
+_NOT_GIVEN: Any = object()
+
+
+def _secret_for(agent_factory: AgentFactory, secret: str | None) -> str | None:
+    """The key to scrub from errors: given explicitly, or carried by the factory. Never
+    silently none: a factory without one must be paired with an explicit `secret=`."""
+    if secret is not _NOT_GIVEN:
+        return secret
+    if isinstance(agent_factory, InvestigationAgentFactory):
+        return agent_factory.secret
+    raise TypeError(
+        "investigate() needs the API key to scrub from errors: pass secret=... (None if no "
+        "key is saved) or use investigation_agent_factory()."
+    )
 
 
 def _request(focus: Signal | None) -> str:
@@ -146,13 +182,16 @@ async def investigate(
     focus: Signal | None,
     open_findings: list[dict],
     subjects: Collection[str],
-    secret: str | None = None,
+    secret: str | None = _NOT_GIVEN,
 ) -> list[FindingDraft]:
     """Run one check and return its verified drafts (an empty list when nothing is wrong).
 
     `subjects` are the names a finding may be about: the current containers and "host".
-    `secret` is the API key, removed from any error text. Raises InvestigationError.
+    `secret` is the API key, removed from any error text; it comes from the factory made by
+    `investigation_agent_factory` and must be given explicitly with any other factory.
+    Raises InvestigationError, or TypeError when no key source was given.
     """
+    secret = _secret_for(agent_factory, secret)
     open_subjects = sorted({str(f["subject"]) for f in open_findings if f.get("subject")})
     reads: dict[str, list[str]] = {}
     output: CheckReport | None = None

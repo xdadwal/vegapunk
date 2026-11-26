@@ -106,7 +106,6 @@ def check(
                 focus=focus,
                 open_findings=list(open_findings),
                 subjects=subjects,
-                secret=key,
             )
         )
 
@@ -514,8 +513,44 @@ def test_the_scratch_directory_is_gone_afterwards(world):
         seen.append(Path(db_path))
         return make(model="m", db_path=str(db_path), tracing=None)
 
-    asyncio.run(investigate(factory, focus=None, open_findings=[], subjects=ALL))
+    asyncio.run(investigate(factory, focus=None, open_findings=[], subjects=ALL, secret=None))
     assert seen and not seen[0].parent.exists()
+
+
+# ---- the key can never be left out of error scrubbing
+PLAIN_KEY = "plainkeyABCDEFGHIJKLMNOP"  # no shape redact() would catch on its own
+
+
+def test_a_provider_error_holding_the_key_is_scrubbed_with_the_factorys_key(world):
+    provider = FakeProvider([Turn.fail(ProviderError(f"denied for {PLAIN_KEY}", status_code=400))])
+    config = AiConfig(
+        base_url="https://x.example/v1", model="m", instructions="", api_key=PLAIN_KEY
+    )
+    factory = investigation_agent_factory(
+        config=config,
+        settings=world,
+        docker=FakeDocker(),
+        started_at=now(),
+        host=HOST,
+        make_agent=agent_factory(provider),
+    )
+    assert factory.secret == PLAIN_KEY
+    with pytest.raises(InvestigationError) as caught:
+        asyncio.run(investigate(factory, focus=None, open_findings=[], subjects=ALL))
+    assert caught.value.code == "provider_error"
+    assert PLAIN_KEY not in caught.value.message and PLAIN_KEY[:6] not in caught.value.message
+
+
+def test_a_factory_without_a_key_needs_secret_given_explicitly(world):
+    called = []
+
+    def factory(db_path, **_):  # a bare callable carries no secret
+        called.append(db_path)
+        raise AssertionError("must not be called")
+
+    with pytest.raises(TypeError, match="secret"):
+        asyncio.run(investigate(factory, focus=None, open_findings=[], subjects=ALL))
+    assert called == []
 
 
 # ---- (o) what the model is told
