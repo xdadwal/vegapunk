@@ -71,6 +71,12 @@ def _started_at(raw: str | None) -> datetime | None:
     return datetime.fromisoformat(raw)
 
 
+def _exit_marker(raw: str | None) -> str | None:
+    if not raw or raw.startswith("0001-"):
+        return None
+    return raw
+
+
 class HostCollector:
     name = "host"
 
@@ -126,6 +132,8 @@ class DockerCollector:
                     health=(state.get("Health") or {}).get("Status"),
                     restart_count=a.get("RestartCount", 0),
                     started_at=_started_at(state.get("StartedAt")),
+                    oom_killed=bool(state.get("OOMKilled", False)),
+                    exit_marker=_exit_marker(state.get("FinishedAt")),
                 )
             )
             if state["Status"] == "running":

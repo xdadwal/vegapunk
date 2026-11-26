@@ -261,3 +261,16 @@ def test_host_collector_raises_when_the_disk_path_is_missing():
 
     with pytest.raises(FileNotFoundError):
         HostCollector(SystemHost(Path("/definitely/not/here"))).collect(NOW)
+
+
+def test_oom_kill_and_exit_marker_are_carried():
+    killed = attrs("a", "web", state="exited")
+    killed["State"].update({"OOMKilled": True, "FinishedAt": "2026-01-02T03:04:05.5Z"})
+    fine = attrs("b", "db")
+    fine["State"].update({"OOMKilled": False, "FinishedAt": "0001-01-01T00:00:00Z"})
+    plain = attrs("c", "x")  # neither key present
+    docker = FakeDocker([killed, fine, plain], {"b": stats(1, 1), "c": stats(1, 1)})
+    a, b, c = split(DockerCollector(docker).collect(NOW))[1][0].items
+    assert (a.oom_killed, a.exit_marker) == (True, "2026-01-02T03:04:05.5Z")
+    assert (b.oom_killed, b.exit_marker) == (False, None)
+    assert (c.oom_killed, c.exit_marker) == (False, None)

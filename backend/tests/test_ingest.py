@@ -130,3 +130,30 @@ def test_two_containers_with_one_name_are_both_stored(conn):
         for r in conn.execute("SELECT id, removed_at FROM containers")
     }
     assert states == {"old": False, "new": True}
+
+
+def restarts(conn):
+    return [tuple(r) for r in conn.execute("SELECT * FROM container_restarts ORDER BY ts")]
+
+
+def test_restart_rows_follow_changes_in_restart_count(conn):
+    ingest(conn, T0, [ContainerList((obs("a", "web", restarts=4),))])
+    assert restarts(conn) == []  # first sight is the baseline
+    later = T0 + timedelta(seconds=15)
+    changed = [ContainerList((obs("a", "web", restarts=5),))]
+    ingest(conn, later, changed)
+    ingest(conn, later, changed)  # repeat
+    ingest(conn, later + timedelta(seconds=15), changed)  # unchanged count
+    assert restarts(conn) == [("a", int(later.timestamp()), 5)]
+
+
+def test_oom_flag_and_exit_marker_mirror_the_latest_observation(conn):
+    killed = ContainerObservation(
+        "a", "web", "img:1", "exited", None, 0, T0, oom_killed=True, exit_marker="m1"
+    )
+    ingest(conn, T0, [ContainerList((killed,))])
+    row = conn.execute("SELECT oom_killed, exit_marker FROM containers").fetchone()
+    assert (row["oom_killed"], row["exit_marker"]) == (1, "m1")
+    ingest(conn, T0 + timedelta(seconds=15), [ContainerList((obs("a", "web"),))])
+    row = conn.execute("SELECT oom_killed, exit_marker FROM containers").fetchone()
+    assert (row["oom_killed"], row["exit_marker"]) == (0, None)

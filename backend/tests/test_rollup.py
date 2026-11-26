@@ -212,3 +212,64 @@ def test_scheduler_does_not_roll_up_when_every_collector_failed(db_path):
     c = connect(db_path)
     assert c.execute("SELECT count(*) FROM host_metrics").fetchone()[0] == 0
     c.close()
+
+
+def _z(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_prune_trims_restart_history_after_thirty_days(conn):
+    container(conn, T, 10, cid="live")
+    for days in (31, 29):
+        conn.execute(
+            "INSERT INTO container_restarts VALUES ('live', ?, 1)", (ts(T) - days * 86_400,)
+        )
+    prune(conn, T)
+    assert conn.execute("SELECT ts FROM container_restarts").fetchall()[0][0] == ts(T) - 29 * 86_400
+    assert conn.execute("SELECT count(*) FROM container_restarts").fetchone()[0] == 1
+
+
+def test_prune_removes_a_removed_containers_restart_rows_with_it(conn):
+    container(conn, T, 10, cid="gone")
+    conn.execute("INSERT INTO container_restarts VALUES ('gone', ?, 1)", (ts(T) + 100,))
+    ingest(conn, T + timedelta(minutes=1), [ContainerList(())])
+    prune(conn, T + timedelta(days=29))
+    assert conn.execute("SELECT count(*) FROM container_restarts").fetchone()[0] == 1
+    prune(conn, T + timedelta(days=32))
+    assert conn.execute("SELECT count(*) FROM container_restarts").fetchone()[0] == 0
+
+
+def test_prune_trims_investigations_after_seven_days(conn):
+    for days in (8, 6):
+        conn.execute(
+            "INSERT INTO investigations (key, trigger, started_at, outcome) "
+            "VALUES ('k', 'watch', ?, 'nothing')",
+            (_z(T - timedelta(days=days)),),
+        )
+    prune(conn, T)
+    assert conn.execute("SELECT count(*) FROM investigations").fetchone()[0] == 1
+
+
+def test_prune_trims_closed_findings_after_ninety_days_and_keeps_open_ones(conn):
+    def finding(key, status, first, resolved=None, reviewed=None):
+        cur = conn.execute(
+            "INSERT INTO findings (key, subject, title, diagnosis, suggested_fix, status, "
+            "trigger, first_seen_at, last_seen_at, resolved_at, reviewed_at) "
+            "VALUES (?, 's', 't', 'd', 'f', ?, 'watch', ?, ?, ?, ?)",
+            (key, status, first, first, resolved, reviewed),
+        )
+        conn.execute(
+            "INSERT INTO finding_evidence VALUES (?, 0, 'log', 'x', NULL)", (cur.lastrowid,)
+        )
+
+    old = _z(T - timedelta(days=100))
+    recent = _z(T - timedelta(days=10))
+    finding("open-old", "open", old)
+    finding("res-old", "resolved", old, resolved=old)
+    finding("rev-old", "reviewed", old, resolved=old, reviewed=old)
+    finding("res-new", "resolved", old, resolved=recent)
+    finding("rev-new", "reviewed", old, resolved=old, reviewed=recent)
+    prune(conn, T)
+    keys = {r["key"] for r in conn.execute("SELECT key FROM findings")}
+    assert keys == {"open-old", "res-new", "rev-new"}
+    assert conn.execute("SELECT count(*) FROM finding_evidence").fetchone()[0] == 3

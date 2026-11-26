@@ -48,6 +48,7 @@ CREATE TABLE investigations (
 CREATE INDEX investigations_key_started ON investigations (key, started_at);
 
 ALTER TABLE containers ADD COLUMN oom_killed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE containers ADD COLUMN exit_marker TEXT;
 
 CREATE TABLE container_restarts (
     container_id TEXT NOT NULL,

@@ -43,14 +43,25 @@ def _store_host_sample(conn: sqlite3.Connection, ts: int, r: HostSample) -> None
     )
 
 
-def _store_container_list(conn: sqlite3.Connection, at: str, r: ContainerList) -> None:
+def _store_container_list(conn: sqlite3.Connection, ts: int, at: str, r: ContainerList) -> None:
     for c in r.items:
+        stored = conn.execute(
+            "SELECT restart_count FROM containers WHERE id = ?", (c.id,)
+        ).fetchone()
+        if stored is not None and stored["restart_count"] != c.restart_count:
+            conn.execute(
+                "INSERT OR REPLACE INTO container_restarts (container_id, ts, restart_count) "
+                "VALUES (?, ?, ?)",
+                (c.id, ts, c.restart_count),
+            )
         conn.execute(
             "INSERT INTO containers (id, name, image, state, health, restart_count, started_at, "
-            "first_seen_at, last_seen_at, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) "
+            "oom_killed, exit_marker, first_seen_at, last_seen_at, removed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) "
             "ON CONFLICT (id) DO UPDATE SET name = excluded.name, image = excluded.image, "
             "state = excluded.state, health = excluded.health, "
             "restart_count = excluded.restart_count, started_at = excluded.started_at, "
+            "oom_killed = excluded.oom_killed, exit_marker = excluded.exit_marker, "
             "last_seen_at = excluded.last_seen_at, removed_at = NULL",
             (
                 c.id,
@@ -60,6 +71,8 @@ def _store_container_list(conn: sqlite3.Connection, at: str, r: ContainerList) -
                 c.health,
                 c.restart_count,
                 c.started_at.isoformat() if c.started_at else None,
+                int(c.oom_killed),
+                c.exit_marker,
                 at,
                 at,
             ),
@@ -95,7 +108,7 @@ def ingest(conn: sqlite3.Connection, observed_at: datetime, records: Iterable[Re
                 case HostSample():
                     _store_host_sample(conn, ts, record)
                 case ContainerList():
-                    _store_container_list(conn, at, record)
+                    _store_container_list(conn, ts, at, record)
                 case ContainerSample():
                     _store_container_sample(conn, ts, record)
                 case _:
