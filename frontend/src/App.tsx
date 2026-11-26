@@ -2,9 +2,11 @@ import { Navigate, Route, Routes } from 'react-router'
 
 import { AuthProvider } from './auth/AuthProvider'
 import { useAuth } from './auth/auth-context'
+import { AppLayout } from './components/AppLayout'
 import { Spinner } from './components/Spinner'
 import LoadError from './pages/LoadError'
 import Overview from './pages/Overview'
+import Profile from './pages/Profile'
 import SignIn from './pages/SignIn'
 import Setup from './pages/Setup'
 
@@ -38,7 +40,10 @@ function AppRoutes() {
     case 'signed-in':
       return (
         <Routes>
-          <Route path="/" element={<Overview />} />
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<Overview />} />
+            <Route path="/profile" element={<Profile />} />
+          </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       )
