@@ -2,12 +2,26 @@
 .DS_Store
 .idea/
 .vscode/
-*.swp
 
-# Env & secrets
+# Secrets
 .env
 .env.*
 !.env.example
 
-# Claude Code local settings
+# AI coding tools (local state)
 .claude/settings.local.json
+.claude/worktrees/
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# Local data
+*.db
+*.sqlite3
