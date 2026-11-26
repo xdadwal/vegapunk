@@ -54,5 +54,6 @@ CREATE TABLE container_restarts (
     container_id TEXT NOT NULL,
     ts INTEGER NOT NULL,
     restart_count INTEGER NOT NULL,
+    previous_count INTEGER NOT NULL,
     PRIMARY KEY (container_id, ts)
 ) WITHOUT ROWID;

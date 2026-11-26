@@ -52,21 +52,26 @@ def evaluate(conn: sqlite3.Connection, now: datetime, interval: int = 15) -> lis
     return signals
 
 
+def _current_containers(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """One row per name: the most recently seen row that is not removed (an old container and
+    its replacement can share a name)."""
+    rows = conn.execute(
+        "SELECT * FROM containers WHERE removed_at IS NULL ORDER BY name, last_seen_at, id"
+    ).fetchall()
+    latest = {r["name"]: r for r in rows}  # later rows overwrite earlier ones
+    return list(latest.values())
+
+
 def _restart_loops(conn: sqlite3.Connection, now: int) -> list[Signal]:
     since = now - int(RESTART_WINDOW.total_seconds())
     out = []
-    for c in conn.execute(
-        "SELECT id, name, restart_count FROM containers WHERE removed_at IS NULL ORDER BY name"
-    ):
+    for c in _current_containers(conn):
         rows = conn.execute(
-            "SELECT ts, restart_count FROM container_restarts "
+            "SELECT ts, restart_count, previous_count FROM container_restarts "
             "WHERE container_id = ? AND ts >= ? AND ts <= ? ORDER BY ts",
             (c["id"], since, now),
         ).fetchall()
-        if not rows:
-            continue
-        counts = [r["restart_count"] for r in rows] + [c["restart_count"]]
-        n = max(counts) - min(counts)
+        n = sum(max(0, r["restart_count"] - r["previous_count"]) for r in rows)
         if n >= RESTARTS:
             minutes = max(1, round((now - rows[0]["ts"]) / 60))
             out.append(_signal("restart_loop", c["name"], f"Restarted {n} times in {minutes} min."))
@@ -75,10 +80,9 @@ def _restart_loops(conn: sqlite3.Connection, now: int) -> list[Signal]:
 
 def _oom_kills(conn: sqlite3.Connection) -> list[Signal]:
     out = []
-    for c in conn.execute(
-        "SELECT name, exit_marker FROM containers "
-        "WHERE removed_at IS NULL AND oom_killed = 1 AND exit_marker IS NOT NULL ORDER BY name"
-    ):
+    for c in _current_containers(conn):
+        if not c["oom_killed"] or c["exit_marker"] is None:
+            continue
         key = f"oom_kill:{c['name']}"
         if c["exit_marker"] not in used_markers(conn, key):
             out.append(
@@ -131,10 +135,9 @@ def _host_sustained(conn: sqlite3.Connection, now: int, interval: int) -> list[S
 def _container_memory(conn: sqlite3.Connection, now: int, interval: int) -> list[Signal]:
     since = now - int(SUSTAIN.total_seconds())
     out = []
-    for c in conn.execute(
-        "SELECT id, name FROM containers WHERE removed_at IS NULL AND state = 'running' "
-        "ORDER BY name"
-    ):
+    for c in _current_containers(conn):
+        if c["state"] != "running":
+            continue
         rows = conn.execute(
             "SELECT ts, mem_used, mem_limit FROM container_metrics "
             "WHERE container_id = ? AND res = 0 AND ts >= ? AND ts <= ? ORDER BY ts",

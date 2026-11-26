@@ -50,9 +50,9 @@ def _store_container_list(conn: sqlite3.Connection, ts: int, at: str, r: Contain
         ).fetchone()
         if stored is not None and stored["restart_count"] != c.restart_count:
             conn.execute(
-                "INSERT OR REPLACE INTO container_restarts (container_id, ts, restart_count) "
-                "VALUES (?, ?, ?)",
-                (c.id, ts, c.restart_count),
+                "INSERT OR REPLACE INTO container_restarts "
+                "(container_id, ts, restart_count, previous_count) VALUES (?, ?, ?, ?)",
+                (c.id, ts, c.restart_count, stored["restart_count"]),
             )
         conn.execute(
             "INSERT INTO containers (id, name, image, state, health, restart_count, started_at, "

@@ -1,5 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from vegapunk.capture.ingest import ingest
+from vegapunk.capture.records import ContainerList, ContainerObservation
 from vegapunk.watch.findings import record_investigation
 from vegapunk.watch.rules import Signal, evaluate
 
@@ -16,11 +18,6 @@ def container(
         "last_seen_at, removed_at, oom_killed, exit_marker) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (cid, name, "img", state, restarts, "x", "x", "x" if removed else None, oom, marker),
     )
-    conn.commit()
-
-
-def restart_row(conn, cid, ago_min, count):
-    conn.execute("INSERT INTO container_restarts VALUES (?,?,?)", (cid, T - ago_min * 60, count))
     conn.commit()
 
 
@@ -73,41 +70,85 @@ def keys(conn, **kw):
     return {s.key for s in evaluate(conn, NOW, **kw)}
 
 
-# restart loop
+# restart loop (fixtures go through the real ingest)
+
+
+def see(conn, ago_min, count, cid="c1", name="web", state="running"):
+    at = NOW - timedelta(minutes=ago_min)
+    ingest(
+        conn, at, [ContainerList((ContainerObservation(cid, name, "img", state, None, count, at),))]
+    )
+
+
+def test_three_single_restarts_in_the_window_fire(conn):
+    for ago, count in [(14, 0), (11, 1), (7, 2), (3, 3)]:
+        see(conn, ago, count)
+    (s,) = evaluate(conn, NOW)
+    assert s == Signal("restart_loop:web", "restart_loop", "web", "Restarted 3 times in 11 min.")
 
 
 def test_two_restarts_do_nothing(conn):
-    container(conn, restarts=2)
-    restart_row(conn, "c1", 10, 0)
+    for ago, count in [(14, 0), (8, 1), (3, 2)]:
+        see(conn, ago, count)
     assert keys(conn) == set()
 
 
-def test_three_restarts_fire(conn):
-    container(conn, restarts=4)
-    restart_row(conn, "c1", 12, 0)
-    restart_row(conn, "c1", 6, 2)
-    (s,) = evaluate(conn, NOW)
-    assert s == Signal("restart_loop:web", "restart_loop", "web", "Restarted 4 times in 12 min.")
-
-
-def test_single_row_with_jump_of_three_fires(conn):
-    container(conn, restarts=3)
-    restart_row(conn, "c1", 5, 0)
+def test_one_cycle_jumping_zero_to_three_fires(conn):
+    see(conn, 10, 0)
+    see(conn, 5, 3)
     assert keys(conn) == {"restart_loop:web"}
 
 
 def test_restarts_spread_over_forty_minutes_do_not_fire(conn):
-    container(conn, restarts=3)
-    restart_row(conn, "c1", 40, 0)
-    restart_row(conn, "c1", 25, 1)
-    restart_row(conn, "c1", 10, 2)
+    for ago, count in [(41, 0), (40, 1), (25, 2), (10, 3)]:
+        see(conn, ago, count)
     assert keys(conn) == set()
+
+
+def test_a_count_going_down_contributes_nothing(conn):
+    see(conn, 12, 10)
+    see(conn, 8, 2)  # recreated with a lower count
+    see(conn, 4, 4)  # +2
+    assert keys(conn) == set()
+    see(conn, 2, 5)  # +1 makes three
+    assert keys(conn) == {"restart_loop:web"}
 
 
 def test_removed_container_restart_loop_is_ignored(conn):
-    container(conn, restarts=5, removed=True)
-    restart_row(conn, "c1", 5, 0)
+    see(conn, 10, 0)
+    see(conn, 5, 3)
+    ingest(conn, NOW - timedelta(minutes=1), [ContainerList(())])
     assert keys(conn) == set()
+
+
+def two_with_one_name(conn):
+    """An old container and its replacement, both in one listing (as Docker can report)."""
+    at = NOW - timedelta(minutes=10)
+    old = ContainerObservation("old", "web", "img", "running", None, 0, at)
+    ingest(conn, at, [ContainerList((old,))])
+    at = NOW - timedelta(minutes=2)
+    new = ContainerObservation("new", "web", "img", "running", None, 0, at)
+    ingest(conn, at, [ContainerList((old, new))])
+    # the newer row has the later last_seen_at only if seen later; make old older explicitly
+    conn.execute("UPDATE containers SET last_seen_at = '2026-01-01T11:00:00Z' WHERE id = 'old'")
+    conn.commit()
+
+
+def test_only_the_newest_row_for_a_name_is_used(conn):
+    two_with_one_name(conn)
+    conn.execute("UPDATE containers SET oom_killed = 1, exit_marker = 'm' WHERE id = 'old'")
+    conn.commit()
+    assert keys(conn) == set()
+    conn.execute("UPDATE containers SET oom_killed = 1, exit_marker = 'm' WHERE id = 'new'")
+    conn.commit()
+    assert [s.key for s in evaluate(conn, NOW)] == ["oom_kill:web"]
+
+
+def test_duplicate_names_give_unique_keys_for_memory(conn):
+    two_with_one_name(conn)
+    cont_rows(conn, "old", full(95))
+    cont_rows(conn, "new", full(95))
+    assert [s.key for s in evaluate(conn, NOW)] == ["high_memory:web"]
 
 
 # out of memory

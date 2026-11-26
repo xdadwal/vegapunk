@@ -222,7 +222,7 @@ def test_prune_trims_restart_history_after_thirty_days(conn):
     container(conn, T, 10, cid="live")
     for days in (31, 29):
         conn.execute(
-            "INSERT INTO container_restarts VALUES ('live', ?, 1)", (ts(T) - days * 86_400,)
+            "INSERT INTO container_restarts VALUES ('live', ?, 1, 0)", (ts(T) - days * 86_400,)
         )
     prune(conn, T)
     assert conn.execute("SELECT ts FROM container_restarts").fetchall()[0][0] == ts(T) - 29 * 86_400
@@ -231,7 +231,7 @@ def test_prune_trims_restart_history_after_thirty_days(conn):
 
 def test_prune_removes_a_removed_containers_restart_rows_with_it(conn):
     container(conn, T, 10, cid="gone")
-    conn.execute("INSERT INTO container_restarts VALUES ('gone', ?, 1)", (ts(T) + 100,))
+    conn.execute("INSERT INTO container_restarts VALUES ('gone', ?, 1, 0)", (ts(T) + 100,))
     ingest(conn, T + timedelta(minutes=1), [ContainerList(())])
     prune(conn, T + timedelta(days=29))
     assert conn.execute("SELECT count(*) FROM container_restarts").fetchone()[0] == 1

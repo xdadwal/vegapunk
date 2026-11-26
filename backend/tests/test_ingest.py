@@ -144,7 +144,7 @@ def test_restart_rows_follow_changes_in_restart_count(conn):
     ingest(conn, later, changed)
     ingest(conn, later, changed)  # repeat
     ingest(conn, later + timedelta(seconds=15), changed)  # unchanged count
-    assert restarts(conn) == [("a", int(later.timestamp()), 5)]
+    assert restarts(conn) == [("a", int(later.timestamp()), 5, 4)]
 
 
 def test_oom_flag_and_exit_marker_mirror_the_latest_observation(conn):
