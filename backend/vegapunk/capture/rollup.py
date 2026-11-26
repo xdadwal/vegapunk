@@ -8,8 +8,8 @@ harmless and the current, partial bucket stays up to date.
 import sqlite3
 from datetime import datetime, timedelta
 
-from vegapunk.api.queries import z
 from vegapunk.db import transaction
+from vegapunk.timefmt import z
 
 BUCKET = 300
 RAW_KEEP = 24 * 3600

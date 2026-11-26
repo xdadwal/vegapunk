@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from vegapunk.api.queries import z
 from vegapunk.db import transaction
+from vegapunk.timefmt import z
 
 MAX_TITLE = 120
 MAX_DIAGNOSIS = 1_200

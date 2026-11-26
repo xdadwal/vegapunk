@@ -1,9 +1,10 @@
 """Reads shared by the API routes."""
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime
 
 from vegapunk.capture.status import container_status
+from vegapunk.timefmt import from_ts, z  # noqa: F401  (re-exported)
 
 STALE_AFTER_INTERVALS = 3
 
@@ -21,19 +22,6 @@ _LIVE = (
     "WHERE c2.name = c.name AND c2.removed_at IS NULL "
     "ORDER BY c2.last_seen_at DESC, c2.first_seen_at DESC, c2.id DESC LIMIT 1)"
 )
-
-
-def z(value: datetime | str | None) -> str | None:
-    """ISO-8601 UTC with a Z, from a datetime, an ISO string, or None."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = datetime.fromisoformat(value)
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def from_ts(ts: int) -> str:
-    return z(datetime.fromtimestamp(ts, UTC))  # type: ignore[return-value]
 
 
 def item(row: sqlite3.Row, *, now: datetime, interval: int, removed: bool = False) -> dict:
