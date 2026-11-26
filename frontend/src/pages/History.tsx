@@ -133,10 +133,12 @@ export default function History() {
           ) : (
             <ul className="vp-list" aria-label="Conversations">
               {shown.map((c) => (
-                <li key={c.id} className="vp-service history-row">
+                <li key={c.id} className="vp-service vp-service-linked history-row">
                   <div className="vp-service-main">
                     <div className="vp-service-name">
-                      <Link to={`/agent?c=${encodeURIComponent(c.id)}`}>{c.title}</Link>
+                      <Link className="vp-card-link" to={`/agent?c=${encodeURIComponent(c.id)}`}>
+                        {c.title}
+                      </Link>
                     </div>
                     <div className="vp-service-meta">{formatDayTime(c.updated_at)} UTC</div>
                   </div>

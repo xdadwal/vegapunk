@@ -197,7 +197,7 @@ export default function Agent() {
       description="Reads this host's containers, logs and metrics and answers questions · times in UTC"
       actions={
         <div className="agent-actions">
-          <Link className="vp-btn vp-btn-secondary" to="/agent/history">
+          <Link className="vp-btn vp-btn-quiet" to="/agent/history">
             <Icon icon={History} />
             History
           </Link>

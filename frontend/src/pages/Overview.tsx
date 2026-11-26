@@ -81,8 +81,9 @@ export default function Overview() {
         <>
           {latest && <p className="page-note">Last capture {formatAgo(latest.observed_at, now)}</p>}
           <div className="overview-stats">
-            <div className="vp-card">
+            <div className="vp-card vp-card-linked">
               <Stat
+                to="/containers"
                 label="Containers running"
                 icon={Container}
                 value={`${h.containers.running} of ${h.containers.total}`}

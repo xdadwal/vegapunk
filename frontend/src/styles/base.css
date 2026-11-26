@@ -22,11 +22,11 @@ body {
   box-sizing: border-box;
 }
 
-.vp-root a {
+.vp-root a:not(.vp-btn) {
   color: var(--brand);
 }
 
-.vp-root a:hover {
+.vp-root a:not(.vp-btn):hover {
   color: var(--ink);
 }
 

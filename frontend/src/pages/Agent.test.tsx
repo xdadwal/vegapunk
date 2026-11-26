@@ -66,6 +66,7 @@ describe('Agent page', () => {
     ).toBeVisible()
     expect(await composer()).toHaveAccessibleDescription('Enter sends. Shift+Enter adds a line.')
     expect(screen.getByRole('link', { name: 'History' })).toHaveAttribute('href', '/agent/history')
+    expect(screen.getByRole('link', { name: 'History' })).toHaveClass('vp-btn-quiet') // the design's secondary header link
   })
 
   it('sends a message, shows it, then streams the answer with its steps', async () => {

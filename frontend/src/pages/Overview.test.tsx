@@ -31,6 +31,14 @@ async function tick(ms: number) {
 }
 
 describe('Overview', () => {
+  it('makes the containers card a link to the Containers page, as a lifting card', async () => {
+    withHost(hostPayload())
+    renderApp('/')
+    const link = await screen.findByRole('link', { name: 'Containers running' })
+    expect(link).toHaveAttribute('href', '/containers')
+    expect(link.closest('.vp-card')).toHaveClass('vp-card-linked')
+  })
+
   it('shows the host, the four stats and the chart', async () => {
     withHost(hostPayload())
     renderApp('/')
@@ -81,7 +89,12 @@ describe('Overview', () => {
 
   it('shows the Docker error', async () => {
     const host = hostPayload()
-    host.capture.sources.docker = { ok: false, stale: false, last_success_at: null, error: "Can't reach Docker at unix:///x." }
+    host.capture.sources.docker = {
+      ok: false,
+      stale: false,
+      last_success_at: null,
+      error: "Can't reach Docker at unix:///x.",
+    }
     withHost(host)
     renderApp('/')
     const alert = await screen.findByRole('alert')
@@ -117,9 +130,17 @@ describe('Overview', () => {
   })
 
   it('shows the starting-up message before the first capture', async () => {
-    withHost(hostPayload({ latest: null, hostname: null, os: null, docker_version: null, boot_time: null,
-      containers: { total: 0, running: 0, needs_attention: 0 },
-      capture: { interval_seconds: 15, sources: { host: SOURCE_NEVER, docker: SOURCE_NEVER } } }))
+    withHost(
+      hostPayload({
+        latest: null,
+        hostname: null,
+        os: null,
+        docker_version: null,
+        boot_time: null,
+        containers: { total: 0, running: 0, needs_attention: 0 },
+        capture: { interval_seconds: 15, sources: { host: SOURCE_NEVER, docker: SOURCE_NEVER } },
+      }),
+    )
     renderApp('/')
     expect(await screen.findByText('Nothing to show yet')).toBeVisible()
     expect(screen.getByText('Vegapunk is starting its first capture.')).toBeVisible()
@@ -164,7 +185,8 @@ describe('Overview polling', () => {
     const { fetchMock } = withHost(() => {
       call += 1
       const host = hostPayload()
-      if (call === 1) host.capture.sources.docker = { ok: false, stale: false, last_success_at: null, error: "Can't reach Docker" }
+      if (call === 1)
+        host.capture.sources.docker = { ok: false, stale: false, last_success_at: null, error: "Can't reach Docker" }
       return { body: host }
     })
     renderApp('/')
@@ -203,4 +225,3 @@ describe('Overview polling', () => {
     expect(screen.queryByText(/Showing the last data we had/)).not.toBeInTheDocument()
   })
 })
-
