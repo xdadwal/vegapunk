@@ -563,3 +563,13 @@ def test_the_request_carries_the_signal_and_open_subjects_and_never_the_key(worl
     assert "Restarted 4 times in 12 min." in system and "`db`" in system
     assert "<old title>" not in json.dumps(body)  # model-written text is not fed back
     assert KEY not in json.dumps(body)
+
+
+def test_the_factory_repr_does_not_show_the_key(world):
+    config = AiConfig(
+        base_url="https://x.example/v1", model="m", instructions="", api_key=PLAIN_KEY
+    )
+    factory = investigation_agent_factory(
+        config=config, settings=world, docker=FakeDocker(), started_at=now(), host=HOST
+    )
+    assert PLAIN_KEY not in repr(factory) and PLAIN_KEY not in str(factory)

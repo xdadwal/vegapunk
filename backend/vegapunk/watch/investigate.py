@@ -12,7 +12,7 @@ import re
 import tempfile
 from collections.abc import Callable, Collection, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -102,7 +102,7 @@ class InvestigationAgentFactory:
     """Builds the agent for one check. It carries the saved provider settings, so
     `investigate` always knows the key to scrub from error text (`secret`)."""
 
-    config: AiConfig
+    config: AiConfig = field(repr=False)  # holds the API key
     settings: Settings
     docker: DockerHost
     started_at: datetime

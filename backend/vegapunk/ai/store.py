@@ -2,7 +2,7 @@
 
 import sqlite3
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlsplit
 
@@ -30,7 +30,7 @@ class AiConfig:
     base_url: str
     model: str
     instructions: str
-    api_key: str | None
+    api_key: str | None = field(repr=False)  # never in a repr, log or assertion diff
 
 
 @dataclass(frozen=True)

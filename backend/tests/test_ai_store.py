@@ -252,3 +252,15 @@ def test_ordinary_base_urls_are_kept(url):
     from vegapunk.ai.store import normalise_base_url
 
     assert normalise_base_url(url) == url.rstrip("/")
+
+
+def test_the_api_key_is_not_in_the_repr_of_the_settings():
+    from vegapunk.ai.store import AiConfig, LoadedAi
+
+    secret = "plainkeyABCDEFGHIJKLMNOP"
+    config = AiConfig(base_url="https://x.example/v1", model="m", instructions="", api_key=secret)
+    loaded = LoadedAi(config, True, "plai…MNOP", None, False)
+    assert secret not in repr(config) and secret not in str(config)
+    assert secret not in repr(loaded)
+    assert config == AiConfig("https://x.example/v1", "m", "", secret)  # equality still holds
+    assert config != AiConfig("https://x.example/v1", "m", "", "another-key-0000000")
