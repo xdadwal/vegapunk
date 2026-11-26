@@ -84,4 +84,16 @@ describe('Sign in', () => {
     renderApp('/')
     expect(await screen.findByText('docker exec -it vegapunk python -m vegapunk reset-password')).toBeVisible()
   })
+
+  it("doesn't stay stuck when the browser drops the session", async () => {
+    stubApi({
+      ...SIGNED_OUT,
+      'GET /me': { status: 401, body: { detail: 'Not signed in.' } },
+      'POST /auth/sign-in': { status: 204 },
+    })
+    renderApp('/')
+    await submit(userEvent.setup(), 'admin', 'correct horse')
+    expect(await screen.findByText(/browser didn't keep the session/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+  })
 })

@@ -29,7 +29,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [state])
 
   const refresh = useCallback(async () => {
-    setState(await loadState())
+    const next = await loadState()
+    setState(next)
+    return next
   }, [])
 
   useEffect(() => {

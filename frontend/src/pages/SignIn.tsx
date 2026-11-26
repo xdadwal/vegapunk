@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 
 import { ApiError } from '../api'
 import { useAuth } from '../auth/auth-context'
+import { SESSION_NOT_KEPT } from '../auth/messages'
 import { Alert } from '../components/Alert'
 import { Button } from '../components/Button'
 import { Input } from '../components/Input'
@@ -34,9 +35,11 @@ export default function SignIn() {
     setFailure(null)
     try {
       await request('/auth/sign-in', { method: 'POST', body: { username, password } })
-      await refresh()
+      const next = await refresh()
+      if (next.status !== 'signed-in') setFailure(new ApiError(0, SESSION_NOT_KEPT))
     } catch (error) {
       setFailure(error instanceof ApiError ? error : new ApiError(0, "Couldn't reach the server."))
+    } finally {
       setBusy(false)
     }
   }
@@ -46,7 +49,7 @@ export default function SignIn() {
   const other = failure && !mismatch && !(failure.status === 429 && paused)
 
   return (
-    <div className="vp-page-center">
+    <div className="page-center">
       <main id="main" className="auth auth-sign-in">
         <div className="auth-head">
           <span className="vp-wordmark">Vegapunk</span>

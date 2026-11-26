@@ -29,8 +29,9 @@ function DetailsForm({ admin }: { admin: Admin }) {
   async function submit(event: FormEvent) {
     event.preventDefault()
     const name = displayName.trim()
+    const nameLength = [...name].length
     const found = {
-      displayName: name.length >= 1 && name.length <= 64 ? undefined : 'Enter a name of 1 to 64 characters.',
+      displayName: nameLength >= 1 && nameLength <= 64 ? undefined : 'Enter a name of 1 to 64 characters.',
       username: USERNAME.test(username)
         ? undefined
         : 'Use 1 to 32 lowercase letters, numbers, dashes or underscores.',
@@ -95,7 +96,7 @@ function PasswordForm() {
   async function submit(event: FormEvent) {
     event.preventDefault()
     const found = {
-      next: next.length >= MIN_PASSWORD ? undefined : `Use at least ${MIN_PASSWORD} characters.`,
+      next: [...next].length >= MIN_PASSWORD ? undefined : `Use at least ${MIN_PASSWORD} characters.`,
       confirm: next === confirm ? undefined : "The two passwords don't match.",
       current: undefined as string | undefined,
     }

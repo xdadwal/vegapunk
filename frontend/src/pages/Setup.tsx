@@ -26,7 +26,7 @@ export default function Setup() {
       username: USERNAME.test(username)
         ? undefined
         : 'Use 1 to 32 lowercase letters, numbers, dashes or underscores.',
-      password: password.length >= MIN_PASSWORD ? undefined : `Use at least ${MIN_PASSWORD} characters.`,
+      password: [...password].length >= MIN_PASSWORD ? undefined : `Use at least ${MIN_PASSWORD} characters.`,
       confirm: password === confirm ? undefined : "The two passwords don't match.",
     }
     setErrors(found)
@@ -39,6 +39,7 @@ export default function Setup() {
       await refresh()
     } catch (error) {
       setFailure(error instanceof ApiError ? error : new ApiError(0, "Couldn't reach the server."))
+    } finally {
       setBusy(false)
     }
   }

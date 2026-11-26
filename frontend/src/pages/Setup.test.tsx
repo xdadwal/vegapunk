@@ -73,4 +73,28 @@ describe('Setup', () => {
     await fill(userEvent.setup(), 'admin', 'correct horse', 'correct horse')
     expect(await screen.findByRole('button', { name: /Create account/ })).toBeDisabled()
   })
+
+  it('moves on to Sign in when the browser drops the session', async () => {
+    let created = false
+    stubApi({
+      'GET /setup/status': () => ({ body: { admin_created: created } }),
+      'POST /setup/admin': () => {
+        created = true
+        return { status: 201, body: ADMIN }
+      },
+      'GET /me': { status: 401, body: { detail: 'Not signed in.' } },
+    })
+    renderApp('/')
+    await fill(userEvent.setup(), 'admin', 'correct horse', 'correct horse')
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeVisible()
+  })
+
+  it('counts characters, not UTF-16 units, like the server does', async () => {
+    const { sent } = stubApi({ 'GET /setup/status': { body: { admin_created: false } } })
+    renderApp('/')
+    const fiveEmoji = '\u{1F600}'.repeat(5)
+    await fill(userEvent.setup(), 'admin', fiveEmoji, fiveEmoji)
+    expect(screen.getByLabelText('Password')).toHaveAccessibleDescription('Use at least 10 characters.')
+    expect(sent('POST /setup/admin')).toHaveLength(0)
+  })
 })

@@ -12,7 +12,7 @@ export type AuthState =
 export type Auth = {
   state: AuthState
   /** Re-read who is signed in, without showing the loading screen. */
-  refresh: () => Promise<void>
+  refresh: () => Promise<AuthState>
   /** Show the loading screen, then re-read. For Retry after a failed load. */
   retry: () => Promise<void>
   signOut: () => Promise<void>

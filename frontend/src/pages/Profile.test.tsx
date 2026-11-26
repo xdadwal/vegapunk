@@ -124,4 +124,17 @@ describe('Profile', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Save details' }))
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeVisible()
   })
+
+  it('counts characters, not UTF-16 units, in the new password', async () => {
+    const { sent } = signedIn()
+    renderApp('/profile')
+    const user = userEvent.setup()
+    const fiveEmoji = '\u{1F600}'.repeat(5)
+    await user.type(await screen.findByLabelText('Current password'), 'correct horse')
+    await user.type(screen.getByLabelText('New password'), fiveEmoji)
+    await user.type(screen.getByLabelText('Confirm new password'), fiveEmoji)
+    await user.click(screen.getByRole('button', { name: 'Change password' }))
+    expect(screen.getByLabelText('New password')).toHaveAccessibleDescription('Use at least 10 characters.')
+    expect(sent('POST /me/password')).toHaveLength(0)
+  })
 })
