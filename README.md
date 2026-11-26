@@ -1,19 +1,28 @@
 # Vegapunk
 
-An open-source platform for managing homelab hosts and services.
+An open-source tool for managing a homelab host and its services.
 
 > **Status:** Early development — things will change quickly.
 
 ## Overview
 
-Vegapunk has two main parts:
+Vegapunk is a single server that runs on your homelab host. It periodically captures data about the host and the services running on it, and gives you a web interface to view and manage them.
 
-- **Web interface** — a central dashboard to view and manage your hosts and the services running on them.
-- **Agent** — a lightweight CLI agent that runs on each host and carries out actions requested from the web interface.
+## Development
 
-## Getting Started
+You need [uv](https://docs.astral.sh/uv/) and Node.js 24.
 
-Coming soon.
+```sh
+# Backend (http://localhost:8000)
+cd backend
+uv sync
+uv run uvicorn vegapunk.main:app --reload
+
+# Frontend (in a second terminal)
+cd frontend
+npm install
+npm run dev
+```
 
 ## Contributing
 
