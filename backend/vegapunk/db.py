@@ -56,7 +56,10 @@ def prepare_data_dir(settings: Settings) -> None:
         probe.write_text("")
         probe.unlink()
     except OSError as exc:
-        raise DataDirError(f"Can't use the data directory {path}: {exc.strerror}.") from exc
+        raise DataDirError(
+            f"Can't use the data directory {path}: {exc.strerror}. "
+            "Check that the folder exists and the user running Vegapunk can write to it."
+        ) from exc
 
 
 def get_db(request: Request) -> Iterator[sqlite3.Connection]:
