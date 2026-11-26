@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from vegapunk.api.containers import router as containers_router
+from vegapunk.api.host import router as host_router
 from vegapunk.auth.routes import router as auth_router
 from vegapunk.capture.collectors import Collector, build_collectors
 from vegapunk.capture.scheduler import Scheduler
@@ -41,6 +43,8 @@ def create_app(settings: Settings, collectors: Sequence[Collector] | None = None
     app = FastAPI(title="Vegapunk", lifespan=lifespan)
     app.state.settings = settings
     app.include_router(auth_router)
+    app.include_router(host_router)
+    app.include_router(containers_router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
