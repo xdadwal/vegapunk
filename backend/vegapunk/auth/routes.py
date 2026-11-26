@@ -10,7 +10,7 @@ from vegapunk.auth import admin as admin_store
 from vegapunk.auth import sessions
 from vegapunk.auth.admin import MIN_PASSWORD_LENGTH, USERNAME_PATTERN, Admin
 from vegapunk.auth.passwords import hash_password, verify_password
-from vegapunk.db import get_db
+from vegapunk.db import get_db, transaction
 
 router = APIRouter(prefix="/api")
 
@@ -92,26 +92,45 @@ def setup_status(conn: Db) -> dict[str, bool]:
 
 @router.post("/setup/admin", status_code=201)
 def create_admin(body: SetupIn, conn: Db, request: Request, response: Response) -> AdminOut:
+    now = _now()
     try:
-        admin = admin_store.create_admin(
-            conn,
-            username=body.username,
-            display_name=body.display_name or body.username,
-            password=body.password,
-            now=datetime.now(UTC),
-        )
+        with transaction(conn):
+            admin = admin_store.create_admin(
+                conn,
+                username=body.username,
+                display_name=body.display_name or body.username,
+                password=body.password,
+                now=now,
+            )
+            token = sessions.create_session(conn, now)
     except admin_store.AdminExists:
         raise HTTPException(409, "The admin account already exists.") from None
-    _set_session_cookie(response, request, sessions.create_session(conn, _now()))
+    _set_session_cookie(response, request, token)
     return AdminOut.of(admin)
 
 
 @router.post("/auth/sign-in", status_code=204)
 def sign_in(body: SignInIn, conn: Db, request: Request) -> Response:
     now = _now()
-    until = sessions.locked_until(conn, now)
+    until: datetime | None = None
+    token: str | None = None
+    # The whole check-verify-record sequence is one transaction, so a burst of parallel
+    # guesses is handled one at a time and the lockout counts every one of them.
+    with transaction(conn):
+        until = sessions.locked_until(conn, now)
+        if until is None:
+            admin = admin_store.get_admin(conn)
+            if admin is not None and admin.username == body.username:
+                ok = verify_password(body.password, admin.password_hash)
+            else:
+                verify_password(body.password, _DUMMY_HASH)
+                ok = False
+            if ok:
+                sessions.clear_failures(conn)
+                token = sessions.create_session(conn, now)
+            else:
+                sessions.record_failure(conn, now)
     if until is not None:
-        # Commit nothing: a paused attempt is not a new failure.
         seconds = max(1, int((until - now).total_seconds()))
         return JSONResponse(
             {
@@ -121,26 +140,18 @@ def sign_in(body: SignInIn, conn: Db, request: Request) -> Response:
             status_code=429,
             headers={"Retry-After": str(seconds)},
         )
-    admin = admin_store.get_admin(conn)
-    if admin is not None and admin.username == body.username:
-        ok = verify_password(body.password, admin.password_hash)
-    else:
-        verify_password(body.password, _DUMMY_HASH)
-        ok = False
-    if not ok:
-        sessions.record_failure(conn, now)
-        conn.commit()
+    if token is None:
         raise HTTPException(401, "That username or password doesn't match.")
-    sessions.clear_failures(conn)
     response = Response(status_code=204)
-    _set_session_cookie(response, request, sessions.create_session(conn, now))
+    _set_session_cookie(response, request, token)
     return response
 
 
 @router.post("/auth/sign-out", status_code=204)
 def sign_out(conn: Db, token: Annotated[str | None, Depends(session_token)]) -> Response:
     if token:
-        sessions.delete_session(conn, token)
+        with transaction(conn):
+            sessions.delete_session(conn, token)
     response = Response(status_code=204)
     response.delete_cookie(sessions.SESSION_COOKIE, path="/")
     return response
@@ -166,6 +177,7 @@ def change_password(
 ) -> Response:
     if not verify_password(body.current_password, admin.password_hash):
         raise HTTPException(400, "Your current password doesn't match.")
-    admin_store.set_password(conn, body.new_password)
-    sessions.delete_all_sessions(conn, except_token=token)
+    with transaction(conn):
+        admin_store.set_password(conn, body.new_password)
+        sessions.delete_all_sessions(conn, except_token=token)
     return Response(status_code=204)

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from vegapunk.auth import admin as admin_store
 from vegapunk.auth import sessions
 from vegapunk.config import load_settings
-from vegapunk.db import connect
+from vegapunk.db import connect, transaction
 
 
 def _fail(message: str) -> int:
@@ -29,10 +29,10 @@ def reset_password(read_password: Callable[[str], str]) -> int:
             return _fail(
                 f"The password must be at least {admin_store.MIN_PASSWORD_LENGTH} characters."
             )
-        admin_store.set_password(conn, password)
-        sessions.delete_all_sessions(conn)
-        sessions.clear_failures(conn)
-        conn.commit()
+        with transaction(conn):
+            admin_store.set_password(conn, password)
+            sessions.delete_all_sessions(conn)
+            sessions.clear_failures(conn)
     finally:
         conn.close()
     print("Password reset. Everyone was signed out.")
