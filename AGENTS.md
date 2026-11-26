@@ -66,7 +66,7 @@ scheduler -> collectors (read the local host) -> ingest -> storage -> API -> web
 - **Every tool call passes one gate.** The gate decides whether a call may run. Today it allows everything, since all tools are read-only. Later, action tools (restart a container, run a host command) are added as more tools, and the gate enforces the permission level and approvals. Adding actions must not require changing the operator loop, the API, or the UI structure.
 - **Host access goes through one module.** All Docker and host calls live behind it, and in the first version it exposes read operations only. Mounting the Docker socket gives the container full control of Docker whatever the mount flags say, so read-only is enforced by this module, not by the mount.
 
-_TBD — the data model, and how often data is captured._
+**Data model** (see `backend/vegapunk/migrations/`): `host` (one row of facts), `host_metrics` and `container_metrics` (samples; `res` 0 is raw, 300 is a 5-minute average; `ts` is Unix seconds), `containers` (one row per Docker id, with `removed_at` once it disappears from a complete listing), and `capture_status` (per source: last attempt, last success, last error).
 
 ## Commands
 
@@ -93,6 +93,10 @@ CI (`.github/workflows/ci.yml`) runs lint, tests, and build for both, and builds
 ## Conventions
 
 - **Database:** stdlib `sqlite3` with numbered SQL migrations in `backend/vegapunk/migrations/`. Add a new file (`0002_name.sql`); never edit one that has shipped. Startup refuses a database written by a newer version.
-- **Configuration:** environment variables read once in `config.py`: `VEGAPUNK_DATA_DIR` (default `data`), `VEGAPUNK_STATIC_DIR` (the built frontend; set in the image), `VEGAPUNK_SECURE_COOKIES` (`1` behind HTTPS).
+- **Configuration:** environment variables read once in `config.py`: `VEGAPUNK_DATA_DIR` (default `data`), `VEGAPUNK_STATIC_DIR` (the built frontend; set in the image), `VEGAPUNK_SECURE_COOKIES` (`1` behind HTTPS), `VEGAPUNK_CAPTURE_INTERVAL` (seconds, default 15), `VEGAPUNK_DOCKER_URL` (default the local socket), `VEGAPUNK_DISK_PATH` (the disk measured for Storage, default `/`). `Settings.capture` is false unless built by `load_settings`, so tests never start the scheduler unless they ask.
+- **Reading the host:** only `backend/vegapunk/host/` talks to Docker or the system, and `host/docker.py` exposes reads only (a test pins its public methods). Everything else works from records.
+- **Capture:** `capture/collectors.py` turns what the host modules read into the normalized records in `capture/records.py`; `capture/ingest.py` is the only code that stores them; `capture/scheduler.py` runs the collectors every interval in one thread and records per-source status; `capture/rollup.py` keeps raw samples for a day and 5-minute averages for 30 days. A new data source is a new collector. Run one uvicorn worker.
+- **Container status:** `capture/status.py` (`container_status`) is the one place Docker states become online, degraded, offline or unknown: running is online (degraded if unhealthy); restarting and paused are degraded; exited and dead are offline; anything else is unknown.
+- **Container identity:** keyed by Docker id in the database, by name in URLs. A recreated container starts a fresh history. Names must match Docker's own rule, so encoded slashes never need to work.
 - **API:** everything is under `/api`. Every route except health, setup, and sign-in requires the signed-in admin (`require_admin`).
 - **Frontend styling:** design tokens in `frontend/src/styles/tokens.css` and component styles in `components.css`, both taken from the design system. Use the tokens; do not hard-code colors, spacing, or fonts.

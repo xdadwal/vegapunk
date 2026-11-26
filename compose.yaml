@@ -6,6 +6,13 @@ services:
       - "8000:8000"
     volumes:
       - vegapunk-data:/data
+      # Vegapunk reads container state and usage from Docker. Read the README before
+      # changing this: the socket gives this container control of Docker.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The group that owns the socket. On Linux it is the docker group, whose id differs
+    # per host: DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
+    group_add:
+      - "${DOCKER_GID:-0}"
     restart: unless-stopped
 
 volumes:
