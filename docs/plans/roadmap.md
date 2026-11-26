@@ -5,7 +5,7 @@ The first version (scope in [`AGENTS.md`](../../AGENTS.md)) is built in five mil
 | # | Milestone | You can do this when it ships | Plan |
 |---|---|---|---|
 | 1 | Foundation | Run Vegapunk as a container, create the admin account, sign in, edit your profile | [2026-11-26-m1-foundation.md](2026-11-26-m1-foundation.md) |
-| 2 | Capture and read-only screens | See the host's CPU, memory, storage and every container, with trends | To write |
+| 2 | Capture and read-only screens | See the host's CPU, memory, storage and every container, with trends | [2026-11-26-m2-capture.md](2026-11-26-m2-capture.md) |
 | 3 | AI provider and agent chat | Connect a provider and ask the agent about the host | To write |
 | 4 | Findings | Get findings from scheduled and background checks, with diagnosis and evidence | To write |
 | 5 | Release | Install a published image by following the README | To write |
@@ -17,16 +17,7 @@ The first version (scope in [`AGENTS.md`](../../AGENTS.md)) is built in five mil
 - **Storage:** raw samples kept for a short window, rolled up into coarser samples for trends.
 - **API and screens:** Overview (the host), Containers, Container detail, plus their empty and error states.
 
-Decisions to confirm when this plan is written:
-
-| Decision | Proposal |
-|---|---|
-| Docker access | The `docker` Python SDK over the mounted socket |
-| Host metrics from inside a container | `psutil` reading the host's `/proc` and `/sys`, mounted read-only |
-| Storage used | Disk usage of the host filesystems, read through a read-only mount of the host root |
-| Capture interval | 15 seconds, configurable in Settings |
-| Retention | Raw samples for 24 hours, 5-minute averages for 30 days |
-| Live updates in the UI | Poll the API every 5 seconds |
+The decisions for this milestone are recorded at the top of its plan.
 
 ## Milestone 3: AI provider and agent chat
 
