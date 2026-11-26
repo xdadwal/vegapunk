@@ -1,5 +1,7 @@
 import { render, screen, within } from '@testing-library/react'
 
+import userEvent from '@testing-library/user-event'
+
 import { EvidenceLog } from './EvidenceLog'
 
 describe('EvidenceLog', () => {
@@ -31,6 +33,19 @@ describe('EvidenceLog', () => {
     expect(row).toHaveTextContent('Measured')
     expect(row).toHaveTextContent('Memory at 98%')
     expect(row).toHaveClass('evidence-note')
+  })
+
+  it('has a focusable, named scroll region reachable by keyboard', async () => {
+    render(<EvidenceLog lines={[{ source: 'log', text: 'x'.repeat(500), at: null }]} />)
+    const region = screen.getByRole('region', { name: 'Evidence (scrollable)' })
+    expect(region).toHaveAttribute('tabindex', '0')
+    await userEvent.tab()
+    expect(region).toHaveFocus()
+  })
+
+  it('shows a dash for an unparsable time instead of crashing', () => {
+    render(<EvidenceLog lines={[{ source: 'log', text: 'boom', at: 'not a date' }]} />)
+    expect(screen.getByRole('listitem')).toHaveTextContent('—')
   })
 
   it('shows text literally, never as HTML', () => {

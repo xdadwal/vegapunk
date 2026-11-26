@@ -1,4 +1,4 @@
-import { formatAgo, formatBytes, formatClock, formatPercent, formatUptime } from './format'
+import { formatAgo, formatBytes, formatClock, formatPercent, formatUptime, formatClockSafe } from './format'
 
 const NOW = new Date('2026-01-10T12:00:00Z')
 const ago = (seconds: number) => new Date(NOW.getTime() - seconds * 1000).toISOString()
@@ -63,5 +63,12 @@ describe('formatClock', () => {
   it('is a 12-hour clock in UTC with the zone named', () => {
     expect(formatClock('2026-01-01T15:12:00+00:00')).toBe('3:12 PM UTC')
     expect(formatClock('2026-01-01T00:05:00Z')).toBe('12:05 AM UTC')
+  })
+})
+
+describe('formatClockSafe', () => {
+  it('matches formatClock for valid input and echoes invalid input', () => {
+    expect(formatClockSafe('2026-01-01T15:12:00Z')).toBe('3:12 PM UTC')
+    expect(formatClockSafe('not a date')).toBe('not a date')
   })
 })

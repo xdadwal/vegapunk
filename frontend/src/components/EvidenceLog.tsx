@@ -11,6 +11,7 @@ const clock = new Intl.DateTimeFormat('en-US', {
 
 /** "1:48:02 PM" (UTC). Intl can put a narrow no-break space before AM/PM. */
 function formatSeconds(iso: string): string {
+  if (Number.isNaN(new Date(iso).getTime())) return '—'
   return clock.format(new Date(iso)).replace(/[  ]/g, ' ')
 }
 
@@ -23,7 +24,7 @@ export function EvidenceLog({ lines, title }: Props) {
   return (
     <div className="evidence">
       {title && <div className="evidence-title">{title}</div>}
-      <div className="evidence-scroll">
+      <div className="evidence-scroll" tabIndex={0} role="region" aria-label={`${title ?? 'Evidence'} (scrollable)`}>
         <div className="evidence-list" role="list" aria-label={title ?? 'Evidence'}>
           {lines.map((line, i) => (
             <div

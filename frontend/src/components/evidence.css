@@ -52,3 +52,8 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+.evidence-scroll:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}

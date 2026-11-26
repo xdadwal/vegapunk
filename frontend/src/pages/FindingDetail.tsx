@@ -11,7 +11,7 @@ import { EvidenceLog } from '../components/EvidenceLog'
 import { PageHeader } from '../components/PageHeader'
 import { Spinner } from '../components/Spinner'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatClock } from '../format'
+import { formatClockSafe } from '../format'
 import type { FindingDetail as Detail, FindingStatus, Status } from '../types'
 import { usePolling } from '../usePolling'
 import './findings.css'
@@ -92,7 +92,7 @@ export default function FindingDetail() {
   const badge = BADGE[status]
   const firstWord = data.title.split(/\s+/)[0]
   const trigger = data.trigger === 'scheduled' ? 'scheduled check' : 'background watch'
-  const hasLog = data.evidence[0]?.source === 'log'
+  const hasLog = data.evidence.some((line) => line.source === 'log')
 
   return (
     <div className="page-stack">
@@ -100,7 +100,7 @@ export default function FindingDetail() {
         title={data.title}
         breadcrumbs={[{ label: 'Findings', to: '/findings' }, { label: `${data.subject} · ${firstWord}` }]}
         meta={<StatusBadge status={badge.status} label={badge.label} />}
-        description={`on ${data.subject} · since ${formatClock(data.first_seen_at)} · Found by ${trigger}`}
+        description={`on ${data.subject} · since ${formatClockSafe(data.first_seen_at)} · Found by ${trigger}`}
       />
       {error && <Alert tone="warning" title="Showing the last data we had. Couldn't reach the server." />}
       <article className="finding-article">
@@ -120,7 +120,7 @@ export default function FindingDetail() {
         </section>
       </article>
       {status === 'resolved' && data.resolved_at && (
-        <p className="page-note">This stopped on its own at {formatClock(data.resolved_at)}.</p>
+        <p className="page-note">This stopped on its own at {formatClockSafe(data.resolved_at)}.</p>
       )}
       {failure && <Alert tone="danger" title={failure} />}
       <div className="finding-actions">

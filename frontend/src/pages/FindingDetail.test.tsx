@@ -36,6 +36,37 @@ describe('Finding detail', () => {
     expect(screen.getByText('1:48:02 PM')).toBeVisible()
   })
 
+  it('titles the evidence as docker logs when a log line follows a metric line', async () => {
+    page({
+      'GET /findings/f1': {
+        body: findingDetail({
+          evidence: [
+            { source: 'metric', text: 'Memory at 98%', at: null },
+            { source: 'log', text: 'fatal', at: null },
+          ],
+        }),
+      },
+    })
+    renderApp('/findings/f1')
+    expect(await screen.findByText('docker logs web · times in UTC')).toBeVisible()
+  })
+
+  it('survives malformed timestamps', async () => {
+    page({
+      'GET /findings/f1': {
+        body: findingDetail({
+          first_seen_at: 'garbage',
+          status: 'resolved',
+          resolved_at: 'also bad',
+          evidence: [{ source: 'log', text: 'x', at: 'not a date' }],
+        }),
+      },
+    })
+    renderApp('/findings/f1')
+    expect(await screen.findByText(/since garbage/)).toBeVisible()
+    expect(screen.getByText('This stopped on its own at also bad.')).toBeVisible()
+  })
+
   it('names a scheduled check', async () => {
     page({ 'GET /findings/f1': { body: findingDetail({ trigger: 'scheduled' }) } })
     renderApp('/findings/f1')
