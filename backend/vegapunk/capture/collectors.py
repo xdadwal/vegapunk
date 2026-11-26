@@ -15,6 +15,7 @@ from vegapunk.capture.records import (
     HostSample,
     Record,
 )
+from vegapunk.config import Settings
 from vegapunk.host.docker import DockerError, DockerHost
 from vegapunk.host.system import SystemHost
 
@@ -158,3 +159,10 @@ class DockerCollector:
             mem_used=memory_used(memory),
             mem_limit=memory_limit(memory.get("limit"), host_mem_total),
         )
+
+
+def build_collectors(settings: Settings) -> list[Collector]:
+    return [
+        HostCollector(SystemHost(settings.disk_path)),
+        DockerCollector(DockerHost(settings.docker_url)),
+    ]

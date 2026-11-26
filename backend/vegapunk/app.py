@@ -1,5 +1,6 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -7,20 +8,35 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from vegapunk.auth.routes import router as auth_router
+from vegapunk.capture.collectors import Collector, build_collectors
+from vegapunk.capture.scheduler import Scheduler
 from vegapunk.config import Settings
 from vegapunk.db import connect, migrate, prepare_data_dir
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, collectors: Sequence[Collector] | None = None) -> FastAPI:
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.started_at = datetime.now(UTC)
         prepare_data_dir(settings)
         conn = connect(settings.db_path)
         try:
             migrate(conn)
         finally:
             conn.close()
-        yield
+        scheduler = None
+        if settings.capture:
+            scheduler = Scheduler(
+                settings.db_path,
+                collectors if collectors is not None else build_collectors(settings),
+                settings.capture_interval,
+            )
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
 
     app = FastAPI(title="Vegapunk", lifespan=lifespan)
     app.state.settings = settings

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from vegapunk.app import create_app
 from vegapunk.config import Settings
-from vegapunk.db import connect, migrate
+from vegapunk.db import connect, migrate, prepare_data_dir
 
 
 @pytest.fixture
@@ -42,3 +42,13 @@ def signed_in(client: TestClient) -> TestClient:
 def admin_client(signed_in: TestClient) -> TestClient:
     signed_in.cookies.clear()
     return signed_in
+
+
+@pytest.fixture
+def db_path(settings: Settings) -> Path:
+    """A created, migrated database, with no app running against it."""
+    prepare_data_dir(settings)
+    c = connect(settings.db_path)
+    migrate(c)
+    c.close()
+    return settings.db_path

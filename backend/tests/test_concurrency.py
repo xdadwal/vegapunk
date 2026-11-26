@@ -78,3 +78,43 @@ def test_parallel_wrong_guesses_stop_at_the_limit(live, settings):
     conn = connect(settings.db_path)
     assert conn.execute("SELECT count(*) FROM sign_in_failures").fetchone()[0] == 5
     conn.close()
+
+
+def test_sign_in_works_while_capture_is_writing(tmp_path):
+    """Capture and requests share one database; neither may starve or break the other."""
+    from vegapunk.capture.records import HostSample
+
+    class Busy:
+        name = "host"
+
+        def collect(self, now):
+            return [HostSample(1.0, 1, 2, 3, 4, now)]
+
+    settings = Settings(
+        data_dir=tmp_path / "d",
+        static_dir=None,
+        secure_cookies=False,
+        capture=True,
+        capture_interval=1,
+    )
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(settings, collectors=[Busy()]), port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.02)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        httpx.post(f"{base}/api/setup/admin", json=OK)
+        codes = [
+            r.status_code
+            for r in burst(10, lambda: httpx.post(f"{base}/api/auth/sign-in", json=OK))
+        ]
+        assert codes == [204] * 10
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
