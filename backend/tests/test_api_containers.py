@@ -112,6 +112,12 @@ def test_detail_by_name_with_metrics(signed_in, conn):
     assert [(p["cpu_pct"], p["mem_used"]) for p in metrics["points"]] == [(1.0, 10), (3.0, 30)]
 
 
+def test_detail_carries_the_servers_clock(signed_in, conn):
+    listing(conn, now(), obs("a", "web"))
+    stamp = signed_in.get("/api/containers/web").json()["now"]
+    assert stamp.endswith("Z")
+
+
 def test_detail_range_is_validated(signed_in, conn):
     listing(conn, now(), obs("a", "web"))
     assert signed_in.get("/api/containers/web?range=6h").json()["metrics"]["range"] == "6h"

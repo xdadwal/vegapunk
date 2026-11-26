@@ -201,3 +201,12 @@
 @media (pointer: coarse) {
   .vp-tab { min-height: 44px; }
 }
+.vp-select-wrap { position: relative; }
+.vp-select-wrap::after { content: ""; position: absolute; right: var(--space-3); top: 50%; width: 6px; height: 6px; margin-top: -5px; border-right: 1.5px solid var(--ink-muted); border-bottom: 1.5px solid var(--ink-muted); transform: rotate(45deg); pointer-events: none; }
+.vp-select { appearance: none; -webkit-appearance: none; padding-right: var(--space-8); cursor: pointer; }
+.vp-crumbs ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); font-size: 12px; line-height: 16px; color: var(--ink-muted); }
+.vp-crumbs li { display: inline-flex; align-items: center; gap: var(--space-1); }
+.vp-crumbs a { color: var(--ink-muted); text-decoration: none; }
+.vp-crumbs a:hover { color: var(--ink); text-decoration: underline; }
+.vp-crumbs a:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: var(--radius-sm); }
+.vp-crumbs [aria-current] { color: var(--ink); }

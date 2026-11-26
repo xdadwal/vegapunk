@@ -18,7 +18,11 @@ const clockOnly = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 })
 
-const dayOnly = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+const dayOnly = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  timeZone: 'UTC',
+})
 
 /** "3:12 PM UTC": 12-hour clock with the zone named. Every time is UTC until a time zone setting exists. */
 export function formatClock(iso: string): string {
@@ -46,6 +50,12 @@ export function formatBytes(bytes: number): string {
     unit += 1
   }
   return `${value.toFixed(1)} ${UNITS[unit]}`
+}
+
+/** A percentage without its sign, for a Stat that shows the unit separately: "23", "4.3", or null. */
+export function percentValue(value: number | null): string | null {
+  if (value === null) return null
+  return value < 10 ? value.toFixed(1) : String(Math.round(value))
 }
 
 /** "23%", "4.3%" below 10, and a dash for no value. */

@@ -1,4 +1,4 @@
-import type { ContainerItem, Host, Source } from './types'
+import type { ContainerDetail, ContainerItem, Host, Source } from './types'
 
 export const GIB = 1024 ** 3
 
@@ -9,7 +9,12 @@ export const SOURCE_OK: Source = {
   error: null,
 }
 
-export const SOURCE_NEVER: Source = { ok: false, stale: false, last_success_at: null, error: null }
+export const SOURCE_NEVER: Source = {
+  ok: false,
+  stale: false,
+  last_success_at: null,
+  error: null,
+}
 
 export function hostPayload(over: Partial<Host> = {}): Host {
   const now = Date.now()
@@ -30,7 +35,10 @@ export function hostPayload(over: Partial<Host> = {}): Host {
       disk_total: 20 * GIB,
     },
     containers: { total: 12, running: 11, needs_attention: 1 },
-    capture: { interval_seconds: 15, sources: { host: SOURCE_OK, docker: SOURCE_OK } },
+    capture: {
+      interval_seconds: 15,
+      sources: { host: SOURCE_OK, docker: SOURCE_OK },
+    },
     ...over,
   }
 }
@@ -64,5 +72,24 @@ export function containerItem(over: Partial<ContainerItem> = {}): ContainerItem 
     mem_used: 512 * 1024 ** 2,
     mem_limit: GIB,
     ...over,
+  }
+}
+
+export function detailPayload(over: Partial<ContainerDetail> = {}, range = '1h'): ContainerDetail {
+  const start = Date.now() - 4 * 15_000
+  return {
+    ...containerItem(over),
+    now: new Date().toISOString(),
+    ...over,
+    metrics: {
+      range,
+      resolution_seconds: 15,
+      points: Array.from({ length: 4 }, (_, i) => ({
+        ts: new Date(start + i * 15_000).toISOString(),
+        cpu_pct: 1 + i,
+        mem_used: (100 + i * 10) * 1024 ** 2,
+        mem_limit: GIB,
+      })),
+    },
   }
 }

@@ -7,17 +7,11 @@ import { PageHeader } from '../components/PageHeader'
 import { Spinner } from '../components/Spinner'
 import { Stat } from '../components/Stat'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
-import { formatAgo, formatBytes, formatUptime } from '../format'
+import { formatAgo, formatBytes, formatUptime, percentValue as percent } from '../format'
 import type { Host, HostMetrics } from '../types'
 import { usePolling } from '../usePolling'
 import { CaptureAlerts } from './CaptureAlerts'
 import './overview.css'
-
-/** A percentage as the number the Stat shows: whole above 10, one decimal below. */
-function percent(value: number | null): string | null {
-  if (value === null) return null
-  return value < 10 ? value.toFixed(1) : String(Math.round(value))
-}
 
 function share(used: number, total: number): number | null {
   return total > 0 ? (used / total) * 100 : null
@@ -78,9 +72,7 @@ export default function Overview() {
   return (
     <div className="page-stack">
       <PageHeader title="Overview" description={description || undefined} />
-      {host.error && (
-        <Alert tone="warning" title="Showing the last data we had. Couldn't reach the server." />
-      )}
+      {host.error && <Alert tone="warning" title="Showing the last data we had. Couldn't reach the server." />}
       <CaptureAlerts capture={h.capture} />
 
       {starting ? (
@@ -139,8 +131,16 @@ export default function Overview() {
                 unit="%"
                 yMax={100}
                 series={[
-                  { name: 'CPU', color: 'var(--chart-1)', points: points.map((p) => ({ ts: p.ts, value: p.cpu_pct })) },
-                  { name: 'Memory', color: 'var(--chart-2)', points: points.map((p) => ({ ts: p.ts, value: p.mem_pct })) },
+                  {
+                    name: 'CPU',
+                    color: 'var(--chart-1)',
+                    points: points.map((p) => ({ ts: p.ts, value: p.cpu_pct })),
+                  },
+                  {
+                    name: 'Memory',
+                    color: 'var(--chart-2)',
+                    points: points.map((p) => ({ ts: p.ts, value: p.mem_pct })),
+                  },
                 ]}
               />
             ) : (

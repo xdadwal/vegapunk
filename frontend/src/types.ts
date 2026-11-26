@@ -38,7 +38,12 @@ export type Host = {
 export type HostMetrics = {
   range: string
   resolution_seconds: number
-  points: { ts: string; cpu_pct: number | null; mem_pct: number | null; disk_pct: number | null }[]
+  points: {
+    ts: string
+    cpu_pct: number | null
+    mem_pct: number | null
+    disk_pct: number | null
+  }[]
 }
 
 export type ContainerItem = {
@@ -59,7 +64,15 @@ export type ContainerItem = {
 export type ContainerMetrics = {
   range: string
   resolution_seconds: number
-  points: { ts: string; cpu_pct: number | null; mem_used: number | null; mem_limit: number | null }[]
+  points: {
+    ts: string
+    cpu_pct: number | null
+    mem_used: number | null
+    mem_limit: number | null
+  }[]
 }
 
-export type ContainerDetail = ContainerItem & { metrics: ContainerMetrics }
+export type ContainerDetail = ContainerItem & {
+  now: string
+  metrics: ContainerMetrics
+}

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from vegapunk.api.metrics import Range, series
-from vegapunk.api.queries import container_row_by_name, item, live_container_rows
+from vegapunk.api.queries import container_row_by_name, item, live_container_rows, z
 from vegapunk.auth.admin import Admin
 from vegapunk.auth.routes import Db, require_admin
 
@@ -43,7 +43,9 @@ def container(conn: Db, request: Request, name: str, _: Admin_, range: Range = "
         range_=range,
         raw_interval=settings.capture_interval,
     )
+    now = datetime.now(UTC)
     return {
-        **item(row, now=datetime.now(UTC), interval=settings.capture_interval, removed=removed),
+        **item(row, now=now, interval=settings.capture_interval, removed=removed),
+        "now": z(now),  # the server's clock, for "started 3 h ago" and uptime
         "metrics": {"range": range, "resolution_seconds": resolution, "points": points},
     }
