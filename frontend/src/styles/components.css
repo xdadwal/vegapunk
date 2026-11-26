@@ -272,3 +272,15 @@ a.vp-btn { text-decoration: none; }
   .vp-card-linked { transition-property: border-color; }
   .vp-card-linked:hover { transform: none; }
 }
+
+/* Key/value facts: terms muted at their natural width, values in ink; stacked on phones. */
+.vp-dl { margin: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.vp-dl-row { display: grid; grid-template-columns: minmax(96px, max-content) minmax(0, 1fr); column-gap: var(--space-6); align-items: baseline; }
+.vp-dl dt { font-size: 13px; line-height: 20px; color: var(--ink-muted); min-width: 120px; }
+.vp-dl dd { margin: 0; font-size: 15px; line-height: 22px; color: var(--ink); overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .vp-dl-row { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+}
+
+/* The latest value at the end of a single line. */
+.vp-chart-end { font-size: 12px; line-height: 16px; font-weight: 600; fill: var(--ink); }

@@ -127,23 +127,25 @@ export default function Overview() {
           <section className="page-section" aria-labelledby="chart-h">
             <h2 id="chart-h">CPU and memory, last hour</h2>
             {points ? (
-              <TimeSeriesChart
-                label="CPU and memory, last hour"
-                unit="%"
-                yMax={100}
-                series={[
-                  {
-                    name: 'CPU',
-                    color: 'var(--chart-1)',
-                    points: points.map((p) => ({ ts: p.ts, value: p.cpu_pct })),
-                  },
-                  {
-                    name: 'Memory',
-                    color: 'var(--chart-2)',
-                    points: points.map((p) => ({ ts: p.ts, value: p.mem_pct })),
-                  },
-                ]}
-              />
+              <div className="vp-card">
+                <TimeSeriesChart
+                  label="CPU and memory, last hour"
+                  unit="%"
+                  yMax={100}
+                  series={[
+                    {
+                      name: 'CPU',
+                      color: 'var(--chart-1)',
+                      points: points.map((p) => ({ ts: p.ts, value: p.cpu_pct })),
+                    },
+                    {
+                      name: 'Memory',
+                      color: 'var(--chart-2)',
+                      points: points.map((p) => ({ ts: p.ts, value: p.mem_pct })),
+                    },
+                  ]}
+                />
+              </div>
             ) : (
               <p className="page-note">{metrics.error ? "Couldn't load the chart." : 'Loading…'}</p>
             )}

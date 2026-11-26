@@ -94,6 +94,29 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
     return d
   }
 
+  // A single series gets a faint area under its line (each unbroken run on its own).
+  function areaFor(s: ChartSeries): string {
+    const base = (TOP + plotHeight).toFixed(1)
+    let d = ''
+    let run: number[] = []
+    const close = () => {
+      if (run.length > 1) {
+        const first = xOf(run[0]).toFixed(1)
+        const last = xOf(run[run.length - 1]).toFixed(1)
+        d +=
+          `M${first} ${base}` +
+          run.map((i) => `L${xOf(i).toFixed(1)} ${yOf(s.points[i].value as number).toFixed(1)}`).join('')
+        d += `L${last} ${base}Z`
+      }
+      run = []
+    }
+    s.points.forEach((p, i) => (p.value === null ? close() : run.push(i)))
+    close()
+    return d
+  }
+  const only = multi ? null : series[0]
+  const latestAt = only ? only.points.map((p) => p.value).findLastIndex((v) => v !== null) : -1
+
   function reading(i: number): string {
     const parts = series.map((s) => {
       const v = s.points[i].value
@@ -234,6 +257,7 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
               {fmtAxis(times[i])}
             </text>
           ))}
+          {only && <path d={areaFor(only)} style={{ fill: only.color }} fillOpacity={0.1} stroke="none" />}
           {series.map((s) => (
             <path
               key={s.name}
@@ -245,6 +269,17 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
               strokeLinecap="round"
             />
           ))}
+          {only && latestAt >= 0 && (
+            <text
+              x={Math.min(xOf(latestAt), LEFT + plotWidth)}
+              y={Math.max(TOP + 10, yOf(only.points[latestAt].value as number) - 8)}
+              className="vp-chart-end"
+              textAnchor="end"
+              aria-hidden="true"
+            >
+              {fmtValue(only.points[latestAt].value as number)}
+            </text>
+          )}
           {index !== null && (
             <g>
               <line x1={xOf(index)} x2={xOf(index)} y1={TOP} y2={TOP + plotHeight} className="vp-chart-cross" />
