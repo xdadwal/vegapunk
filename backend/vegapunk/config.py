@@ -18,6 +18,11 @@ class Settings:
     def db_path(self) -> Path:
         return self.data_dir / "vegapunk.db"
 
+    @property
+    def conversations_path(self) -> Path:
+        """The agent's conversations, kept by logpose in its own database file."""
+        return self.data_dir / "conversations.db"
+
 
 def _interval(env: Mapping[str, str]) -> int:
     raw = env.get("VEGAPUNK_CAPTURE_INTERVAL", "15").strip()
