@@ -27,3 +27,18 @@ def conn(settings: Settings, client: TestClient) -> Iterator[sqlite3.Connection]
     migrate(c)
     yield c
     c.close()
+
+
+CREDENTIALS = {"username": "admin", "password": "correct horse"}
+
+
+@pytest.fixture
+def signed_in(client: TestClient) -> TestClient:
+    assert client.post("/api/setup/admin", json=CREDENTIALS).status_code == 201
+    return client
+
+
+@pytest.fixture
+def admin_client(signed_in: TestClient) -> TestClient:
+    signed_in.cookies.clear()
+    return signed_in
