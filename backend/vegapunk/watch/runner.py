@@ -65,7 +65,6 @@ class _Seen:
     signals: list[Signal]
     open_rule_keys: set[str]
     provider: _Provider
-    check: findings.CheckState
 
 
 def _provider(conn: sqlite3.Connection, crypto_key: bytes) -> _Provider:
@@ -108,7 +107,11 @@ class Runner:
         self._task: asyncio.Task | None = None
         self._check_task: asyncio.Task | None = None
         self._first_tick: datetime | None = None
-        self._last_fired: dict[str, datetime] = {}
+        self._known: set[str] = set()  # keys seen firing, or with an open finding
+        # When a tick first saw a known key not firing; gone again once it fires. Absence is
+        # measured from ticks that saw it, so a long batch of investigations (no ticks for
+        # a while) never counts as absence.
+        self._absent_since: dict[str, datetime] = {}
         self._cleared_at: dict[str, datetime] = {}
         self._watch_error: str | None = None
         self._unsupported_for: str | None = None  # the provider settings' updated_at
@@ -156,12 +159,10 @@ class Runner:
     def _see(self, conn: sqlite3.Connection, now: datetime) -> _Seen:
         signals = rules.evaluate(conn, now, self._settings.capture_interval)
         open_rule = {k for k in findings.open_keys(conn) if not k.startswith(SCHEDULED)}
-        check = findings.load_check_state(conn)
-        if check.last_run_at is None:
+        if findings.load_check_state(conn).last_run_at is None:
             # A fresh install: wait for the next check hour, so nothing runs before data.
             findings.set_check_last_run(conn, now)
-            check = replace(check, last_run_at=now)
-        return _Seen(signals, open_rule, _provider(conn, self._crypto_key), check)
+        return _Seen(signals, open_rule, _provider(conn, self._crypto_key))
 
     async def tick(self) -> None:
         now = self._clock()
@@ -169,39 +170,59 @@ class Runner:
         first = self._first_tick is None
         if first:
             self._first_tick = now
-        self._note_firing(seen, now, first)
-        cleared = [
-            k for k in seen.open_rule_keys if now - self._last_fired.get(k, now) >= CLEAR_AFTER
-        ]
-        if cleared:
-            await self._db(lambda c: [findings.resolve(c, k, now) for k in cleared])
+        cleared = self._note_firing(seen, now, first)
+        to_resolve = [k for k in cleared if k in seen.open_rule_keys]
+        if to_resolve:
+            await self._db(lambda c: [findings.resolve(c, k, now) for k in to_resolve])
 
         config = self._usable(seen.provider)
         if config is None or self._lock.locked():
             return
         async with self._lock:
+            ran = False
             for signal in seen.signals:
                 if signal.key in seen.open_rule_keys:
                     continue
-                if not await self._db(lambda c, s=signal: self._due(c, s.key, self._clock())):
+                fresh = await self._db(lambda c, s=signal, r=ran: self._still_due(c, s, r))
+                if fresh is None:
                     continue
-                if not await self._run(config, signal):
+                ran = True
+                if not await self._run(config, fresh):
                     return  # the provider cannot be used: stop until it changes
-            if self._check_due(seen.check, self._clock()):
+            # Read again under the lock: a "run now" may have finished since the tick began.
+            check = await self._db(findings.load_check_state)
+            if self._check_due(check, self._clock()):
                 await self._run(config, None)
 
-    def _note_firing(self, seen: _Seen, now: datetime, first: bool) -> None:
+    def _still_due(self, conn: sqlite3.Connection, signal: Signal, recheck: bool) -> Signal | None:
+        """The signal to investigate now, or None. After an earlier run in the same tick
+        (which can take minutes), the rules are evaluated again so a signal that has gone
+        away never spends a call."""
+        now = self._clock()
+        if recheck:
+            current = rules.evaluate(conn, now, self._settings.capture_interval)
+            signal = next((s for s in current if s.key == signal.key), None)
+            if signal is None:
+                return None
+        return signal if self._due(conn, signal.key, now) else None
+
+    def _note_firing(self, seen: _Seen, now: datetime, first: bool) -> list[str]:
+        """Update what is firing; return the keys whose absence has lasted CLEAR_AFTER."""
         fired = {s.key for s in seen.signals}
         for key in fired:
-            if not first and key not in self._last_fired:
+            if not first and key not in self._known:
                 self._cleared_at[key] = now  # it was not firing before: it returns now
-            self._last_fired[key] = now
-        for key in seen.open_rule_keys:
-            # After a restart, an open finding's signal counts from now.
-            self._last_fired.setdefault(key, now)
-        for key, at in self._last_fired.items():
-            if key not in fired and now - at >= CLEAR_AFTER:
+            self._known.add(key)
+            self._absent_since.pop(key, None)
+        # After a restart, an open finding's absence is counted from the ticks of this process.
+        self._known |= seen.open_rule_keys
+        cleared = []
+        for key in self._known - fired:
+            since = self._absent_since.setdefault(key, now)
+            if now - since >= CLEAR_AFTER:
                 self._cleared_at[key] = now
+                cleared.append(key)
+        return cleared
 
     def _usable(self, provider: _Provider) -> AiConfig | None:
         """The provider config, or None with `_skipped` saying why."""
@@ -250,6 +271,8 @@ class Runner:
         def begin(conn):
             if focus is None:
                 findings.set_check_last_run(conn, now)
+                # Until it finishes: a stop or crash mid-run must not look like a success.
+                findings.set_check_error(conn, findings.INTERRUPTED)
             run_id = findings.begin_investigation(
                 conn, key, trigger, now, focus.marker if focus else None
             )

@@ -8,6 +8,7 @@ same database (a restart) keeps them.
 import asyncio
 import json
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -20,6 +21,7 @@ from vegapunk.ai import store
 from vegapunk.app import create_app as create_vegapunk
 from vegapunk.config import Settings
 from vegapunk.db import connect
+from vegapunk.watch import findings as findings_module
 from vegapunk.watch import rules
 from vegapunk.watch.findings import (
     EvidenceLine,
@@ -389,7 +391,7 @@ def test_open_findings_are_passed_to_the_investigation(world, signals):
 
 
 # ---- resolution
-def test_a_signal_that_stops_for_30_minutes_resolves_its_finding(world, signals):
+def test_a_signal_absent_for_30_minutes_of_ticks_resolves_its_finding(world, signals):
     clock, inv = Clock(), Investigator([draft()])
     signals.now = [RESTART]
 
@@ -397,15 +399,65 @@ def test_a_signal_that_stops_for_30_minutes_resolves_its_finding(world, signals)
         r = runner(world, inv, clock)
         await r.tick()
         signals.now = []
+        clock.advance(seconds=15)
+        await r.tick()  # the first tick that sees it gone
         clock.advance(minutes=10)
         await r.tick()
         assert len(open_findings(world)) == 1  # 10 minutes is not enough
-        clock.advance(minutes=20)
+        clock.advance(minutes=19, seconds=45)
+        await r.tick()
+        assert len(open_findings(world)) == 1  # 29 min 45 s of observed absence
+        clock.advance(seconds=15)
         await r.tick()
 
     run(go())
     assert open_findings(world) == []
     assert rows(world, "SELECT status FROM findings") == [{"status": "resolved"}]
+
+
+def test_a_long_batch_of_investigations_does_not_count_as_absence(world, signals):
+    """Ticks stop while a batch runs; a signal still firing when the batch began must not
+    be resolved just because the next tick comes 50 minutes later."""
+    clock = Clock()
+    signals.now = [RESTART]
+    inv = Investigator([draft()])
+
+    async def go():
+        r = runner(world, inv, clock)
+        await r.tick()  # restart_loop:web now has an open finding
+        signals.now = [RESTART, DB_MEM]
+        clock.advance(seconds=15)
+
+        async def slow(config, focus, open_findings, subjects):
+            clock.advance(minutes=50)  # one long investigation
+            return []
+
+        r._investigator = slow
+        await r.tick()  # web still fires; the db run takes 50 min
+        signals.now = []
+        clock.advance(seconds=15)
+        await r.tick()  # 50 min since web last fired, but the first tick that sees it gone
+        assert len(open_findings(world)) == 1
+        clock.advance(minutes=30)
+        await r.tick()
+
+    run(go())
+    assert open_findings(world) == []
+
+
+def test_a_signal_gone_after_an_earlier_run_in_the_tick_is_skipped(world, signals):
+    clock = Clock()
+    signals.now = [RESTART, DB_MEM]
+    calls = []
+
+    async def first_run_clears_db(config, focus, open_findings, subjects):
+        calls.append(focus.key)
+        signals.now = [RESTART]  # the db's memory came down while web was looked at
+        return []
+
+    run(runner(world, first_run_clears_db, clock).tick())
+    assert calls == ["restart_loop:web"]
+    assert outcomes(world) == [("restart_loop:web", "watch", "nothing")]
 
 
 def test_a_signal_that_keeps_firing_keeps_its_finding_open(world, signals):
@@ -466,6 +518,8 @@ def test_a_reviewed_findings_key_stays_quiet_until_the_cooldown_ends(world, sign
             await r.tick()
         assert len(inv.calls) == 1
         signals.now = []  # it clears once ...
+        clock.advance(minutes=1)
+        await r.tick()
         clock.advance(minutes=30)
         await r.tick()
         signals.now = [RESTART]  # ... and returns
@@ -575,6 +629,59 @@ def test_last_run_at_is_written_when_the_check_starts(world, signals):
 
     run(go())
     assert datetime.fromisoformat(seen["at"]) == T0
+
+
+def test_an_interrupted_daily_check_leaves_an_error(world, signals):
+    set_check(world, enabled=True, last_run_at=T0 - timedelta(hours=30))
+    clock, inv = Clock(), Investigator([])
+    inv.gate = asyncio.Event()
+
+    async def go():
+        r = Runner(world, FakeDocker(), CRYPTO_KEY, T0, clock=clock, investigator=inv, start=True)
+        r.start()
+        while not inv.calls:
+            await asyncio.sleep(0.01)
+        await r.stop()
+        return await r.status()
+
+    status = run(go())
+    assert check_row(world)["last_error"] == "The check was interrupted."
+    assert status["last_error"] == "The check was interrupted."
+
+
+def test_a_check_run_now_during_a_tick_is_not_run_again_by_that_tick(world, signals, monkeypatch):
+    clock, inv = Clock(), Investigator([draft()], [])
+    signals.now = [RESTART]
+    run(runner(world, inv, clock).tick())  # an open finding to resolve later
+    entered, release = threading.Event(), threading.Event()
+    real = findings_module.resolve
+
+    def slow_resolve(conn, key, now):
+        entered.set()
+        release.wait(5)
+        real(conn, key, now)
+
+    monkeypatch.setattr(findings_module, "resolve", slow_resolve)
+
+    async def go():
+        r = runner(world, inv, clock)
+        signals.now = []
+        await r.tick()  # absence starts
+        set_check(world, enabled=True, last_run_at=T0 - timedelta(hours=30))  # now due
+        clock.advance(minutes=30)
+        task = asyncio.create_task(r.tick())  # resolves, so it waits in its first hops
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        assert await r.run_check_now() is True
+        while (await r.status())["running"]:
+            await asyncio.sleep(0.01)
+        release.set()
+        await task
+
+    run(go())
+    assert [o for o in outcomes(world) if o[0] == "scheduled:check"] == [
+        ("scheduled:check", "scheduled", "nothing")
+    ]
 
 
 def test_a_failed_daily_check_stores_its_error_until_the_next_success(world, signals):
