@@ -6,8 +6,10 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "argon2-cffi>=25.1.0",
+    "cryptography>=50.0.2",
     "docker>=7.2.0",
     "fastapi",
+    "logpose",
     "psutil>=7.2.2",
     "uvicorn[standard]",
 ]
@@ -31,3 +33,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.uv.sources]
+logpose = { git = "https://github.com/xdadwal/logpose.git", rev = "v0.2.0" }

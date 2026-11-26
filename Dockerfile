@@ -6,15 +6,23 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Run the server.
-FROM python:3.12-slim
+# Install the backend's dependencies. This stage has git because one dependency (logpose)
+# is installed from a git tag; the final image does not need it.
+FROM python:3.12-slim AS backend
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
-
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY backend/vegapunk ./vegapunk
 RUN uv sync --locked --no-dev
+
+# Run the server.
+FROM python:3.12-slim
+WORKDIR /app
+COPY --from=backend /app /app
 COPY --from=frontend /build/dist /app/static
 
 RUN useradd --system --uid 10001 vegapunk \

@@ -5,15 +5,21 @@ from vegapunk.host.docker import DockerError, DockerHost
 
 
 class FakeContainer:
-    def __init__(self, calls, attrs=None, stats=None, missing=False):
+    def __init__(self, calls, attrs=None, stats=None, missing=False, logs=b""):
         self.attrs = attrs or {}
-        self._calls, self._stats, self._missing = calls, stats or {}, missing
+        self._calls, self._stats, self._missing, self._logs = calls, stats or {}, missing, logs
 
     def stats(self, **kwargs):
         self._calls.append(("stats", kwargs))
         if self._missing:
             raise docker.errors.NotFound("gone")
         return self._stats
+
+    def logs(self, **kwargs):
+        self._calls.append(("logs", kwargs))
+        if self._missing:
+            raise docker.errors.NotFound("gone")
+        return self._logs
 
 
 class FakeContainers:
@@ -52,7 +58,14 @@ class FakeClient:
 
 def test_public_surface_is_exactly_the_read_methods():
     public = {n for n in dir(DockerHost) if not n.startswith("_")}
-    assert public == {"ping", "info", "version", "list_containers", "container_stats"}
+    assert public == {
+        "ping",
+        "info",
+        "version",
+        "list_containers",
+        "container_stats",
+        "container_logs",
+    }
 
 
 def test_only_read_endpoints_are_ever_called():
@@ -63,7 +76,16 @@ def test_only_read_endpoints_are_ever_called():
     assert host.version() == "29.0"
     host.list_containers()
     host.container_stats("a")
-    assert {name for name, _ in client.calls} <= {"ping", "info", "version", "list", "get", "stats"}
+    host.container_logs("a", 5)
+    assert {name for name, _ in client.calls} <= {
+        "ping",
+        "info",
+        "version",
+        "list",
+        "get",
+        "stats",
+        "logs",
+    }
 
 
 def test_list_containers_asks_for_all_states_and_ignores_removed_ones():
@@ -159,3 +181,40 @@ def test_wrapped_permission_error_mentions_docker_gid():
 def test_unknown_failure_keeps_its_text():
     with pytest.raises(DockerError, match="something odd"):
         DockerHost("unix:///x", client=Broken(RuntimeError("something odd"))).version()
+
+
+def _logs_host(logs=b"", missing=False):
+    client = FakeClient()
+    container = FakeContainer(client.calls, {"Id": "a"}, logs=logs, missing=missing)
+    client.containers._items.append(container)
+    return DockerHost("unix:///x", client=client), client
+
+
+def test_container_logs_asks_for_timestamps_both_streams_and_the_tail():
+    host, client = _logs_host(b"x\n")
+    host.container_logs("a", 50)
+    assert (
+        "logs",
+        {"tail": 50, "timestamps": True, "stdout": True, "stderr": True},
+    ) in client.calls
+
+
+def test_container_logs_splits_decodes_and_survives_bad_bytes():
+    host, _ = _logs_host(b"first\r\nb\xff\nlast\n")
+    assert host.container_logs("a", 10) == ["first", "b\ufffd", "last"]
+
+
+def test_container_logs_with_no_output_is_an_empty_list():
+    host, _ = _logs_host(b"")
+    assert host.container_logs("a", 10) == []
+
+
+def test_container_logs_of_a_vanished_container_is_none():
+    assert DockerHost("unix:///x", client=FakeClient()).container_logs("nope", 10) is None
+    host, _ = _logs_host(missing=True)
+    assert host.container_logs("a", 10) is None
+
+
+def test_container_logs_failure_is_a_docker_error():
+    with pytest.raises(DockerError):
+        DockerHost("unix:///x", client=Broken(RuntimeError("boom"))).container_logs("a", 10)
