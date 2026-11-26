@@ -26,6 +26,7 @@ class FakeOpenAI:
     - {"text": ["chunk", ...], "chunk_delay": seconds}
     - {"tool_calls": [{"id": "call_1", "name": "list_containers", "arguments": {...}}]}
     - {"status": 500}            an HTTP error
+    - {"status": 400, "message": "..."}  an HTTP error with that error message
     - {"hang": True}             never answers
     """
 
@@ -76,7 +77,8 @@ def create_app(fake: FakeOpenAI) -> FastAPI:
             await asyncio.sleep(3600)
         if "status" in turn:
             return JSONResponse(
-                {"error": {"message": "scripted failure"}}, status_code=turn["status"]
+                {"error": {"message": turn.get("message", "scripted failure")}},
+                status_code=turn["status"],
             )
 
         base = {

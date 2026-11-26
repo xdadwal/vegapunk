@@ -36,3 +36,19 @@ def test_the_fake_serves_models_and_streams_scripted_turns():
         None,
         "Bearer nope",
     ]
+
+
+def test_a_scripted_failure_can_carry_its_own_error_message():
+    fake = FakeOpenAI(
+        script=[
+            {"status": 400, "message": "response_format json_schema is not supported"},
+            {"status": 500},
+        ]
+    )
+    with serve(create_app(fake)) as url:
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        first = httpx.post(f"{url}/v1/chat/completions", json=body)
+        second = httpx.post(f"{url}/v1/chat/completions", json=body)
+    assert first.status_code == 400
+    assert first.json()["error"]["message"] == "response_format json_schema is not supported"
+    assert second.json()["error"]["message"] == "scripted failure"

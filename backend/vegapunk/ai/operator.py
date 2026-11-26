@@ -13,6 +13,7 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from logpose import (
@@ -26,6 +27,7 @@ from logpose import (
     SessionBusyError,
     TextDelta,
     ToolCall,
+    ToolDef,
     ToolResult,
 )
 
@@ -33,6 +35,7 @@ from vegapunk.ai import store
 from vegapunk.ai.gate import make_gate
 from vegapunk.ai.prompt import build_system_prompt
 from vegapunk.ai.redact import scrub_secret
+from vegapunk.ai.store import AiConfig
 from vegapunk.ai.tools import MAX_LOG_LINES, TOOL_NAMES, build_tools
 from vegapunk.config import Settings
 from vegapunk.db import connect
@@ -56,6 +59,47 @@ _RANGE_PHRASE = {
     "7d": "last 7 days",
     "30d": "last 30 days",
 }
+
+
+def default_make_agent(**kwargs) -> Agent:
+    return Agent("openai-compat", **kwargs)
+
+
+def build_agent(
+    make_agent: Callable[..., Agent],
+    *,
+    config: AiConfig,
+    system: str,
+    tools: list[ToolDef],
+    on_tool_call: Callable[[Any], str | None],
+    max_iterations: int,
+    max_tokens: int,
+    run_timeout: float,
+    db_path: Path | str,
+    session_ttl: timedelta | None,
+) -> Agent:
+    """An agent for the saved provider, with tracing off and every limit stated.
+
+    Shared by chat and by checks, so both reach the provider the same way. `session_ttl`
+    None leaves it out (a check keeps no session).
+    """
+    kwargs: dict[str, Any] = {
+        "model": config.model,
+        "base_url": config.base_url,
+        # "" and not None: an ambient LOGPOSE_API_KEY must never be sent.
+        "api_key": config.api_key or "",
+        "system": system,
+        "tools": tools,
+        "on_tool_call": on_tool_call,
+        "max_iterations": max_iterations,
+        "max_tokens": max_tokens,
+        "run_timeout": run_timeout,
+        "tracing": None,
+        "db_path": str(db_path),
+    }
+    if session_ttl is not None:
+        kwargs["session_ttl"] = session_ttl
+    return make_agent(**kwargs)
 
 
 class OperatorOff(Exception):
@@ -167,7 +211,7 @@ class Operator:
         self._docker = docker
         self._crypto_key = crypto_key
         self._started_at = started_at
-        self._make_agent = make_agent or (lambda **kwargs: Agent("openai-compat", **kwargs))
+        self._make_agent = make_agent or default_make_agent
         self._lock = asyncio.Lock()
 
     # ---- database access from async code
@@ -216,11 +260,9 @@ class Operator:
             agent: Agent | None = None
             try:
                 host = await self._db(self._host_facts)
-                agent = self._make_agent(
-                    model=config.model,
-                    base_url=config.base_url,
-                    # "" and not None: an ambient LOGPOSE_API_KEY must never be sent.
-                    api_key=config.api_key or "",
+                agent = build_agent(
+                    self._make_agent,
+                    config=config,
                     system=build_system_prompt(host, config.instructions),
                     tools=build_tools(
                         self._settings.db_path,
@@ -232,8 +274,7 @@ class Operator:
                     max_iterations=MAX_ITERATIONS,
                     max_tokens=MAX_TOKENS,
                     run_timeout=RUN_TIMEOUT,
-                    tracing=None,
-                    db_path=str(self._settings.conversations_path),
+                    db_path=self._settings.conversations_path,
                     session_ttl=SESSION_TTL,
                 )
                 labels: dict[str, str] = {}
