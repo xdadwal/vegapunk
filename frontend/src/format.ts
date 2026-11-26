@@ -89,3 +89,8 @@ export function formatAgo(iso: string, now: Date): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`
   return `${plural(Math.floor(seconds / 86400), 'day')} ago`
 }
+
+/** "2:00 AM UTC", for an hour of the day (0 to 23). */
+export function formatHour(hour: number): string {
+  return formatClock(new Date(Date.UTC(2000, 0, 1, hour)).toISOString())
+}

@@ -107,3 +107,29 @@ export type AiSettings = {
   key_rejected_at: string | null
   key_unreadable: boolean
 }
+
+export type FindingStatus = 'open' | 'resolved' | 'reviewed'
+
+export type FindingItem = {
+  id: string
+  key: string
+  subject: string
+  title: string
+  status: FindingStatus
+  trigger: 'scheduled' | 'watch'
+  first_seen_at: string
+  last_seen_at: string
+  reviewed_at: string | null
+  resolved_at: string | null
+}
+
+export type FindingChecks = {
+  enabled: boolean
+  hour: number
+  last_run_at: string | null
+  last_error: string | null
+  skipped: null | 'off' | 'key_rejected' | 'unsupported'
+  running: boolean
+}
+
+export type FindingList = { items: FindingItem[]; open_count: number; checks: FindingChecks }

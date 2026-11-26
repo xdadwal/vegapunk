@@ -2,6 +2,7 @@ import { render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 
 import App from './App'
+import { findingList } from './test-fixtures'
 import { LocationProbe } from './test-probe'
 
 type Reply = {
@@ -22,6 +23,8 @@ export const ADMIN = {
 
 /** Stub fetch with replies keyed by "METHOD /path" (no /api prefix). Unmocked calls fail loudly. */
 export function stubApi(routes: Record<string, Handler>) {
+  // The side navigation asks for the open count on every signed-in page.
+  routes = { 'GET /findings?status=open': { body: findingList() }, ...routes }
   const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const key = `${init?.method ?? 'GET'} ${input.replace(/^\/api/, '')}`
     const handler = routes[key]

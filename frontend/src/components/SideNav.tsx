@@ -1,4 +1,4 @@
-import { Bot, Boxes, Gauge } from 'lucide-react'
+import { Bot, Boxes, CircleAlert, Gauge } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { NavLink } from 'react-router'
 
@@ -7,7 +7,7 @@ import { Icon } from './Icon'
 import { useShell } from './shell-context'
 
 /** The wordmark, the main areas, and the account menu pinned to the bottom. */
-export function SideNav({ account }: { account: ReactNode }) {
+export function SideNav({ account, openFindings = 0 }: { account: ReactNode; openFindings?: number }) {
   const shell = useShell()
   return (
     <nav className="vp-sidenav" aria-label="Main">
@@ -46,6 +46,17 @@ export function SideNav({ account }: { account: ReactNode }) {
               >
                 <Icon icon={Boxes} />
                 <span className="vp-sidenav-label">Containers</span>
+              </NavLink>
+            </li>
+            <li>
+              <NavLink
+                to="/findings"
+                className={({ isActive }) => cx('vp-sidenav-item', isActive && 'vp-sidenav-item-on')}
+                onClick={() => shell?.close()}
+              >
+                <Icon icon={CircleAlert} />
+                <span className="vp-sidenav-label">Findings</span>
+                {openFindings > 0 && <span className="vp-tab-count">{openFindings}</span>}
               </NavLink>
             </li>
           </ul>

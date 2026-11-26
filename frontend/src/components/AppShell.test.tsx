@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { SOURCE_NEVER, aiSettings, hostPayload, metricsPayload } from '../test-fixtures'
+import { SOURCE_NEVER, aiSettings, findingItem, findingList, hostPayload, metricsPayload } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 
 const STARTING = hostPayload({
@@ -117,5 +117,21 @@ describe('App shell', () => {
     const toggle = await screen.findByRole('button', { name: /admin/ })
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('shows the open findings count in the navigation, and no badge at zero', async () => {
+    signedIn({ 'GET /findings?status=open': { body: findingList([findingItem(), findingItem({ id: 'b' })]) } })
+    const { unmount } = renderApp('/')
+    const nav = await screen.findByRole('navigation', { name: 'Main' })
+    const link = await within(nav).findByRole('link', { name: /Findings/ })
+    expect(await within(link).findByText('2')).toBeVisible()
+    unmount()
+
+    signedIn()
+    renderApp('/')
+    const quiet = within(await screen.findByRole('navigation', { name: 'Main' })).getByRole('link', {
+      name: 'Findings',
+    })
+    expect(quiet.textContent).toBe('Findings')
   })
 })

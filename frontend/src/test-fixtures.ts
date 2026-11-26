@@ -1,4 +1,4 @@
-import type { AiSettings, ContainerDetail, ContainerItem, Host, Source } from './types'
+import type { AiSettings, ContainerDetail, ContainerItem, FindingItem, FindingList, Host, Source } from './types'
 
 export const GIB = 1024 ** 3
 
@@ -117,3 +117,35 @@ export const CONFIGURED = aiSettings({
   key_saved: true,
   key_hint: '…1234',
 })
+
+export function findingItem(over: Partial<FindingItem> = {}): FindingItem {
+  return {
+    id: 'f1',
+    key: 'restart:web',
+    subject: 'web',
+    title: 'web keeps restarting',
+    status: 'open',
+    trigger: 'watch',
+    first_seen_at: '2026-11-26T15:00:00Z',
+    last_seen_at: '2026-11-26T15:00:00Z',
+    reviewed_at: null,
+    resolved_at: null,
+    ...over,
+  }
+}
+
+export function findingList(items: FindingItem[] = [], over: Partial<FindingList['checks']> = {}): FindingList {
+  return {
+    items,
+    open_count: items.filter((f) => f.status === 'open').length,
+    checks: {
+      enabled: true,
+      hour: 2,
+      last_run_at: null,
+      last_error: null,
+      skipped: null,
+      running: false,
+      ...over,
+    },
+  }
+}
