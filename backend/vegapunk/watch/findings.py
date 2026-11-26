@@ -51,6 +51,30 @@ def upsert_finding(
     now: datetime,
 ) -> int:
     """Update the open finding with this key, or insert one. Returns its id."""
+    with transaction(conn):
+        return _upsert(conn, draft, key=key, trigger=trigger, now=now)
+
+
+def store_findings(
+    conn: sqlite3.Connection,
+    items: list[tuple[str, FindingDraft]],
+    *,
+    trigger: Literal["scheduled", "watch"],
+    now: datetime,
+) -> list[int]:
+    """Upsert several (key, draft) pairs in one transaction: all are stored or none."""
+    with transaction(conn):
+        return [_upsert(conn, d, key=k, trigger=trigger, now=now) for k, d in items]
+
+
+def _upsert(
+    conn: sqlite3.Connection,
+    draft: FindingDraft,
+    *,
+    key: str,
+    trigger: Literal["scheduled", "watch"],
+    now: datetime,
+) -> int:
     stamp = z(now)
     fields = (
         draft.subject,
@@ -58,32 +82,31 @@ def upsert_finding(
         draft.diagnosis[:MAX_DIAGNOSIS],
         draft.suggested_fix[:MAX_FIX],
     )
-    with transaction(conn):
-        row = conn.execute(
-            "SELECT id FROM findings WHERE key = ? AND status = 'open'", (key,)
-        ).fetchone()
-        if row:
-            finding_id = row["id"]
-            conn.execute(
-                "UPDATE findings SET subject = ?, title = ?, diagnosis = ?, suggested_fix = ?, "
-                "trigger = ?, last_seen_at = ? WHERE id = ?",
-                (*fields, trigger, stamp, finding_id),
-            )
-            conn.execute("DELETE FROM finding_evidence WHERE finding_id = ?", (finding_id,))
-        else:
-            finding_id = conn.execute(
-                "INSERT INTO findings (key, subject, title, diagnosis, suggested_fix, status, "
-                "trigger, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)",
-                (key, *fields, trigger, stamp, stamp),
-            ).lastrowid
-        conn.executemany(
-            "INSERT INTO finding_evidence (finding_id, position, source, text, at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [
-                (finding_id, i, e.source, e.text[:MAX_EVIDENCE_TEXT], e.at)
-                for i, e in enumerate(draft.evidence[:MAX_EVIDENCE_LINES])
-            ],
+    row = conn.execute(
+        "SELECT id FROM findings WHERE key = ? AND status = 'open'", (key,)
+    ).fetchone()
+    if row:
+        finding_id = row["id"]
+        conn.execute(
+            "UPDATE findings SET subject = ?, title = ?, diagnosis = ?, suggested_fix = ?, "
+            "trigger = ?, last_seen_at = ? WHERE id = ?",
+            (*fields, trigger, stamp, finding_id),
         )
+        conn.execute("DELETE FROM finding_evidence WHERE finding_id = ?", (finding_id,))
+    else:
+        finding_id = conn.execute(
+            "INSERT INTO findings (key, subject, title, diagnosis, suggested_fix, status, "
+            "trigger, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)",
+            (key, *fields, trigger, stamp, stamp),
+        ).lastrowid
+    conn.executemany(
+        "INSERT INTO finding_evidence (finding_id, position, source, text, at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (finding_id, i, e.source, e.text[:MAX_EVIDENCE_TEXT], e.at)
+            for i, e in enumerate(draft.evidence[:MAX_EVIDENCE_LINES])
+        ],
+    )
     return finding_id
 
 
@@ -198,3 +221,78 @@ def investigation_counts(
     ).fetchone()[0]
     parse = lambda s: None if s is None else datetime.fromisoformat(s)  # noqa: E731
     return parse(last), parse(failed), count
+
+
+INTERRUPTED = "The check was interrupted."
+
+
+def begin_investigation(
+    conn: sqlite3.Connection, key: str, trigger: str, now: datetime, marker: str | None = None
+) -> int:
+    """Record an attempt before the model is called, as failed until `finish_investigation`
+    says otherwise, so a crash or a stop mid-run still counts toward the limits."""
+    with transaction(conn):
+        return conn.execute(
+            "INSERT INTO investigations (key, trigger, started_at, outcome, error, marker) "
+            "VALUES (?, ?, ?, 'failed', ?, ?)",
+            (key, trigger, z(now), INTERRUPTED, marker),
+        ).lastrowid
+
+
+def finish_investigation(
+    conn: sqlite3.Connection,
+    investigation_id: int,
+    outcome: Literal["finding", "nothing", "discarded", "failed"],
+    error: str | None = None,
+) -> None:
+    with transaction(conn):
+        conn.execute(
+            "UPDATE investigations SET outcome = ?, error = ? WHERE id = ?",
+            (outcome, error, investigation_id),
+        )
+
+
+def watch_count(conn: sqlite3.Connection, now: datetime) -> int:
+    """How many watch investigations started in the last 24 hours, across all keys."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM investigations WHERE trigger = 'watch' AND started_at > ?",
+        (z(now - timedelta(hours=24)),),
+    ).fetchone()[0]
+
+
+def last_reviewed_at(conn: sqlite3.Connection, key: str) -> datetime | None:
+    value = conn.execute(
+        "SELECT MAX(reviewed_at) FROM findings WHERE key = ? AND status = 'reviewed'", (key,)
+    ).fetchone()[0]
+    return None if value is None else datetime.fromisoformat(value)
+
+
+@dataclass(frozen=True)
+class CheckState:
+    enabled: bool
+    hour: int
+    last_run_at: datetime | None
+    last_error: str | None
+
+
+def load_check_state(conn: sqlite3.Connection) -> CheckState:
+    row = conn.execute(
+        "SELECT enabled, hour, last_run_at, last_error FROM check_settings WHERE id = 1"
+    ).fetchone()
+    last = row["last_run_at"]
+    return CheckState(
+        enabled=bool(row["enabled"]),
+        hour=row["hour"],
+        last_run_at=datetime.fromisoformat(last) if last else None,
+        last_error=row["last_error"],
+    )
+
+
+def set_check_last_run(conn: sqlite3.Connection, now: datetime) -> None:
+    with transaction(conn):
+        conn.execute("UPDATE check_settings SET last_run_at = ? WHERE id = 1", (z(now),))
+
+
+def set_check_error(conn: sqlite3.Connection, error: str | None) -> None:
+    with transaction(conn):
+        conn.execute("UPDATE check_settings SET last_error = ? WHERE id = 1", (error,))

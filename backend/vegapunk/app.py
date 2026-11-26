@@ -19,6 +19,7 @@ from vegapunk.config import Settings
 from vegapunk.crypto import load_or_create_key
 from vegapunk.db import connect, migrate, prepare_data_dir
 from vegapunk.host.docker import DockerHost
+from vegapunk.watch.runner import Runner
 
 
 def _default_provider(**kwargs):
@@ -39,9 +40,10 @@ def create_app(
         app.state.started_at = datetime.now(UTC)
         prepare_data_dir(settings)
         app.state.crypto_key = load_or_create_key(settings.data_dir)
+        host = docker or DockerHost(settings.docker_url)
         app.state.operator = Operator(
             settings,
-            docker or DockerHost(settings.docker_url),
+            host,
             app.state.crypto_key,
             app.state.started_at,
             make_agent,
@@ -52,6 +54,7 @@ def create_app(
         finally:
             conn.close()
         scheduler = None
+        app.state.runner = None
         if settings.capture:
             scheduler = Scheduler(
                 settings.db_path,
@@ -59,9 +62,15 @@ def create_app(
                 settings.capture_interval,
             )
             scheduler.start()
+            app.state.runner = Runner(
+                settings, host, app.state.crypto_key, app.state.started_at, make_agent
+            )
+            app.state.runner.start()
         try:
             yield
         finally:
+            if app.state.runner is not None:
+                await app.state.runner.stop()
             if scheduler is not None:
                 scheduler.stop()
 
