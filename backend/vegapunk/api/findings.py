@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, StrictBool, StrictInt
 
 from vegapunk.api.queries import z
@@ -27,7 +28,7 @@ class ChecksIn(BaseModel):
 
 
 def _finding_id(raw: str) -> int:
-    if not raw.isascii() or not raw.isdigit() or not 0 < int(raw) <= MAX_ID:
+    if len(raw) > 19 or not raw.isascii() or not raw.isdigit() or not 0 < int(raw) <= MAX_ID:
         raise HTTPException(404, NO_SUCH)
     return int(raw)
 
@@ -65,9 +66,13 @@ async def list_all(
 ) -> dict:
     runner = request.app.state.runner
     runner_status = await runner.status() if runner is not None else None
+    return await run_in_threadpool(_list, conn, status, q, runner_status)
+
+
+def _list(conn, status: str | None, q: str | None, runner_status: dict | None) -> dict:
     rows = findings.list_findings(conn, status=status, query=q)
     return {
-        "items": [{k: r[k] for k in _ITEM_FIELDS[:8]} for r in rows],
+        "items": [{k: r[k] for k in _ITEM_FIELDS} for r in rows],
         "open_count": findings.open_count(conn),
         "checks": _checks(conn, runner_status),
     }
@@ -112,6 +117,10 @@ def review_one(finding_id: str, conn: Db, _: Admin_) -> Response:
 
 @settings_router.get("/checks")
 def get_checks(conn: Db, _: Admin_) -> dict:
+    return _check_settings(conn)
+
+
+def _check_settings(conn) -> dict:
     s = findings.load_check_settings(conn)
     return {"enabled": s.enabled, "hour": s.hour}
 
@@ -122,4 +131,4 @@ def put_checks(body: ChecksIn, conn: Db, _: Admin_) -> dict:
         findings.save_check_settings(conn, body.enabled, body.hour)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
-    return get_checks(conn, _)
+    return _check_settings(conn)

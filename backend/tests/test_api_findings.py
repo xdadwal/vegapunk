@@ -207,3 +207,27 @@ def test_responses_never_carry_the_key(api):
     ]
     for t in texts:
         assert KEY not in t and (not hint or hint not in t)
+
+
+def test_list_database_work_is_off_the_event_loop(api, monkeypatch):
+    import threading
+
+    add(api)
+    seen = []
+    real = findings.list_findings
+
+    def spy(*a, **kw):
+        seen.append(threading.current_thread())
+        return real(*a, **kw)
+
+    monkeypatch.setattr(findings, "list_findings", spy)
+    assert api.get("/api/findings").status_code == 200
+    assert seen and seen[0] is not threading.main_thread()
+    # the TestClient portal runs the loop in its own thread: the work must not be on it either
+    assert all(t.name != "anyio-portal" and "portal" not in t.name.lower() for t in seen)
+
+
+def test_huge_id_is_404(api):
+    huge = "9" * 5000
+    assert api.get(f"/api/findings/{huge}").status_code == 404
+    assert api.post(f"/api/findings/{huge}/review").status_code == 404
