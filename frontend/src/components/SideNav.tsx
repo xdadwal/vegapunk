@@ -56,7 +56,14 @@ export function SideNav({ account, openFindings = 0 }: { account: ReactNode; ope
               >
                 <Icon icon={CircleAlert} />
                 <span className="vp-sidenav-label">Findings</span>
-                {openFindings > 0 && <span className="vp-tab-count">{openFindings}</span>}
+                {openFindings > 0 && (
+                  <>
+                    <span className="vp-tab-count" aria-hidden="true">
+                      {openFindings}
+                    </span>
+                    <span className="vp-sr-only">, {openFindings} open</span>
+                  </>
+                )}
               </NavLink>
             </li>
           </ul>

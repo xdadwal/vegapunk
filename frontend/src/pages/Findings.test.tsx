@@ -178,4 +178,11 @@ describe('Findings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('link', { name: 'web keeps restarting' })).toBeVisible()
   })
+
+  it('shows a malformed timestamp as it came instead of crashing', async () => {
+    show(findingList([findingItem({ first_seen_at: 'not a date' })], { last_run_at: 'also bad' }))
+    renderApp('/findings')
+    expect(await screen.findByText('Found not a date')).toBeVisible()
+    expect(screen.getByText(/last scheduled check also bad/)).toBeVisible()
+  })
 })

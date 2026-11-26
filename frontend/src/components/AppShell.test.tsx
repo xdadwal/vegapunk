@@ -123,7 +123,7 @@ describe('App shell', () => {
     signedIn({ 'GET /findings?status=open': { body: findingList([findingItem(), findingItem({ id: 'b' })]) } })
     const { unmount } = renderApp('/')
     const nav = await screen.findByRole('navigation', { name: 'Main' })
-    const link = await within(nav).findByRole('link', { name: /Findings/ })
+    const link = await within(nav).findByRole('link', { name: 'Findings, 2 open' })
     expect(await within(link).findByText('2')).toBeVisible()
     unmount()
 

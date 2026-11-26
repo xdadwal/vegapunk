@@ -14,7 +14,7 @@ import { Pagination } from '../components/Pagination'
 import { Select } from '../components/Select'
 import { Spinner } from '../components/Spinner'
 import { StatusBadge } from '../components/StatusBadge'
-import { formatClock, formatHour } from '../format'
+import { formatClockSafe, formatHour } from '../format'
 import type { FindingItem, FindingList, FindingStatus, Status } from '../types'
 import { usePolling } from '../usePolling'
 import './overview.css'
@@ -45,7 +45,7 @@ function FindingRow({ finding }: { finding: FindingItem }) {
           </Link>
         </div>
         <div className="vp-service-meta">
-          <span className="vp-mono">{finding.subject}</span> · <span>Found {formatClock(finding.first_seen_at)}</span>
+          <span className="vp-mono">{finding.subject}</span> · <span>Found {formatClockSafe(finding.first_seen_at)}</span>
         </div>
       </div>
       <div className="vp-service-status" role="cell">
@@ -121,7 +121,7 @@ export default function Findings() {
   }
   const settings = <Link to="/settings">Settings</Link>
   const description = checks.last_run_at
-    ? `What the agent noticed in container logs, metrics and storage · last scheduled check ${formatClock(checks.last_run_at)}`
+    ? `What the agent noticed in container logs, metrics and storage · last scheduled check ${formatClockSafe(checks.last_run_at)}`
     : 'What the agent noticed in container logs, metrics and storage'
 
   return (

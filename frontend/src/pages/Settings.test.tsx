@@ -56,7 +56,8 @@ describe('Settings', () => {
     })
     await screen.findByText('Your AI provider rejected the API key')
     await userEvent.type(screen.getByLabelText('API key'), 'sk-new-key-123456')
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const provider = screen.getByRole('heading', { level: 2, name: 'AI provider' }).closest('section') as HTMLElement
+    await userEvent.click(within(provider).getByRole('button', { name: 'Save' }))
     await vi.waitFor(() => expect(screen.queryByText('Your AI provider rejected the API key')).not.toBeInTheDocument())
   })
 
@@ -119,5 +120,55 @@ describe('Settings', () => {
     const menu = within(screen.getByRole('list', { name: 'Account' }))
     await userEvent.click(menu.getByRole('link', { name: 'Settings' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeVisible()
+  })
+})
+
+describe('Settings checks', () => {
+  const checks = (body: object = { enabled: true, hour: 2 }, extra: Parameters<typeof stubApi>[0] = {}) =>
+    settingsPage(CONFIGURED, { 'GET /settings/checks': { body }, ...extra })
+  const section = async () => {
+    const box = (await screen.findByRole('heading', { level: 2, name: 'Checks' })).closest('section') as HTMLElement
+    await within(box).findByRole('switch')
+    return box
+  }
+
+  it('loads the current values, after the AI provider section', async () => {
+    checks({ enabled: true, hour: 14 })
+    const box = await section()
+    expect(within(box).getByRole('switch', { name: 'Run a check every day' })).toBeChecked()
+    expect(within(box).getByLabelText('Time of day (UTC)')).toHaveValue('14')
+    expect(within(box).getByRole('option', { name: '2:00 AM UTC' })).toBeInTheDocument()
+    expect(within(box).getAllByRole('option')).toHaveLength(24)
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
+    expect(headings.indexOf('Checks')).toBeGreaterThan(headings.indexOf('AI provider'))
+  })
+
+  it('disables the hour while the switch is off', async () => {
+    checks({ enabled: false, hour: 2 })
+    const box = await section()
+    expect(within(box).getByLabelText('Time of day (UTC)')).toBeDisabled()
+    await userEvent.click(within(box).getByRole('switch'))
+    expect(within(box).getByLabelText('Time of day (UTC)')).toBeEnabled()
+  })
+
+  it('saves enabled and hour', async () => {
+    const api = checks({ enabled: true, hour: 2 }, { 'PUT /settings/checks': { body: { enabled: true, hour: 5 } } })
+    const box = await section()
+    await userEvent.selectOptions(within(box).getByLabelText('Time of day (UTC)'), '5')
+    await userEvent.click(within(box).getByRole('button', { name: 'Save' }))
+    expect(await within(box).findByRole('status')).toHaveTextContent('Saved.')
+    expect(api.sent('PUT /settings/checks')).toEqual([{ enabled: true, hour: 5 }])
+  })
+
+  it('shows the server message when saving fails', async () => {
+    checks({ enabled: true, hour: 2 }, { 'PUT /settings/checks': { status: 422, body: { detail: 'Hour out of range.' } } })
+    const box = await section()
+    await userEvent.click(within(box).getByRole('button', { name: 'Save' }))
+    expect(await within(box).findByRole('alert')).toHaveTextContent('Hour out of range.')
+  })
+
+  it('offers a retry when the checks cannot be loaded', async () => {
+    settingsPage(CONFIGURED, { 'GET /settings/checks': { status: 500, body: { detail: 'nope' } } })
+    expect((await screen.findAllByRole('button', { name: 'Retry' })).length).toBeGreaterThan(0)
   })
 })

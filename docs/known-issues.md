@@ -47,6 +47,22 @@ Covered by unit tests. A live run did not wait long enough to see a stale contai
 
 Milestone 3 was verified against a scripted fake OpenAI-compatible server over real HTTP, which exercises logpose's real code path. Real models differ: how well they use the tools, how long answers take, and how a given provider words its errors are unchecked until someone connects one.
 
+### 7. Thresholds are not tunable
+
+The watch rules' thresholds are constants in `backend/vegapunk/watch/rules.py`. There is no setting for them yet.
+
+### 8. Findings have not been tried against a real provider
+
+Findings were verified with a fake OpenAI-compatible server. Docker Model Runner with gemma4 accepts the strict JSON schema, but other real models and providers are unchecked.
+
+### 9. Host findings from the daily check are dropped
+
+A finding about the host has no container log lines to cite as evidence, so the daily check drops it.
+
+### 10. Docker Desktop's storage figure can fire the filling-disk rule
+
+On Docker Desktop the storage figure can read high (see known issue 1), which can raise a filling-storage finding that is not real.
+
 ## Deliberate limits (decided, not bugs)
 
 - **Sign-in pause is server-wide.** Anyone who can reach Vegapunk can pause sign-in for 15 minutes with five wrong tries. Follows the design; acceptable behind a firewall.

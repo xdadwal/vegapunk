@@ -141,3 +141,5 @@ export type FindingDetail = FindingItem & {
   suggested_fix: string
   evidence: EvidenceLine[]
 }
+
+export type CheckSettings = { enabled: boolean; hour: number }

@@ -1,5 +1,7 @@
 import { CircleAlert, Container, Cpu, HardDrive, MemoryStick } from 'lucide-react'
 
+import { Link } from 'react-router'
+
 import { Alert } from '../components/Alert'
 import { Button } from '../components/Button'
 import { EmptyState } from '../components/EmptyState'
@@ -8,13 +10,41 @@ import { Spinner } from '../components/Spinner'
 import { Stat } from '../components/Stat'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { formatAgo, formatBytes, formatUptime, percentValue as percent } from '../format'
-import type { Host, HostMetrics } from '../types'
+import type { FindingList, Host, HostMetrics } from '../types'
 import { usePolling } from '../usePolling'
 import { CaptureAlerts } from './CaptureAlerts'
 import './overview.css'
 
 function share(used: number, total: number): number | null {
   return total > 0 ? (used / total) * 100 : null
+}
+
+const ATTENTION_ROWS = 3
+
+/** Open findings, newest first. Shows nothing when there are none or the list can't be read. */
+function NeedsAttention({ list }: { list: FindingList | undefined }) {
+  if (!list || list.open_count <= 0) return null
+  const n = list.open_count
+  return (
+    <section className="vp-card page-section" aria-labelledby="attention-h">
+      <h2 id="attention-h">Needs attention</h2>
+      <div className="vp-list">
+        {list.items.slice(0, ATTENTION_ROWS).map((f) => (
+          <div key={f.id} className="vp-service vp-service-linked">
+            <div className="vp-service-main">
+              <div className="vp-service-name">
+                <Link className="vp-card-link" to={`/findings/${encodeURIComponent(f.id)}`}>
+                  {f.title}
+                </Link>
+              </div>
+              <div className="vp-service-meta vp-mono">{f.subject}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <Link to="/findings">{n === 1 ? 'See the finding' : `See all ${n} findings`}</Link>
+    </section>
+  )
 }
 
 function attention(count: number): string {
@@ -24,6 +54,7 @@ function attention(count: number): string {
 export default function Overview() {
   const host = usePolling<Host>('/host')
   const metrics = usePolling<HostMetrics>('/host/metrics?range=1h')
+  const findings = usePolling<FindingList>('/findings?status=open')
   const h = host.data
 
   if (host.loading) {
@@ -74,6 +105,7 @@ export default function Overview() {
       <PageHeader title="Overview" description={description || undefined} />
       {host.error && <Alert tone="warning" title="Showing the last data we had. Couldn't reach the server." />}
       <CaptureAlerts capture={h.capture} />
+      <NeedsAttention list={findings.data} />
 
       {starting ? (
         <EmptyState title="Nothing to show yet">Vegapunk is starting its first capture.</EmptyState>
