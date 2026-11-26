@@ -35,13 +35,6 @@ body {
   outline-offset: 2px;
 }
 
-.vp-page-center {
-  min-height: 100vh;
-  min-height: 100dvh;
-  display: flex;
-  justify-content: center;
-  padding: var(--space-6);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .vp-root * {
