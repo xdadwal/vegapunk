@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from vegapunk.auth import admin as admin_store
 from vegapunk.auth import sessions
@@ -47,6 +47,19 @@ def require_admin(conn: Db, token: Annotated[str | None, Depends(session_token)]
     if admin is None or not token or not sessions.session_is_valid(conn, token, _now()):
         raise HTTPException(401, "Not signed in.")
     return admin
+
+
+DisplayName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+
+
+class ProfileIn(BaseModel):
+    username: str | None = Field(default=None, pattern=USERNAME_PATTERN)
+    display_name: DisplayName | None = None
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH)
 
 
 class SignInIn(BaseModel):
@@ -136,3 +149,23 @@ def sign_out(conn: Db, token: Annotated[str | None, Depends(session_token)]) -> 
 @router.get("/me")
 def me(admin: Annotated[Admin, Depends(require_admin)]) -> AdminOut:
     return AdminOut.of(admin)
+
+
+@router.patch("/me")
+def update_me(body: ProfileIn, conn: Db, _: Annotated[Admin, Depends(require_admin)]) -> AdminOut:
+    admin = admin_store.update_admin(conn, username=body.username, display_name=body.display_name)
+    return AdminOut.of(admin)
+
+
+@router.post("/me/password", status_code=204)
+def change_password(
+    body: PasswordIn,
+    conn: Db,
+    admin: Annotated[Admin, Depends(require_admin)],
+    token: Annotated[str | None, Depends(session_token)],
+) -> Response:
+    if not verify_password(body.current_password, admin.password_hash):
+        raise HTTPException(400, "Your current password doesn't match.")
+    admin_store.set_password(conn, body.new_password)
+    sessions.delete_all_sessions(conn, except_token=token)
+    return Response(status_code=204)

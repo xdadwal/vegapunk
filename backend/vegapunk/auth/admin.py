@@ -48,3 +48,19 @@ def create_admin(
     admin = get_admin(conn)
     assert admin is not None
     return admin
+
+
+def update_admin(
+    conn: sqlite3.Connection, *, username: str | None = None, display_name: str | None = None
+) -> Admin:
+    if username is not None:
+        conn.execute("UPDATE admin SET username = ? WHERE id = 1", (username,))
+    if display_name is not None:
+        conn.execute("UPDATE admin SET display_name = ? WHERE id = 1", (display_name,))
+    admin = get_admin(conn)
+    assert admin is not None
+    return admin
+
+
+def set_password(conn: sqlite3.Connection, password: str) -> None:
+    conn.execute("UPDATE admin SET password_hash = ? WHERE id = 1", (hash_password(password),))
