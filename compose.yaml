@@ -13,6 +13,10 @@ services:
     # per host: DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d
     group_add:
       - "${DOCKER_GID:-0}"
+    # So the agent can reach a model server running on this host, such as Ollama, at
+    # http://host.docker.internal:11434/v1 (Docker Desktop provides the name itself).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

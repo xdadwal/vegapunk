@@ -43,6 +43,10 @@ Covered by unit tests. A live run did not wait long enough to see a stale contai
 
 `httpx` is deprecated for Starlette's test client, which prints a warning in every backend test run. Switching to `httpx2` was attempted and blocked by the permission system.
 
+### 6. The agent has not been tried against a real AI provider
+
+Milestone 3 was verified against a scripted fake OpenAI-compatible server over real HTTP, which exercises logpose's real code path. Real models differ: how well they use the tools, how long answers take, and how a given provider words its errors are unchecked until someone connects one.
+
 ## Deliberate limits (decided, not bugs)
 
 - **Sign-in pause is server-wide.** Anyone who can reach Vegapunk can pause sign-in for 15 minutes with five wrong tries. Follows the design; acceptable behind a firewall.
@@ -51,3 +55,9 @@ Covered by unit tests. A live run did not wait long enough to see a stale contai
 - **Container CPU is a share of the whole host**, so it reads about a tenth of `docker stats` on a 10-core machine. Plan decision D1.
 - **Times are UTC** until a time zone setting exists.
 - **Dark theme only.**
+- **A stopped or failed answer leaves its question in History without an answer.** The next message sends two questions in a row, which providers accept.
+- **No per-message times in the chat.** logpose messages carry no timestamps; History shows when each conversation last changed.
+- **Redaction of secrets is best effort.** It catches common shapes of secret, not every possible one.
+- **The API key's encryption key sits beside the database.** It protects a copied database, not someone who can read the whole data folder.
+- **One answer at a time**, server-wide, with at most 8 model turns and 12 lookups each.
+- **Long conversations rely on logpose's own context handling,** which summarises when a provider rejects an over-long request.
