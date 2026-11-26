@@ -3,7 +3,7 @@ import pytest
 from vegapunk.config import Settings
 from vegapunk.db import DataDirError, SchemaTooNew, connect, migrate, prepare_data_dir
 
-LATEST = 3
+LATEST = 4
 
 
 def test_migrate_creates_tables_and_is_repeatable(tmp_path):
