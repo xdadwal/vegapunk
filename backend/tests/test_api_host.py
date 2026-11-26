@@ -8,6 +8,16 @@ def test_host_requires_sign_in(client):
     assert client.get("/api/host/metrics").status_code == 401
 
 
+def test_host_carries_the_servers_clock(signed_in):
+    from datetime import datetime
+
+    before = now()
+    stamp = signed_in.get("/api/host").json()["now"]
+    assert stamp.endswith("Z")
+    served = datetime.fromisoformat(stamp)
+    assert before - timedelta(seconds=1) <= served <= now() + timedelta(seconds=1)
+
+
 def test_host_before_any_capture_is_empty_not_an_error(signed_in):
     body = signed_in.get("/api/host").json()
     assert body["latest"] is None and body["hostname"] is None

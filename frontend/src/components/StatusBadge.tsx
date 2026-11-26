@@ -1,4 +1,4 @@
-export type Status = 'online' | 'degraded' | 'offline' | 'unknown'
+import type { Status } from '../types'
 
 const WORDS: Record<Status, string> = {
   online: 'Online',

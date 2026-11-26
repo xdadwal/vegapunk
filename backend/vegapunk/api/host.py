@@ -42,6 +42,8 @@ def host(conn: Db, request: Request, _: Admin_) -> dict:
     ).fetchone()
     statuses = [item(r, now=now, interval=interval)["status"] for r in live_container_rows(conn)]
     return {
+        # The server's clock, so "4s ago" and uptime are right whatever the browser's says.
+        "now": z(now),
         "hostname": facts["hostname"] if facts else None,
         "os": facts["os"] if facts else None,
         "kernel": facts["kernel"] if facts else None,
