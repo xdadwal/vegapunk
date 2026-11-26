@@ -11,6 +11,8 @@ import Overview from './pages/Overview'
 import Profile from './pages/Profile'
 import SignIn from './pages/SignIn'
 import Setup from './pages/Setup'
+import SetupAi from './pages/SetupAi'
+import Settings from './pages/Settings'
 
 function AppRoutes() {
   const { state } = useAuth()
@@ -47,7 +49,11 @@ function AppRoutes() {
             <Route path="/containers" element={<Containers />} />
             <Route path="/containers/:name" element={<ContainerDetail />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/settings" element={<Settings />} />
           </Route>
+          <Route path="/setup/ai" element={<SetupAi />} />
+          {/* Right after the account is created the person is still on /setup: step 2 is next. */}
+          <Route path="/setup" element={<Navigate to="/setup/ai" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       )

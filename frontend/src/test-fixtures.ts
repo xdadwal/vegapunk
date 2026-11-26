@@ -1,4 +1,4 @@
-import type { ContainerDetail, ContainerItem, Host, Source } from './types'
+import type { AiSettings, ContainerDetail, ContainerItem, Host, Source } from './types'
 
 export const GIB = 1024 ** 3
 
@@ -93,3 +93,27 @@ export function detailPayload(over: Partial<ContainerDetail> = {}, range = '1h')
     },
   }
 }
+
+export function aiSettings(over: Partial<AiSettings> = {}): AiSettings {
+  return {
+    configured: false,
+    base_url: 'https://api.openai.com/v1',
+    model: '',
+    instructions: '',
+    key_saved: false,
+    key_hint: null,
+    key_rejected_at: null,
+    key_unreadable: false,
+    ...over,
+  }
+}
+
+/** AI settings as they look once a provider has been saved. */
+export const CONFIGURED = aiSettings({
+  configured: true,
+  base_url: 'https://api.example.com/v1',
+  model: 'gpt-x',
+  instructions: 'The media stack lives on tank.',
+  key_saved: true,
+  key_hint: '…1234',
+})
