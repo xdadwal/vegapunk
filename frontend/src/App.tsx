@@ -7,6 +7,7 @@ import { Spinner } from './components/Spinner'
 import ContainerDetail from './pages/ContainerDetail'
 import Agent from './pages/Agent'
 import Containers from './pages/Containers'
+import History from './pages/History'
 import LoadError from './pages/LoadError'
 import Overview from './pages/Overview'
 import Profile from './pages/Profile'
@@ -48,6 +49,7 @@ function AppRoutes() {
           <Route element={<AppLayout />}>
             <Route path="/" element={<Overview />} />
             <Route path="/agent" element={<Agent />} />
+            <Route path="/agent/history" element={<History />} />
             <Route path="/containers" element={<Containers />} />
             <Route path="/containers/:name" element={<ContainerDetail />} />
             <Route path="/profile" element={<Profile />} />
