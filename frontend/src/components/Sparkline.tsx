@@ -18,7 +18,8 @@ export function Sparkline({ values, label, width = 96, height = 32 }: Props) {
       drawing = false
       return
     }
-    path += `${drawing ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`
+    const at = `${x(i).toFixed(1)} ${y(v).toFixed(1)}`
+    path += drawing ? `L${at}` : `M${at}L${at}`
     drawing = true
   })
 
@@ -35,8 +36,21 @@ export function Sparkline({ values, label, width = 96, height = 32 }: Props) {
       aria-label={label}
       focusable="false"
     >
-      <path d={path} fill="none" className="vp-spark-line" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={x(last)} cy={y(values[last] as number)} r={4} className="vp-spark-dot" style={{ fill: 'var(--chart-1)' }} />
+      <path
+        d={path}
+        fill="none"
+        className="vp-spark-line"
+        strokeWidth={2}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <circle
+        cx={x(last)}
+        cy={y(values[last] as number)}
+        r={4}
+        className="vp-spark-dot"
+        style={{ fill: 'var(--chart-1)' }}
+      />
     </svg>
   )
 }

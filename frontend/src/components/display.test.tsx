@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Gauge } from 'lucide-react'
 
@@ -136,7 +136,16 @@ describe('TimeSeriesChart', () => {
   })
 
   it('shows the empty message when every value is missing', () => {
-    const series = [{ name: 'CPU', color: 'x', points: [{ ts: T(0), value: null }, { ts: T(5), value: null }] }]
+    const series = [
+      {
+        name: 'CPU',
+        color: 'x',
+        points: [
+          { ts: T(0), value: null },
+          { ts: T(5), value: null },
+        ],
+      },
+    ]
     render(<TimeSeriesChart series={series} unit="%" label="CPU" />)
     expect(screen.getByText('No data for this range yet.')).toBeVisible()
   })
@@ -146,5 +155,98 @@ describe('TimeSeriesChart', () => {
     const legend = screen.getByRole('list', { name: 'Legend' })
     expect(within(legend).getByText('CPU')).toBeVisible()
     expect(within(legend).getByText('Memory')).toBeVisible()
+  })
+
+  it('survives a refresh with fewer points while a point is selected', () => {
+    const { rerender } = render(<TimeSeriesChart series={SERIES} unit="%" label="CPU and memory" />)
+    fireEvent.focus(screen.getByRole('img', { name: 'CPU and memory' }))
+    const shorter = SERIES.map((s) => ({ ...s, points: s.points.slice(0, 3) }))
+    expect(() => rerender(<TimeSeriesChart series={shorter} unit="%" label="CPU and memory" />)).not.toThrow()
+    expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe('12:10 PM: CPU no data, Memory 60%')
+    const none = SERIES.map((s) => ({ ...s, points: [] }))
+    expect(() => rerender(<TimeSeriesChart series={none} unit="%" label="CPU and memory" />)).not.toThrow()
+  })
+
+  it('draws a point that has no neighbours', () => {
+    const series = [
+      {
+        name: 'CPU',
+        color: 'x',
+        points: [
+          { ts: T(0), value: null },
+          { ts: T(5), value: 7 },
+          { ts: T(10), value: null },
+        ],
+      },
+    ]
+    const { container } = render(<TimeSeriesChart series={series} unit="%" label="CPU" />)
+    expect(container.querySelector('svg path')?.getAttribute('d')).toMatch(/^M[\d. ]+L[\d. ]+$/)
+  })
+
+  it('labels hourly points with the day and the time, not the day alone', async () => {
+    const series = [
+      {
+        name: 'CPU',
+        color: 'x',
+        points: [
+          { ts: T(0), value: 1 },
+          { ts: T(60), value: 2 },
+        ],
+      },
+    ]
+    render(<TimeSeriesChart series={series} unit="%" label="CPU" dateAxis />)
+    fireEvent.focus(screen.getByRole('img', { name: 'CPU' }))
+    expect(document.querySelector('[aria-live="polite"]')?.textContent).toBe('Jan 1, 1:00 PM: 2.0%')
+    await userEvent.click(screen.getByRole('button', { name: 'Table' }))
+    expect(screen.getByText('Jan 1, 12:00 PM')).toBeVisible()
+    expect(screen.getByText('Jan 1, 1:00 PM')).toBeVisible()
+  })
+})
+
+describe('TimeSeriesChart width', () => {
+  class FakeObserver {
+    static all: FakeObserver[] = []
+    element: Element | null = null
+    disconnected = false
+    callback: () => void
+    constructor(callback: () => void) {
+      this.callback = callback
+      FakeObserver.all.push(this)
+    }
+    observe(element: Element) {
+      this.element = element
+    }
+    disconnect() {
+      this.disconnected = true
+    }
+  }
+  const live = () => FakeObserver.all.filter((o) => !o.disconnected)
+
+  beforeEach(() => {
+    FakeObserver.all = []
+    vi.stubGlobal('ResizeObserver', FakeObserver)
+  })
+
+  it('follows the size of the chart once data arrives after an empty start', () => {
+    const empty = [{ name: 'CPU', color: 'x', points: [] }]
+    const { rerender } = render(<TimeSeriesChart series={empty} unit="%" label="CPU" />)
+    rerender(<TimeSeriesChart series={SERIES} unit="%" label="CPU" />)
+    const plot = document.querySelector('.vp-chart-plot') as HTMLElement
+    expect(live().map((o) => o.element)).toContain(plot)
+    Object.defineProperty(plot, 'clientWidth', { value: 900, configurable: true })
+    act(() =>
+      live()
+        .find((o) => o.element === plot)
+        ?.callback(),
+    )
+    expect(document.querySelector('svg.vp-chart-svg')?.getAttribute('width')).toBe('900')
+  })
+
+  it('keeps following the size after switching to the table and back', async () => {
+    render(<TimeSeriesChart series={SERIES} unit="%" label="CPU" />)
+    await userEvent.click(screen.getByRole('button', { name: 'Table' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Chart' }))
+    const plot = document.querySelector('.vp-chart-plot')
+    expect(live().map((o) => o.element)).toContain(plot)
   })
 })

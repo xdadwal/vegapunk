@@ -165,4 +165,25 @@ describe('Container detail', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('heading', { level: 1, name: 'web' })).toBeVisible()
   })
+
+  it('does not call a removed container running', async () => {
+    detail({
+      'GET /containers/web?range=1h': {
+        body: detailPayload({
+          name: 'web',
+          state: 'running',
+          removed: true,
+          status: 'offline',
+          cpu_pct: null,
+          mem_used: null,
+          mem_limit: null,
+        }),
+      },
+    })
+    renderApp('/containers/web')
+    expect(await screen.findByText('This container was removed from the host.')).toBeVisible()
+    expect(screen.getByText(/^nginx:1 · removed · started /)).toBeVisible()
+    expect(screen.queryByText(/running/)).not.toBeInTheDocument()
+    expect(within(screen.getByText('Uptime').closest('.vp-stat') as HTMLElement).getByText('—')).toBeVisible()
+  })
 })

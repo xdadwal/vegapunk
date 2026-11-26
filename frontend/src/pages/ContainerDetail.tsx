@@ -62,9 +62,13 @@ export default function ContainerDetail() {
   }
 
   const now = data ? new Date(data.now) : null
-  const running = data?.state === 'running'
+  const running = !data?.removed && data?.state === 'running'
   const description = data
-    ? [data.image, data.state, data.started_at && now && `started ${formatAgo(data.started_at, now)}`]
+    ? [
+        data.image,
+        data.removed ? 'removed' : data.state,
+        data.started_at && now && `started ${formatAgo(data.started_at, now)}`,
+      ]
         .filter(Boolean)
         .join(' · ')
     : undefined

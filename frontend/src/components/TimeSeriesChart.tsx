@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
 
-import { formatBytes, formatDay, formatPercent, formatTime } from '../format'
+import { formatBytes, formatDay, formatDayTime, formatPercent, formatTime } from '../format'
 import { Button } from './Button'
 
 type Point = { ts: string; value: number | null }
@@ -31,22 +31,23 @@ function niceMax(max: number): number {
 }
 
 function useWidth() {
-  const ref = useRef<HTMLDivElement>(null)
+  // The element is held in state, so the observer attaches whenever the plot appears: it is
+  // not rendered while there is no data, and may be replaced when switching to the table.
+  const [node, setNode] = useState<HTMLDivElement | null>(null)
   const [width, setWidth] = useState(0)
   useEffect(() => {
-    const el = ref.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => setWidth(el.clientWidth))
-    observer.observe(el)
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => setWidth(node.clientWidth))
+    observer.observe(node)
     return () => observer.disconnect()
-  }, [])
-  return [ref, width || FALLBACK_WIDTH] as const
+  }, [node])
+  return [setNode, width || FALLBACK_WIDTH] as const
 }
 
 /** Lines over time. Readable by keyboard (arrow keys) and as a table. */
 export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateAxis = false }: Props) {
   const [wrapRef, width] = useWidth()
-  const [index, setIndex] = useState<number | null>(null)
+  const [selected, setIndex] = useState<number | null>(null)
   const [asTable, setAsTable] = useState(false)
 
   const times = series[0]?.points.map((p) => p.ts) ?? []
@@ -61,15 +62,19 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
     )
   }
 
+  // A refresh can bring fewer points than the one being read; keep the selection in range.
+  const index = selected === null ? null : Math.min(selected, n - 1)
+
   const fmtValue = (v: number) => (unit === '%' ? formatPercent(v) : formatBytes(v))
-  const fmtTime = (iso: string) => (dateAxis ? formatDay(iso) : formatTime(iso))
+  // Axis ticks over days name the day; everywhere a single point is read, the time too.
+  const fmtAxis = (iso: string) => (dateAxis ? formatDay(iso) : formatTime(iso))
+  const fmtTime = (iso: string) => (dateAxis ? formatDayTime(iso) : formatTime(iso))
   const top = yMax ?? niceMax(Math.max(...values))
   const plotHeight = height - TOP - BOTTOM
   const plotWidth = Math.max(10, width - LEFT - RIGHT)
   const t0 = new Date(times[0]).getTime()
   const t1 = new Date(times[n - 1]).getTime()
-  const xOf = (i: number) =>
-    LEFT + (n > 1 ? (new Date(times[i]).getTime() - t0) / (t1 - t0 || 1) : 0.5) * plotWidth
+  const xOf = (i: number) => LEFT + (n > 1 ? (new Date(times[i]).getTime() - t0) / (t1 - t0 || 1) : 0.5) * plotWidth
   const yOf = (v: number) => TOP + plotHeight - (v / top) * plotHeight
   const multi = series.length > 1
 
@@ -81,7 +86,9 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
         drawing = false
         return
       }
-      d += `${drawing ? 'L' : 'M'}${xOf(i).toFixed(1)} ${yOf(p.value).toFixed(1)}`
+      const at = `${xOf(i).toFixed(1)} ${yOf(p.value).toFixed(1)}`
+      // A run's first point also draws a zero-length line, so a lone point shows as a dot.
+      d += drawing ? `L${at}` : `M${at}L${at}`
       drawing = true
     })
     return d
@@ -106,11 +113,15 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
     if (event.key === 'Escape') return setIndex(null)
     const at = index ?? n - 1
     const next =
-      event.key === 'ArrowLeft' ? at - 1
-      : event.key === 'ArrowRight' ? at + 1
-      : event.key === 'Home' ? 0
-      : event.key === 'End' ? n - 1
-      : null
+      event.key === 'ArrowLeft'
+        ? at - 1
+        : event.key === 'ArrowRight'
+          ? at + 1
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? n - 1
+              : null
     if (next === null) return
     event.preventDefault()
     setIndex(Math.max(0, Math.min(n - 1, next)))
@@ -199,7 +210,13 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
             const y = Math.round(yOf(value)) + 0.5
             return (
               <g key={k}>
-                <line x1={LEFT} x2={LEFT + plotWidth} y1={y} y2={y} className={k === 0 ? 'vp-chart-base' : 'vp-chart-grid'} />
+                <line
+                  x1={LEFT}
+                  x2={LEFT + plotWidth}
+                  y1={y}
+                  y2={y}
+                  className={k === 0 ? 'vp-chart-base' : 'vp-chart-grid'}
+                />
                 <text x={LEFT - 8} y={y} className="vp-chart-tick" textAnchor="end" dominantBaseline="middle">
                   {fmtValue(value)}
                 </text>
@@ -214,11 +231,19 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
               className="vp-chart-tick"
               textAnchor={k === 0 ? 'start' : k === xTicks.length - 1 ? 'end' : 'middle'}
             >
-              {fmtTime(times[i])}
+              {fmtAxis(times[i])}
             </text>
           ))}
           {series.map((s) => (
-            <path key={s.name} d={pathFor(s)} fill="none" style={{ stroke: s.color }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+            <path
+              key={s.name}
+              d={pathFor(s)}
+              fill="none"
+              style={{ stroke: s.color }}
+              strokeWidth={2}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
           ))}
           {index !== null && (
             <g>
@@ -226,14 +251,24 @@ export function TimeSeriesChart({ series, unit, label, yMax, height = 200, dateA
               {series.map((s) => {
                 const v = s.points[index].value
                 return v === null ? null : (
-                  <circle key={s.name} cx={xOf(index)} cy={yOf(v)} r={4} className="vp-chart-dot" style={{ fill: s.color }} />
+                  <circle
+                    key={s.name}
+                    cx={xOf(index)}
+                    cy={yOf(v)}
+                    r={4}
+                    className="vp-chart-dot"
+                    style={{ fill: s.color }}
+                  />
                 )
               })}
             </g>
           )}
         </svg>
         {index !== null && (
-          <div className="vp-chart-tip" style={flip ? { right: width - xOf(index) + 12, top: TOP } : { left: xOf(index) + 12, top: TOP }}>
+          <div
+            className="vp-chart-tip"
+            style={flip ? { right: width - xOf(index) + 12, top: TOP } : { left: xOf(index) + 12, top: TOP }}
+          >
             <div className="vp-chart-tip-time vp-mono">{fmtTime(times[index])}</div>
             {series.map((s) => (
               <div key={s.name} className="vp-chart-tip-row">

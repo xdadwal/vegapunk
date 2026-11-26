@@ -57,6 +57,7 @@ export default function Containers() {
   }
 
   const items = list.data.items
+  const dockerRead = host.data?.capture.sources.docker.last_success_at != null
   const running = items.filter((c) => c.status === 'online').length
   const text = query.trim()
   const needle = text.toLowerCase()
@@ -80,7 +81,12 @@ export default function Containers() {
       {host.data && <CaptureAlerts capture={host.data.capture} />}
 
       {items.length === 0 ? (
-        <EmptyState title="No containers">Docker reports no containers on this host.</EmptyState>
+        // "Docker has none" and "Docker was never read" are different facts.
+        dockerRead ? (
+          <EmptyState title="No containers">Docker reports no containers on this host.</EmptyState>
+        ) : (
+          <EmptyState title="No containers recorded yet">Vegapunk hasn't read Docker successfully yet.</EmptyState>
+        )
       ) : (
         <>
           <div className="filters">

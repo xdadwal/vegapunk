@@ -39,6 +39,11 @@ export function formatDay(iso: string): string {
   return plain(dayOnly.format(new Date(iso)))
 }
 
+/** "Nov 26, 3:00 PM", for reading a single point on a chart that spans days. */
+export function formatDayTime(iso: string): string {
+  return `${formatDay(iso)}, ${formatTime(iso)}`
+}
+
 const UNITS = ['KiB', 'MiB', 'GiB', 'TiB']
 
 export function formatBytes(bytes: number): string {

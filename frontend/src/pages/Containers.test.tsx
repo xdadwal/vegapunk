@@ -184,4 +184,20 @@ describe('Containers', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await screen.findByRole('link', { name: 'web' })).toBeVisible()
   })
+
+  it('does not say Docker is empty when Docker has never been read', async () => {
+    const host = hostPayload({ latest: null })
+    host.capture.sources.docker = {
+      ok: false,
+      stale: false,
+      last_success_at: null,
+      error: "Can't reach Docker at unix:///x.",
+    }
+    list([], { 'GET /host': { body: host } })
+    renderApp('/containers')
+    expect(await screen.findByText('No containers recorded yet')).toBeVisible()
+    expect(screen.getByText("Vegapunk hasn't read Docker successfully yet.")).toBeVisible()
+    expect(screen.queryByText('Docker reports no containers on this host.')).not.toBeInTheDocument()
+    expect(screen.getByText("Can't reach Docker")).toBeVisible()
+  })
 })
