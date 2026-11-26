@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from vegapunk.ai.operator import Operator
 from vegapunk.api.agent import router as agent_router
 from vegapunk.api.containers import router as containers_router
+from vegapunk.api.findings import router as findings_router
+from vegapunk.api.findings import settings_router as check_settings_router
 from vegapunk.api.host import router as host_router
 from vegapunk.api.settings import router as settings_router
 from vegapunk.auth.routes import router as auth_router
@@ -82,6 +84,8 @@ def create_app(
     app.include_router(containers_router)
     app.include_router(settings_router)
     app.include_router(agent_router)
+    app.include_router(findings_router)
+    app.include_router(check_settings_router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
