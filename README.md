@@ -36,6 +36,7 @@ It runs on your own AI provider. After you create the admin account, Vegapunk as
 - **What is sent to the provider.** Your questions, what the agent reads to answer them (container names, images, state, CPU and memory), and log lines with secrets such as passwords, tokens, keys, private keys and credentials in URLs replaced by `[redacted]`. Redaction is best effort: it catches common shapes of secret, not every possible one, so don't point the agent at a provider you don't trust with your logs. Container environment variables are never read. Your instructions in Settings go to the provider too.
 - **Where the API key is kept.** Encrypted in Vegapunk's database, with the encryption key in `secret.key` beside it in the data volume. That keeps the key out of a copied database or backup. It does not protect against someone who can read the whole data volume, because the key and the data sit side by side. A saved key is only ever sent to the base URL it was saved for.
 - **Limits.** One answer at a time; at most 8 model turns and 12 lookups per answer; messages up to 4,000 characters.
+- **Leaving the page does not stop an answer.** It keeps going on the server and shows when you come back; use Stop to cancel it.
 - **If the key stops working,** Vegapunk says so on the Agent page and in Settings and pauses the chat until you save a working one. Monitoring is not affected.
 
 ## Findings

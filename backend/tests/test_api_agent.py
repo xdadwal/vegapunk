@@ -12,6 +12,9 @@ from vegapunk.ai import operator as operator_module
 from vegapunk.app import create_app
 from vegapunk.db import connect
 
+APP = {"X-Requested-With": "vegapunk"}
+IDLE = {"detail": "No answer is running.", "code": "idle"}
+GONE = {"detail": "That conversation no longer exists."}
 SETTINGS_BODY = {
     "base_url": "https://api.example.com/v1",
     "model": "test-model",
@@ -56,6 +59,9 @@ def test_agent_routes_require_sign_in(client):
     assert client.get("/api/agent/conversations").status_code == 401
     assert client.get("/api/agent/conversations/" + "a" * 32).status_code == 401
     assert client.delete("/api/agent/conversations/" + "a" * 32).status_code == 401
+    assert client.get("/api/agent/conversations/" + "a" * 32 + "/stream").status_code == 401
+    stop = client.post("/api/agent/conversations/" + "a" * 32 + "/stop", headers=APP)
+    assert stop.status_code == 401
 
 
 def test_chat_streams_json_lines_with_the_right_headers(agent):
@@ -148,12 +154,21 @@ def test_conversation_list_detail_and_delete(settings):
         events(chat(client, "Second question"))
         items = client.get("/api/agent/conversations").json()["items"]
         assert [i["title"] for i in items] == ["Second question", "First question"]
-        assert set(items[0]) == {"id", "title", "updated_at", "finding_id", "finding_title"}
+        assert set(items[0]) == {
+            "id",
+            "title",
+            "updated_at",
+            "finding_id",
+            "finding_title",
+            "answering",
+        }
         assert items[0]["updated_at"].endswith("Z") and items[0]["finding_id"] is None
+        assert items[0]["answering"] is False
 
         detail = client.get(f"/api/agent/conversations/{cid}").json()
         assert (detail["id"], detail["title"], detail["available"]) == (cid, "First question", True)
         assert (detail["finding_id"], detail["finding_title"]) == (None, None)
+        assert detail["answering"] is False
         assert [(m["role"], m["text"]) for m in detail["messages"]] == [
             ("user", "First question"),
             ("assistant", "One."),
@@ -207,3 +222,35 @@ def test_deleting_while_answering_is_409_busy(settings, monkeypatch):
         r = client.delete(f"/api/agent/conversations/{cid}")
         thread.join(timeout=10)
         assert r.status_code == 409 and r.json()["code"] == "busy"
+
+
+def test_stream_and_stop_when_nothing_runs_are_404_idle(agent):
+    client, _ = agent
+    cid = events(chat(client))[0]["id"]
+    r = client.get(f"/api/agent/conversations/{cid}/stream")
+    assert r.status_code == 404 and r.json() == IDLE
+    r = client.post(f"/api/agent/conversations/{cid}/stop", headers=APP)
+    assert r.status_code == 404 and r.json() == IDLE
+
+
+def test_stream_and_stop_for_unknown_or_malformed_ids_are_404_gone(agent):
+    client, _ = agent
+    for bad in ["z" * 32, "short", "a" * 200]:
+        r = client.get(f"/api/agent/conversations/{bad}/stream")
+        assert r.status_code == 404 and r.json() == GONE, bad
+        r = client.post(f"/api/agent/conversations/{bad}/stop", headers=APP)
+        assert r.status_code == 404 and r.json() == GONE, bad
+
+
+def test_stop_needs_the_app_header(agent):
+    client, _ = agent
+    cid = events(chat(client))[0]["id"]
+    for headers in ({}, {"X-Requested-With": "XMLHttpRequest"}):
+        r = client.post(f"/api/agent/conversations/{cid}/stop", headers=headers)
+        assert r.status_code == 403 and r.json() == {"detail": "Missing request header."}
+
+
+def test_the_app_header_check_is_shared():
+    from vegapunk.api import findings, security
+
+    assert findings.AppHeader is security.AppHeader

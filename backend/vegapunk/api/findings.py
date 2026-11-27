@@ -7,6 +7,7 @@ from pydantic import BaseModel, StrictBool, StrictInt
 
 from vegapunk.ai import store
 from vegapunk.api.queries import z
+from vegapunk.api.security import AppHeader
 from vegapunk.auth.admin import Admin
 from vegapunk.auth.routes import Db, require_admin
 from vegapunk.watch import findings
@@ -16,15 +17,6 @@ router = APIRouter(prefix="/api/findings")
 settings_router = APIRouter(prefix="/api/settings")
 Admin_ = Annotated[Admin, Depends(require_admin)]
 
-
-def require_app_header(request: Request) -> None:
-    """These POSTs carry no JSON body, so SameSite=Lax alone would let a same-site page post
-    a form to them. A custom header cannot be sent by a plain form or without CORS."""
-    if request.headers.get("x-requested-with") != "vegapunk":
-        raise HTTPException(403, "Missing request header.")
-
-
-AppHeader = Depends(require_app_header)
 
 NO_SUCH = "No such finding."
 MAX_ID = 2**63 - 1

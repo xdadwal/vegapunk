@@ -76,4 +76,6 @@ On Docker Desktop the storage figure can read high (see known issue 1), which ca
 - **Redaction of secrets is best effort.** It catches common shapes of secret, not every possible one.
 - **The API key's encryption key sits beside the database.** It protects a copied database, not someone who can read the whole data folder.
 - **One answer at a time**, server-wide, with at most 8 model turns and 12 lookups each.
+- **An answer keeps running after the browser leaves**, until it ends, hits its limits (180 s, 8 turns, 12 lookups) or someone presses Stop, so a model you are billed for keeps working meanwhile. A sync log read already under way when Stop is pressed finishes in the background.
+- **A reattached answer replays merged text.** A reader who joins late gets the text so far as one event; past 5,000 events, step events are no longer kept for late readers (live readers still get them).
 - **Long conversations rely on logpose's own context handling,** which summarises when a provider rejects an over-long request.

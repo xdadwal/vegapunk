@@ -71,6 +71,8 @@ def create_app(
         try:
             yield
         finally:
+            # First: a running answer still needs the databases and key for its cleanup.
+            await app.state.operator.shutdown()
             if app.state.runner is not None:
                 await app.state.runner.stop()
             if scheduler is not None:

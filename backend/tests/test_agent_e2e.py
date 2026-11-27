@@ -204,7 +204,7 @@ def test_a_saved_key_is_not_sent_to_a_different_server(settings):
     assert other.model_requests == [{"authorization": None}]
 
 
-def test_closing_the_connection_mid_answer_frees_the_agent(settings):
+def test_closing_the_connection_mid_answer_lets_it_finish_then_frees_the_agent(settings):
     fake = FakeOpenAI(
         script=[
             {"text": ["one ", "two ", "three ", "four ", "five"], "chunk_delay": 0.4},
@@ -217,13 +217,13 @@ def test_closing_the_connection_mid_answer_frees_the_agent(settings):
             first = json.loads(next(lines))
             while json.loads(next(lines))["type"] != "text":
                 pass
-        cid = first["id"]  # leaving the block closes the connection mid-answer
+        cid = first["id"]  # leaving the block closes the connection; the answer carries on
         deadline = time.monotonic() + 8
         while True:
             r = client.post("/api/agent/chat", json={"message": "again", "conversation_id": cid})
             if r.status_code != 409:
                 break
-            assert time.monotonic() < deadline, "the agent stayed busy after the client left"
+            assert time.monotonic() < deadline, "the agent stayed busy after the answer ended"
             time.sleep(0.2)
         assert r.status_code == 200
         assert json.loads(r.text.splitlines()[-1])["type"] == "done"

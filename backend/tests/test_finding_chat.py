@@ -267,7 +267,14 @@ def test_the_api_exposes_the_link_both_ways(settings):
         assert by_id[fid]["conversation_id"] == cid and by_id[other]["conversation_id"] is None
 
         listed = {i["id"]: i for i in client.get("/api/agent/conversations").json()["items"]}
-        assert set(listed[cid]) == {"id", "title", "updated_at", "finding_id", "finding_title"}
+        assert set(listed[cid]) == {
+            "id",
+            "title",
+            "updated_at",
+            "finding_id",
+            "finding_title",
+            "answering",
+        }
         assert (listed[cid]["finding_id"], listed[cid]["finding_title"]) == (
             fid,
             "Web keeps restarting",

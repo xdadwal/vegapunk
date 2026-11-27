@@ -30,6 +30,8 @@ class FakeOpenAI:
     - {"hang": True}             never answers
     - {"wait": threading.Event(), ...}  sends nothing until the test sets the event, then
       plays the rest of the entry (a slow model that is silent while it thinks)
+    - {"text": [...], "pause": threading.Event(), "pause_at": 2}  sends the chunks before
+      index `pause_at`, then nothing until the test sets the event
     """
 
     script: list[dict] = field(default_factory=list)
@@ -116,7 +118,10 @@ def create_app(fake: FakeOpenAI) -> FastAPI:
                 yield chunk({"tool_calls": calls})
                 yield chunk({}, "tool_calls")
             else:
-                for piece in turn["text"]:
+                for index, piece in enumerate(turn["text"]):
+                    if "pause" in turn and index == turn.get("pause_at", 0):
+                        while not turn["pause"].is_set():
+                            await asyncio.sleep(0.01)
                     yield chunk({"content": piece})
                     if turn.get("chunk_delay"):
                         await asyncio.sleep(turn["chunk_delay"])

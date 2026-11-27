@@ -1,13 +1,18 @@
 """Leaving the page mid-answer, against a real server and a real socket.
 
-The test client never disconnects. Uvicorn reports ASGI spec 2.3 for HTTP, so Starlette
-listens for the client leaving and cancels the response; from spec 2.4 it stops listening
-and only a failed write would show the client is gone, which never happens while a slow
-model is silent. Each test runs both ways: the run must end soon after the client leaves,
-its cleanup must finish, and the next question (after a refresh) must not get 409.
+The answer runs on the server in a task of its own: the browser leaving (a refresh, or
+going to another page) ends only that response. The answer carries on and is stored, the
+conversation says it is answering meanwhile, a reader can reattach and get what was said
+so far before following it live, and an explicit Stop cancels it.
+
+Uvicorn reports ASGI spec 2.3 for HTTP, so Starlette listens for the client leaving and
+cancels the response; from spec 2.4 it stops listening and only a failed write shows the
+client is gone. Each test runs both ways.
 """
 
+import gc
 import json
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -22,7 +27,12 @@ from tests.helpers import listing, now, obs
 from vegapunk.app import create_app as create_vegapunk
 from vegapunk.db import connect
 
-GONE_WITHIN = 2.0  # seconds
+KEY = "sk-disconnect-0001"
+APP = {"X-Requested-With": "vegapunk"}
+STOPPED = {"type": "error", "code": "stopped", "message": "Stopped."}
+IDLE = {"detail": "No answer is running.", "code": "idle"}
+GONE = {"detail": "That conversation no longer exists."}
+WITHIN = 2.0  # seconds
 
 
 @pytest.fixture(params=["2.3", "2.4"])
@@ -56,7 +66,7 @@ def stack(settings, fake, spec, docker=None):
                     "base_url": f"{model_url}/v1",
                     "model": "test-model",
                     "instructions": "",
-                    "api_key": "sk-disconnect-0001",
+                    "api_key": KEY,
                 },
             )
             assert saved.status_code == 200, saved.text
@@ -73,39 +83,63 @@ def wait_for(condition, timeout=5.0, what="condition"):
         time.sleep(0.01)
 
 
+def lines_of(response) -> list[dict]:
+    return [json.loads(line) for line in response.iter_lines() if line.strip()]
+
+
 def ask(client, message="Second question?", conversation_id=None):
     with client.stream(
         "POST", "/api/agent/chat", json={"message": message, "conversation_id": conversation_id}
     ) as response:
         assert response.status_code == 200, response.read()
-        return [json.loads(line) for line in response.iter_lines() if line.strip()]
+        return lines_of(response)
 
 
-def leave(client, url, before_closing=lambda events: True, message="Is anything wrong?"):
-    """Start an answer on its own connection, read until `before_closing(events)` is true,
-    then drop the connection, as a refresh does. Returns the events read."""
+def read_until(client, method, path, until, **kwargs):
+    """Open a stream on its own connection, read until `until(events)` is true, then drop
+    the connection, as a refresh does. Returns the events read."""
     events: list[dict] = []
-    with httpx.Client(base_url=url, cookies=client.cookies, timeout=30) as own:
-        with own.stream("POST", "/api/agent/chat", json={"message": message}) as response:
+    with httpx.Client(base_url=str(client.base_url), cookies=client.cookies, timeout=30) as own:
+        with own.stream(method, path, **kwargs) as response:
             assert response.status_code == 200, response.read()
             for line in response.iter_lines():
                 if line.strip():
                     events.append(json.loads(line))
-                if before_closing(events):
+                    assert KEY not in line
+                if until(events):
                     break
     return events
 
 
-def in_silence(fake):
-    """Close once the first event is in and the model has been asked (and says nothing)."""
+def leave(client, until, message="Is anything wrong?"):
+    return read_until(client, "POST", "/api/agent/chat", until, json={"message": message})
+
+
+def text_of(events) -> str:
+    return "".join(e["text"] for e in events if e["type"] == "text")
+
+
+def asked(fake, n=1):
+    """Close once the first event is in and the model has been asked `n` times."""
 
     def ready(events):
         if not events:
             return False
-        wait_for(lambda: len(fake.requests) == 1, what="the model to be asked")
+        wait_for(lambda: len(fake.requests) == n, what="the model to be asked")
         return True
 
     return ready
+
+
+def detail(client, cid) -> dict:
+    r = client.get(f"/api/agent/conversations/{cid}")
+    assert r.status_code == 200, r.text
+    assert KEY not in r.text
+    return r.json()
+
+
+def answering(client, cid) -> bool:
+    return detail(client, cid)["answering"]
 
 
 def touched(settings, cid) -> bool:
@@ -120,48 +154,163 @@ def touched(settings, cid) -> bool:
     return updated > created
 
 
-def assert_freed(app, client):
-    """The run ended soon after the client left, its cleanup finished, and the agent takes
-    a new question."""
-    operator = app.state.operator
-    wait_for(lambda: not operator._lock.locked(), GONE_WITHIN, "the agent to be freed")
-    events = ask(client)
-    assert events[0]["type"] == "conversation" and events[-1]["type"] == "done", events
-    return events
-
-
-def test_leaving_while_the_model_is_silent_frees_the_agent(settings, spec):
+def test_leaving_mid_answer_keeps_it_running_and_it_is_stored(settings, spec):
     gate = threading.Event()
-    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Too late."]}, {"text": ["Second."]}])
+    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Finished ", "anyway."]}, {"text": ["2"]}])
     try:
-        with stack(settings, fake, spec) as (client, app, url):
-            first = leave(client, url, in_silence(fake))
-            assert first[0]["type"] == "conversation"
-            started = time.monotonic()
-            events = assert_freed(app, client)
-            assert time.monotonic() - started < GONE_WITHIN + 1
-            assert "".join(e["text"] for e in events if e["type"] == "text") == "Second."
-            assert touched(settings, first[0]["id"])
+        with stack(settings, fake, spec) as (client, app, _):
+            first = leave(client, asked(fake))
+            cid = first[0]["id"]
+            time.sleep(0.3)  # long enough for a cancellation to have shown, had there been one
+            shown = detail(client, cid)
+            assert shown["answering"] is True and shown["available"] is True
+            # Stored only when it ends: the question being answered is shown meanwhile.
+            assert shown["messages"] == [
+                {"role": "user", "text": "Is anything wrong?", "steps": []}
+            ]
+            (item,) = client.get("/api/agent/conversations").json()["items"]
+            assert item["answering"] is True
+
+            busy = client.post("/api/agent/chat", json={"message": "Another?"})
+            assert busy.status_code == 409
+            assert busy.json() == {"detail": "The agent is already answering.", "code": "busy"}
+
             gate.set()
+            wait_for(lambda: not answering(client, cid), what="the answer to finish")
+            shown = detail(client, cid)
+            assert shown["available"] is True
+            assert [(m["role"], m["text"]) for m in shown["messages"]] == [
+                ("user", "Is anything wrong?"),
+                ("assistant", "Finished anyway."),
+            ]
+            assert touched(settings, cid)
+            assert not app.state.operator._lock.locked()
+            assert ask(client, "Next?", cid)[-1]["type"] == "done"
     finally:
         gate.set()
 
 
-def test_leaving_right_after_the_first_event_frees_the_agent(settings, spec):
+def test_reattaching_replays_what_was_said_then_follows_to_the_end(settings, spec):
+    pause = threading.Event()
+    fake = FakeOpenAI(script=[{"text": ["one ", "two ", "three"], "pause": pause, "pause_at": 2}])
+    try:
+        with stack(settings, fake, spec) as (client, _, _):
+            first = leave(client, lambda events: text_of(events) == "one two ")
+            cid = first[0]["id"]
+            path = f"/api/agent/conversations/{cid}/stream"
+            # A refresh: the replay so far, coalesced, and the live end.
+            replay = read_until(client, "GET", path, lambda e: text_of(e) == "one two ")
+            assert replay == [first[0], {"type": "text", "text": "one two "}]
+
+            with client.stream("GET", path) as response:
+                assert response.status_code == 200
+                assert response.headers["content-type"].startswith("application/x-ndjson")
+                assert response.headers["cache-control"] == "no-store"
+                lines = response.iter_lines()
+                head = [json.loads(next(lines)), json.loads(next(lines))]
+                assert head == replay
+                pause.set()
+                rest = [json.loads(line) for line in lines if line.strip()]
+            events = head + rest
+            assert text_of(events) == "one two three"
+            assert [e["type"] for e in events].count("conversation") == 1
+            assert events[-1]["type"] == "done"
+            wait_for(lambda: not answering(client, cid), what="the answer to finish")
+            assert client.get(path).json() == IDLE
+    finally:
+        pause.set()
+
+
+def test_reattaching_before_any_text_gets_the_whole_answer(settings, spec):
+    gate = threading.Event()
+    fake = FakeOpenAI(script=[{"wait": gate, "text": ["All ", "is ", "well."]}])
+    try:
+        with stack(settings, fake, spec) as (client, _, _):
+            cid = leave(client, asked(fake))[0]["id"]
+            with client.stream("GET", f"/api/agent/conversations/{cid}/stream") as response:
+                lines = response.iter_lines()
+                assert json.loads(next(lines))["type"] == "conversation"
+                gate.set()
+                rest = [json.loads(line) for line in lines if line.strip()]
+            assert text_of(rest) == "All is well." and rest[-1]["type"] == "done"
+    finally:
+        gate.set()
+
+
+def test_two_readers_at_once_both_get_the_whole_answer(settings, spec):
+    gate = threading.Event()
+    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Both ", "of ", "you."]}])
+    try:
+        with stack(settings, fake, spec) as (client, _, url):
+            cid = leave(client, asked(fake))[0]["id"]
+            path = f"/api/agent/conversations/{cid}/stream"
+            got: dict[int, list[dict]] = {}
+            heads = threading.Barrier(3, timeout=10)
+
+            def reader(n):
+                with httpx.Client(base_url=url, cookies=client.cookies, timeout=30) as own:
+                    with own.stream("GET", path) as response:
+                        lines = response.iter_lines()
+                        got[n] = [json.loads(next(lines))]
+                        heads.wait()
+                        got[n] += [json.loads(line) for line in lines if line.strip()]
+
+            threads = [threading.Thread(target=reader, args=(n,)) for n in (1, 2)]
+            for t in threads:
+                t.start()
+            heads.wait()
+            gate.set()
+            for t in threads:
+                t.join(timeout=10)
+            for n in (1, 2):
+                assert text_of(got[n]) == "Both of you." and got[n][-1]["type"] == "done"
+    finally:
+        gate.set()
+
+
+def test_stop_ends_the_answer_frees_the_agent_and_keeps_the_question(settings, spec):
     gate = threading.Event()
     fake = FakeOpenAI(script=[{"wait": gate, "text": ["Too late."]}, {"text": ["Second."]}])
     try:
-        with stack(settings, fake, spec) as (client, app, url):
-            first = leave(client, url, lambda events: bool(events))
-            assert [e["type"] for e in first] == ["conversation"]
-            operator = app.state.operator
-            wait_for(lambda: not operator._lock.locked(), GONE_WITHIN, "the agent to be freed")
-            # The run may have ended before it reached the model, leaving the silent turn
-            # for the next question: let it answer.
-            gate.set()
-            assert_freed(app, client)
+        with stack(settings, fake, spec) as (client, app, _):
+            cid = leave(client, asked(fake))[0]["id"]
+            stop = f"/api/agent/conversations/{cid}/stop"
+            assert client.post(stop).status_code == 403  # no app header
+            assert answering(client, cid)
+
+            follower: list[dict] = []
+            with client.stream("GET", f"/api/agent/conversations/{cid}/stream") as response:
+                lines = response.iter_lines()
+                follower.append(json.loads(next(lines)))
+                started = time.monotonic()
+                r = client.post(stop, headers=APP)
+                assert r.status_code == 204 and r.content == b""
+                assert time.monotonic() - started < WITHIN
+                follower += [json.loads(line) for line in lines if line.strip()]
+            assert follower[-1] == STOPPED
+
+            assert not app.state.operator._lock.locked()
+            assert client.post(stop, headers=APP).json() == IDLE
+            shown = detail(client, cid)
+            assert shown["answering"] is False
+            assert [m["role"] for m in shown["messages"]] == ["user"]
+            assert touched(settings, cid)
+            again = ask(client, "Still there?", cid)
+            assert text_of(again) == "Second." and again[-1]["type"] == "done"
+            assert [m["role"] for m in detail(client, cid)["messages"]][-2:] == [
+                "user",
+                "assistant",
+            ]
     finally:
         gate.set()
+
+
+def test_stream_and_stop_for_unknown_ids_are_404(settings, spec):
+    with stack(settings, FakeOpenAI(), spec) as (client, _, _):
+        for bad in ["z" * 32, "short"]:
+            assert client.get(f"/api/agent/conversations/{bad}/stream").json() == GONE
+            r = client.post(f"/api/agent/conversations/{bad}/stop", headers=APP)
+            assert r.status_code == 404 and r.json() == GONE
 
 
 class SlowDocker(FakeDocker):
@@ -178,20 +327,18 @@ class SlowDocker(FakeDocker):
         return super().container_logs(container_id, tail)
 
 
-def test_leaving_while_a_tool_runs_frees_the_agent(settings, spec):
+def test_leaving_while_a_tool_runs_lets_the_answer_finish(settings, spec):
     docker = SlowDocker({"a": ["boot ok"]})
     fake = FakeOpenAI(
         script=[
             {"tool_calls": [{"id": "L1", "name": "container_logs", "arguments": {"name": "web"}}]},
-            {"text": ["Too late."]},
-            {"text": ["Second."]},
+            {"text": ["Its log looks fine."]},
         ]
     )
     try:
-        with stack(settings, fake, spec, docker=docker) as (client, app, url):
+        with stack(settings, fake, spec, docker=docker) as (client, _, _):
             first = leave(
                 client,
-                url,
                 lambda events: (
                     bool(events)
                     and events[-1].get("type") == "step"
@@ -199,13 +346,62 @@ def test_leaving_while_a_tool_runs_frees_the_agent(settings, spec):
                 ),
             )
             assert first[-1]["status"] == "running"
-            assert_freed(app, client)
-            assert touched(settings, first[0]["id"])
-            # The abandoned run never reached the model again.
-            assert len(fake.requests) == 2
+            cid = first[0]["id"]
+            assert answering(client, cid)
             docker.release.set()
+            wait_for(lambda: not answering(client, cid), what="the answer to finish")
+            assert len(fake.requests) == 2
+            (_, answer) = detail(client, cid)["messages"]
+            assert answer["text"] == "Its log looks fine."
+            assert [s["status"] for s in answer["steps"]] == ["done"]
     finally:
         docker.release.set()
+
+
+def test_stopping_while_a_tool_runs_stores_a_failed_step(settings, spec):
+    docker = SlowDocker({"a": ["boot ok"]})
+    fake = FakeOpenAI(
+        script=[
+            {"tool_calls": [{"id": "L1", "name": "container_logs", "arguments": {"name": "web"}}]},
+            {"text": ["Never."]},
+        ]
+    )
+    try:
+        with stack(settings, fake, spec, docker=docker) as (client, app, _):
+            first = leave(
+                client,
+                lambda events: bool(events) and events[-1].get("type") == "step",
+            )
+            cid = first[0]["id"]
+            assert docker.started.wait(timeout=5)
+            stop = client.post(f"/api/agent/conversations/{cid}/stop", headers=APP)
+            assert stop.status_code == 204
+            assert not app.state.operator._lock.locked()
+            (_, answer) = detail(client, cid)["messages"]
+            assert [s["status"] for s in answer["steps"]] == ["failed"]
+            docker.release.set()
+            assert len(fake.requests) == 1  # the stopped answer never asked the model again
+    finally:
+        docker.release.set()
+
+
+def test_shutting_down_mid_answer_stops_it_cleanly(settings, spec, caplog):
+    gate = threading.Event()
+    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Never."]}])
+    try:
+        with caplog.at_level(logging.WARNING):
+            with stack(settings, fake, spec) as (client, app, _):
+                cid = leave(client, asked(fake))[0]["id"]
+                operator = app.state.operator
+                assert operator.active(cid) is not None
+            # The server and its lifespan have ended here.
+            gc.collect()
+        assert operator.active(cid) is None and not operator._running
+        assert not operator._lock.locked()
+        assert touched(settings, cid)
+        assert "destroyed" not in caplog.text and "never retrieved" not in caplog.text
+    finally:
+        gate.set()
 
 
 def test_a_full_answer_still_arrives_in_order(settings, spec):
@@ -226,34 +422,6 @@ def test_a_full_answer_still_arrives_in_order(settings, spec):
             "text",
             "done",
         ]
-        assert "".join(e["text"] for e in events if e["type"] == "text") == "All is well."
+        assert text_of(events) == "All is well."
         assert not app.state.operator._lock.locked()
-
-
-def test_an_interrupted_answer_leaves_a_conversation_that_still_loads(settings, spec):
-    gate = threading.Event()
-    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Too late."]}, {"text": ["Second."]}])
-    try:
-        with stack(settings, fake, spec) as (client, app, url):
-            first = leave(client, url, in_silence(fake))
-            cid = first[0]["id"]
-            operator = app.state.operator
-            wait_for(lambda: not operator._lock.locked(), GONE_WITHIN, "the agent to be freed")
-
-            assert touched(settings, cid)  # the end of the answer was recorded
-
-            loaded = client.get(f"/api/agent/conversations/{cid}")
-            assert loaded.status_code == 200, loaded.text
-            messages = loaded.json()["messages"]
-            # The question is kept; no half-written answer is.
-            assert [m["role"] for m in messages] == ["user"]
-            assert messages[0]["text"] == "Is anything wrong?"
-
-            # The conversation carries on.
-            again = ask(client, "Still there?", conversation_id=cid)
-            assert again[-1]["type"] == "done"
-            shown = client.get(f"/api/agent/conversations/{cid}").json()["messages"]
-            assert [m["role"] for m in shown][-2:] == ["user", "assistant"]
-            gate.set()
-    finally:
-        gate.set()
+        assert detail(client, events[0]["id"])["answering"] is False

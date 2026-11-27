@@ -3,6 +3,10 @@
 `Operator.chat` is an async generator of small dicts (the stream the browser reads). Every
 check that can fail happens before its first event, so a caller that pulls one event first
 can turn those failures into proper HTTP errors before any response starts.
+
+`Operator.start_answer` runs `chat` in a task of its own, an `Answer`, which outlives the
+request that started it: leaving the page or refreshing does not stop it, any number of
+readers can follow it, and only `stop` (or `shutdown`) cancels it.
 """
 
 import asyncio
@@ -50,6 +54,9 @@ MAX_TOKENS = 4_096
 RUN_TIMEOUT = 180
 MAX_TOOL_CALLS = 12
 SESSION_TTL = timedelta(days=365)
+# Events an answer keeps for readers who join late. Past it, step events are left out of the
+# record (live readers still get them) and text is merged into one event, so no text is lost.
+MAX_EVENTS = 5_000
 # logpose adds this read-only tool itself: it pages back through an earlier long tool result.
 RECALL_TOOL = "recall_tool_output"
 
@@ -204,6 +211,82 @@ def _error(code: str, message: str) -> dict:
     return {"type": "error", "code": code, "message": message}
 
 
+_FINAL = ("done", "error")
+_PROBLEM = ("error", "The agent hit a problem.")
+
+
+class Answer:
+    """One answer being written, in a task of its own.
+
+    Every event is recorded (adjacent text merged into one event), so a reader who joins
+    late gets what was said so far, then follows live. Readers come and go without
+    affecting the answer.
+    """
+
+    def __init__(self, question: str = "") -> None:
+        self.conversation_id: str | None = None
+        self.question = question  # not in the stored history until the answer ends
+        self._record: list[dict] = []
+        self._followers: set[asyncio.Queue[dict | None]] = set()
+        self._ended = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self._final = False  # its last event (done or error) is out: only cleanup is left
+        self._stopping = False
+
+    @property
+    def events(self) -> list[dict]:
+        return list(self._record)
+
+    @property
+    def done(self) -> bool:
+        return self._ended.is_set()
+
+    def _publish(self, event: dict) -> None:
+        self._final = self._final or event["type"] in _FINAL
+        last = self._record[-1] if self._record else None
+        if event["type"] == "text" and last is not None and last["type"] == "text":
+            # A new dict: a reader holding the old one must not see it change.
+            self._record[-1] = {"type": "text", "text": last["text"] + event["text"]}
+        elif event["type"] != "step" or len(self._record) < MAX_EVENTS:
+            self._record.append(event)
+        for queue in self._followers:
+            queue.put_nowait(event)
+
+    def _end(self) -> None:
+        self._ended.set()
+        for queue in self._followers:
+            queue.put_nowait(None)
+
+    async def subscribe(self) -> AsyncIterator[dict]:
+        """What was said so far, then each new event until the answer ends."""
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        replay, ended = list(self._record), self.done
+        if not ended:
+            self._followers.add(queue)
+        try:
+            for event in replay:
+                yield event
+            if ended:
+                return
+            while (event := await queue.get()) is not None:
+                yield event
+        finally:
+            self._followers.discard(queue)
+
+    def cancel(self) -> bool:
+        """Stop the answer. Cancels its task once only: a second cancel would cut short the
+        cleanup the first one started. False when it has already ended."""
+        if self.done:
+            return False
+        if not (self._final or self._stopping) and self._task is not None:
+            self._stopping = True
+            self._task.cancel()
+        return True
+
+    async def wait(self) -> None:
+        await self._ended.wait()
+
+
 class Operator:
     def __init__(
         self,
@@ -219,6 +302,8 @@ class Operator:
         self._started_at = started_at
         self._make_agent = make_agent or default_make_agent
         self._lock = asyncio.Lock()
+        self._active: dict[str, Answer] = {}  # conversation id -> its running answer
+        self._running: set[Answer] = set()
 
     # ---- database access from async code
     def _with_db(self, fn):
@@ -246,6 +331,81 @@ class Operator:
             db_path=str(self._settings.conversations_path),
             tracing=None,
         )
+
+    # ---- answers that outlive the request
+    async def start_answer(
+        self, message: str, conversation_id: str | None, finding_id: int | None = None
+    ) -> Answer:
+        """Start answering in a task of its own; returns once the first event is out.
+
+        Raises what `chat` raises before its first event (OperatorOff, UnknownConversation,
+        UnknownFinding, OperatorBusy), so no answer exists then.
+        """
+        answer = Answer(message)
+        started = asyncio.get_running_loop().create_future()
+        # Retrieved even if the caller is gone: no "exception was never retrieved".
+        started.add_done_callback(lambda f: f.cancelled() or f.exception())
+        answer._task = asyncio.create_task(
+            self._produce(answer, self.chat(message, conversation_id, finding_id), started)
+        )
+        self._running.add(answer)
+        # Shielded: a caller cancelled while waiting leaves the answer running.
+        return await asyncio.shield(started)
+
+    async def _produce(self, answer: Answer, events, started: asyncio.Future) -> None:
+        try:
+            try:
+                first = await events.__anext__()
+            except BaseException as exc:  # a check failed, or shutdown came first
+                if not started.done():
+                    if isinstance(exc, asyncio.CancelledError):
+                        started.cancel()
+                    else:
+                        started.set_exception(exc)
+                return
+            answer.conversation_id = first["id"]
+            answer._publish(first)
+            self._active[first["id"]] = answer
+            if not started.done():
+                started.set_result(answer)
+            async with aclosing(events):
+                async for event in events:
+                    answer._publish(event)
+        except asyncio.CancelledError:
+            # Stopped. `chat` has finished its cleanup and freed the agent by now.
+            if not answer._final:
+                answer._publish(_error("stopped", "Stopped."))
+        except Exception:
+            log.exception("An answer stopped unexpectedly")
+            if not answer._final:
+                answer._publish(_error(*_PROBLEM))
+        finally:
+            if self._active.get(answer.conversation_id or "") is answer:
+                del self._active[answer.conversation_id]
+            self._running.discard(answer)
+            answer._end()
+
+    def active(self, conversation_id: str) -> Answer | None:
+        """The answer being written in this conversation, if one is."""
+        return self._active.get(conversation_id)
+
+    async def stop(self, conversation_id: str, wait: float = 5.0) -> bool:
+        """Stop the answer being written in this conversation, and wait (up to `wait`
+        seconds) for it to end. False when none is."""
+        answer = self._active.get(conversation_id)
+        if answer is None or not answer.cancel():
+            return False
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(answer.wait(), wait)
+        return True
+
+    async def shutdown(self) -> None:
+        """Stop every answer and wait for each to finish its cleanup."""
+        running = [a for a in self._running if a._task is not None]
+        for answer in running:
+            answer.cancel()  # also one still in its checks
+        if running:
+            await asyncio.wait([a._task for a in running])
 
     # ---- the answer
     async def chat(
@@ -404,6 +564,10 @@ class Operator:
         return found
 
     # ---- stored conversations
+    async def conversation(self, conversation_id: str) -> dict:
+        """The stored conversation's row. Raises UnknownConversation."""
+        return await self._existing(conversation_id)
+
     async def history(self, conversation_id: str) -> list[dict]:
         await self._existing(conversation_id)
         agent = self._store_agent()
