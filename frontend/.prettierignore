@@ -1,0 +1,11 @@
+dist
+coverage
+node_modules
+package-lock.json
+# Copied from the design system; kept as is so they can be compared with it.
+src/styles/components.css
+src/styles/tokens.css
+# Markdown and YAML are not formatted.
+*.md
+*.yaml
+*.yml
