@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
@@ -33,6 +34,17 @@ STOPPED = {"type": "error", "code": "stopped", "message": "Stopped."}
 IDLE = {"detail": "No answer is running.", "code": "idle"}
 GONE = {"detail": "That conversation no longer exists."}
 WITHIN = 2.0  # seconds
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def production_grace() -> float | None:
+    """The image's --timeout-graceful-shutdown (None, uvicorn's default, waits forever)."""
+    text = (ROOT / "Dockerfile").read_text().replace("\\\n", " ")
+    (cmd,) = [line for line in text.splitlines() if line.startswith("CMD ")]
+    args = json.loads(cmd.removeprefix("CMD "))
+    if "--timeout-graceful-shutdown" not in args:
+        return None
+    return float(args[args.index("--timeout-graceful-shutdown") + 1])
 
 
 @pytest.fixture(params=["2.3", "2.4"])
@@ -52,14 +64,20 @@ def with_spec(app, version: str):
 
 
 @contextmanager
-def stack(settings, fake, spec, docker=None):
+def stack(settings, fake, spec, docker=None, graceful=1, again=False):
     """Vegapunk and the fake model running, signed in, with the provider saved.
 
     Yields (client, app, url)."""
     with serve(create_app(fake)) as model_url:
         app = create_vegapunk(settings, docker=docker or FakeDocker())
-        with serve(with_spec(app, spec)) as url, httpx.Client(base_url=url, timeout=30) as client:
-            assert client.post("/api/setup/admin", json=CREDENTIALS).status_code == 201
+        with (
+            serve(with_spec(app, spec), graceful) as url,
+            httpx.Client(base_url=url, timeout=30) as client,
+        ):
+            if again:  # a restart: the admin and the listing exist already
+                assert client.post("/api/auth/sign-in", json=CREDENTIALS).status_code == 204
+            else:
+                assert client.post("/api/setup/admin", json=CREDENTIALS).status_code == 201
             saved = client.put(
                 "/api/settings/ai",
                 json={
@@ -70,9 +88,10 @@ def stack(settings, fake, spec, docker=None):
                 },
             )
             assert saved.status_code == 200, saved.text
-            conn = connect(settings.db_path)
-            listing(conn, now(), obs("a", "web"))
-            conn.close()
+            if not again:
+                conn = connect(settings.db_path)
+                listing(conn, now(), obs("a", "web"))
+                conn.close()
             yield client, app, url
 
 
@@ -402,6 +421,69 @@ def test_shutting_down_mid_answer_stops_it_cleanly(settings, spec, caplog):
         assert "destroyed" not in caplog.text and "never retrieved" not in caplog.text
     finally:
         gate.set()
+
+
+def test_shutting_down_while_a_reader_is_attached_does_not_wait_for_it(settings, spec, caplog):
+    """`docker stop` gives the container 10 s. Uvicorn waits for open requests before it
+    shuts the app down, and a reader of a running answer stays open until the answer ends,
+    so the server's grace (the image's --timeout-graceful-shutdown) has to cut it off."""
+    grace = production_grace()
+    assert grace is not None, "the image must not wait forever for open requests"
+    gate = threading.Event()
+    fake = FakeOpenAI(script=[{"wait": gate, "text": ["Never."]}, {"text": ["Later."]}])
+    read: list[dict] = []
+    reader_done = threading.Event()
+    try:
+        with caplog.at_level(logging.WARNING):
+            with stack(settings, fake, spec, graceful=grace) as (client, app, url):
+                cid = leave(client, asked(fake))[0]["id"]
+                operator = app.state.operator
+
+                def follow():
+                    try:
+                        with httpx.Client(base_url=url, cookies=client.cookies, timeout=30) as own:
+                            with own.stream(
+                                "GET", f"/api/agent/conversations/{cid}/stream"
+                            ) as response:
+                                for line in response.iter_lines():
+                                    if line.strip():
+                                        read.append(json.loads(line))
+                    except httpx.HTTPError:
+                        pass  # the server went away
+                    finally:
+                        reader_done.set()
+
+                threading.Thread(target=follow, daemon=True).start()
+                wait_for(lambda: read, what="the reader to attach")
+                started = time.monotonic()
+            # The server and its lifespan have ended here.
+            took = time.monotonic() - started
+            gc.collect()
+        assert took < grace + 3, f"shutdown took {took:.1f} s"
+        assert reader_done.wait(5)
+        assert operator.active(cid) is None and not operator._running
+        assert not operator._lock.locked()
+        assert touched(settings, cid)
+        assert "destroyed" not in caplog.text and "never retrieved" not in caplog.text
+        assert "Task exception" not in caplog.text
+    finally:
+        gate.set()
+
+    # Started again: the conversation loads, and its session lease was given back.
+    with stack(settings, fake, spec, again=True) as (client, _, _):
+        shown = detail(client, cid)
+        assert shown["answering"] is False
+        assert shown["messages"][0] == {"role": "user", "text": "Is anything wrong?", "steps": []}
+        assert ask(client, "Next?", cid)[-1]["type"] == "done"
+
+
+def test_docker_waits_long_enough_for_the_server_to_stop():
+    """Docker's stop grace covers uvicorn's grace plus logpose's shielded exit (up to ~8 s)."""
+    grace = production_grace()
+    compose = (ROOT / "compose.yaml").read_text()
+    (line,) = [x for x in compose.splitlines() if x.strip().startswith("stop_grace_period:")]
+    period = line.split(":", 1)[1].strip()
+    assert period.endswith("s") and float(period[:-1]) >= (grace or 0) + 10
 
 
 def test_a_full_answer_still_arrives_in_order(settings, spec):

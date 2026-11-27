@@ -142,12 +142,18 @@ def free_port() -> int:
 
 
 @contextmanager
-def serve(app) -> Iterator[str]:
-    """Run an ASGI app on a free local port in a thread. Yields its base URL."""
+def serve(app, graceful: float = 1) -> Iterator[str]:
+    """Run an ASGI app on a free local port in a thread. Yields its base URL.
+
+    `graceful` is how long shutdown waits for open requests before cancelling them."""
     port = free_port()
     server = uvicorn.Server(
         uvicorn.Config(
-            app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=1
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            timeout_graceful_shutdown=graceful,
         )
     )
     thread = threading.Thread(target=server.run, daemon=True)
