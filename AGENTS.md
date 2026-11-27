@@ -20,7 +20,7 @@ Decided 2026-11-26. Ask before going beyond it.
 - **AI operator.** Runs inside the server. It raises findings (diagnosis plus evidence) from scheduled and background checks, and answers questions in one chat. It can suggest a fix in words but never carries one out.
 - **AI provider.** Any OpenAI-compatible endpoint, with the user's own API key, one provider at a time. Integration goes through [logpose](https://github.com/xdadwal/logpose).
 - **Capture.** Only the data the screens show or calculate from: container status, restart counts, and uptime; CPU and memory per container and for the host; storage used; enough history for trends and comparisons.
-- **Logs are not collected.** Vegapunk does not capture or keep container logs. The AI operator reads them live from Docker when it needs them, in a check or a chat. A finding keeps the redacted lines it cites as evidence. A chat keeps the redacted lines the agent read, as part of the conversation, until it is deleted.
+- **Logs are not collected.** Vegapunk does not capture or keep container logs. The AI operator reads them live from Docker when it needs them, in a check or a chat. A finding keeps the redacted lines it cites as evidence. A chat keeps the redacted lines the agent read, as part of the conversation, until it is deleted. Decided 2026-11-27: chats keep the log lines the agent read, until the conversation is deleted.
 - **Screens.** Sign in, Setup (admin account, AI provider), Overview (the host), Containers, Container detail, Findings, Finding detail, Agent chat, History, Settings, Profile.
 - **UI wording.** Say "Agent", not "AI", for the operator; keep "AI" only for provider settings.
 
