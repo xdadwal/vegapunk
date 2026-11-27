@@ -41,3 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build .
+      - run: docker compose config -q
+      - run: docker compose -f compose.yaml -f compose.socket-proxy.yaml config -q
+      - run: sh scripts/smoke.sh
