@@ -148,12 +148,12 @@ def test_conversation_list_detail_and_delete(settings):
         events(chat(client, "Second question"))
         items = client.get("/api/agent/conversations").json()["items"]
         assert [i["title"] for i in items] == ["Second question", "First question"]
-        assert set(items[0]) == {"id", "title", "updated_at"} and items[0]["updated_at"].endswith(
-            "Z"
-        )
+        assert set(items[0]) == {"id", "title", "updated_at", "finding_id", "finding_title"}
+        assert items[0]["updated_at"].endswith("Z") and items[0]["finding_id"] is None
 
         detail = client.get(f"/api/agent/conversations/{cid}").json()
         assert (detail["id"], detail["title"], detail["available"]) == (cid, "First question", True)
+        assert (detail["finding_id"], detail["finding_title"]) == (None, None)
         assert [(m["role"], m["text"]) for m in detail["messages"]] == [
             ("user", "First question"),
             ("assistant", "One."),

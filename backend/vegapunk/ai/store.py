@@ -168,11 +168,16 @@ def make_title(message: str) -> str:
     return title
 
 
-def add_conversation(conn: sqlite3.Connection, id: str, title: str, now: datetime) -> None:
+def add_conversation(
+    conn: sqlite3.Connection, id: str, title: str, now: datetime, finding_id: int | None = None
+) -> None:
+    """Add a conversation, linked to a finding when `finding_id` is given. A finding has at
+    most one conversation: a second one raises `sqlite3.IntegrityError`."""
     with transaction(conn):
         conn.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (id, title, now.isoformat(), now.isoformat()),
+            "INSERT INTO conversations (id, title, created_at, updated_at, finding_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (id, title, now.isoformat(), now.isoformat(), finding_id),
         )
 
 
@@ -181,23 +186,44 @@ def touch_conversation(conn: sqlite3.Connection, id: str, now: datetime) -> None
         conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now.isoformat(), id))
 
 
+_SELECT = (
+    "SELECT c.id, c.title, c.updated_at, c.finding_id, f.title AS finding_title "
+    "FROM conversations c LEFT JOIN findings f ON f.id = c.finding_id"
+)
+
+
 def _item(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "title": row["title"], "updated_at": z(row["updated_at"])}
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "updated_at": z(row["updated_at"]),
+        "finding_id": row["finding_id"],
+        "finding_title": row["finding_title"],
+    }
 
 
 def list_conversations(conn: sqlite3.Connection, limit: int = 200) -> list[dict]:
-    rows = conn.execute(
-        "SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC, id LIMIT ?",
-        (limit,),
-    )
+    rows = conn.execute(f"{_SELECT} ORDER BY c.updated_at DESC, c.id LIMIT ?", (limit,))
     return [_item(r) for r in rows]
 
 
 def get_conversation(conn: sqlite3.Connection, id: str) -> dict | None:
-    row = conn.execute(
-        "SELECT id, title, updated_at FROM conversations WHERE id = ?", (id,)
-    ).fetchone()
+    row = conn.execute(f"{_SELECT} WHERE c.id = ?", (id,)).fetchone()
     return _item(row) if row else None
+
+
+def conversation_for_finding(conn: sqlite3.Connection, finding_id: int) -> dict | None:
+    """The conversation linked to this finding, if there is one."""
+    row = conn.execute(f"{_SELECT} WHERE c.finding_id = ?", (finding_id,)).fetchone()
+    return _item(row) if row else None
+
+
+def conversation_ids_by_finding(conn: sqlite3.Connection) -> dict[int, str]:
+    """Every linked finding's conversation id, in one query (for the findings list)."""
+    rows = conn.execute(
+        "SELECT finding_id, id FROM conversations WHERE finding_id IS NOT NULL"
+    ).fetchall()
+    return {r["finding_id"]: r["id"] for r in rows}
 
 
 def delete_conversation(conn: sqlite3.Connection, id: str) -> None:

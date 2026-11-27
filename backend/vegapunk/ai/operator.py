@@ -10,6 +10,7 @@ import contextlib
 import logging
 import re
 import secrets
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
@@ -40,6 +41,7 @@ from vegapunk.ai.tools import MAX_LOG_LINES, TOOL_NAMES, build_tools
 from vegapunk.config import Settings
 from vegapunk.db import connect
 from vegapunk.host.docker import DockerHost
+from vegapunk.watch.findings import get_finding
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +114,10 @@ class OperatorBusy(Exception):
 
 class UnknownConversation(Exception):
     """No such conversation: malformed, absent, or deleted."""
+
+
+class UnknownFinding(Exception):
+    """No such finding to start a conversation about: absent, or pruned."""
 
 
 def _name(args: dict) -> str | None:
@@ -242,28 +248,45 @@ class Operator:
         )
 
     # ---- the answer
-    async def chat(self, message: str, conversation_id: str | None) -> AsyncIterator[dict]:
+    async def chat(
+        self, message: str, conversation_id: str | None, finding_id: int | None = None
+    ) -> AsyncIterator[dict]:
+        """Answer `message` in a conversation.
+
+        With `conversation_id`, that conversation continues; if it is about a finding, that
+        finding is its context and `finding_id` is ignored. Without one, `finding_id` asks
+        about that finding: its conversation resumes if it has one, or one is started.
+        """
         loaded = await self._db(lambda c: store.load_ai(c, self._crypto_key))
         if loaded is None:
             raise OperatorOff
         existing = await self._existing(conversation_id) if conversation_id is not None else None
+        about: dict | None = None
+        if existing is None and finding_id is not None:
+            existing, about = await self._db(lambda c: self._for_finding(c, finding_id))
         if self._lock.locked():
             raise OperatorBusy
         async with self._lock:
             config = loaded.config
+            if existing is None and about is not None:
+                title = store.make_title(f"About: {about['title']}")
+                existing = await self._db(
+                    lambda c: self._open_finding_conversation(c, about["id"], title)
+                )
             cid = existing["id"] if existing else secrets.token_urlsafe(32)
             title = existing["title"] if existing else store.make_title(message)
             if existing is None:
                 await self._db(lambda c: store.add_conversation(c, cid, title, datetime.now(UTC)))
-            yield {"type": "conversation", "id": cid, "title": title}
+            linked = existing["finding_id"] if existing else None
+            yield {"type": "conversation", "id": cid, "title": title, "finding_id": linked}
 
             agent: Agent | None = None
             try:
-                host = await self._db(self._host_facts)
+                host, finding = await self._db(lambda c: self._context(c, cid))
                 agent = build_agent(
                     self._make_agent,
                     config=config,
-                    system=build_system_prompt(host, config.instructions),
+                    system=build_system_prompt(host, config.instructions, finding),
                     tools=build_tools(
                         self._settings.db_path,
                         self._docker,
@@ -348,6 +371,37 @@ class Operator:
     def _host_facts(conn) -> dict | None:
         row = conn.execute("SELECT hostname, os FROM host WHERE id = 1").fetchone()
         return {"hostname": row["hostname"], "os": row["os"]} if row else None
+
+    @classmethod
+    def _context(cls, conn, cid: str) -> tuple[dict | None, dict | None]:
+        """The host's facts and, read fresh for every answer, the conversation's finding (None
+        when it has none, or its finding was pruned)."""
+        row = conn.execute("SELECT finding_id FROM conversations WHERE id = ?", (cid,)).fetchone()
+        fid = row["finding_id"] if row else None
+        return cls._host_facts(conn), get_finding(conn, fid) if fid is not None else None
+
+    @staticmethod
+    def _for_finding(conn, finding_id: int) -> tuple[dict | None, dict]:
+        """(its conversation or None, the finding). Raises UnknownFinding."""
+        found = get_finding(conn, finding_id)
+        if found is None:
+            raise UnknownFinding
+        return store.conversation_for_finding(conn, finding_id), found
+
+    @staticmethod
+    def _open_finding_conversation(conn, finding_id: int, title: str) -> dict:
+        """The finding's conversation, started now unless one appeared meanwhile. Raises
+        UnknownFinding if the finding was pruned since it was looked up."""
+        try:
+            store.add_conversation(
+                conn, secrets.token_urlsafe(32), title, datetime.now(UTC), finding_id=finding_id
+            )
+        except sqlite3.IntegrityError:
+            pass  # the finding is gone (foreign key), or it already has one (unique index)
+        found = store.conversation_for_finding(conn, finding_id)
+        if found is None:
+            raise UnknownFinding
+        return found
 
     # ---- stored conversations
     async def history(self, conversation_id: str) -> list[dict]:

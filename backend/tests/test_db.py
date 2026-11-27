@@ -12,7 +12,7 @@ from vegapunk.db import (
     prepare_data_dir,
 )
 
-LATEST = 5
+LATEST = 6
 
 
 def test_migrate_creates_tables_and_is_repeatable(tmp_path):
@@ -73,9 +73,62 @@ def test_0005_adds_the_watch_switch_on_to_a_database_at_0004(tmp_path):
         "first_seen_at, last_seen_at) VALUES ('k', 'web', 't', 'd', 'f', 'open', 'watch', "
         "'2026-11-27T00:00:00Z', '2026-11-27T00:00:00Z')"
     )
-    assert migrate(conn) == 5
+    assert migrate(conn) == LATEST
     row = conn.execute("SELECT * FROM check_settings WHERE id = 1").fetchone()
     assert (row["enabled"], row["hour"], row["last_error"], row["watch_enabled"]) == (0, 7, "x", 1)
     assert [r["key"] for r in conn.execute("SELECT key FROM findings")] == ["k"]
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE check_settings SET watch_enabled = 2 WHERE id = 1")
+
+
+def _at(conn, version):
+    for number, sql in _migration_files():
+        if number <= version:
+            conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+
+
+def _finding(conn, key="k"):
+    return conn.execute(
+        "INSERT INTO findings (key, subject, title, diagnosis, suggested_fix, status, trigger, "
+        "first_seen_at, last_seen_at) VALUES (?, 'web', 't', 'd', 'f', 'open', 'watch', "
+        "'2026-11-27T00:00:00Z', '2026-11-27T00:00:00Z')",
+        (key,),
+    ).lastrowid
+
+
+def test_0006_links_conversations_to_findings_on_a_database_at_0005(tmp_path):
+    conn = connect(tmp_path / "v.db")
+    _at(conn, 5)
+    conn.execute(
+        "INSERT INTO conversations (id, title, created_at, updated_at) "
+        "VALUES ('c1', 'Old one', '2026-11-01T00:00:00Z', '2026-11-02T00:00:00Z')"
+    )
+    fid = _finding(conn)
+    assert migrate(conn) == LATEST
+    row = conn.execute("SELECT * FROM conversations WHERE id = 'c1'").fetchone()
+    assert (row["title"], row["updated_at"], row["finding_id"]) == (
+        "Old one",
+        "2026-11-02T00:00:00Z",
+        None,
+    )
+
+    conn.execute("UPDATE conversations SET finding_id = ? WHERE id = 'c1'", (fid,))
+    with pytest.raises(sqlite3.IntegrityError):  # at most one conversation per finding
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at, finding_id) "
+            "VALUES ('c2', 'x', 'a', 'a', ?)",
+            (fid,),
+        )
+    # many conversations may have no finding
+    for cid in ("c3", "c4"):
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) "
+            "VALUES (?, 'x', 'a', 'a')",
+            (cid,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):  # the finding must exist
+        conn.execute("UPDATE conversations SET finding_id = 999 WHERE id = 'c3'")
+
+    conn.execute("DELETE FROM findings WHERE id = ?", (fid,))
+    row = conn.execute("SELECT * FROM conversations WHERE id = 'c1'").fetchone()
+    assert row is not None and row["finding_id"] is None

@@ -7,6 +7,8 @@ from vegapunk.ai.store import (
     KEEP,
     add_conversation,
     clear_ai,
+    conversation_for_finding,
+    conversation_ids_by_finding,
     delete_conversation,
     get_conversation,
     list_conversations,
@@ -178,7 +180,8 @@ def test_conversation_list_is_newest_first(conn):
     items = list_conversations(conn)
     assert [i["title"] for i in items] == ["first", "second"]
     assert items[0]["updated_at"] == "2026-01-01T12:05:00Z"
-    assert set(items[0]) == {"id", "title", "updated_at"}
+    assert set(items[0]) == {"id", "title", "updated_at", "finding_id", "finding_title"}
+    assert (items[0]["finding_id"], items[0]["finding_title"]) == (None, None)
 
 
 def test_get_and_delete_conversation(conn):
@@ -264,3 +267,52 @@ def test_the_api_key_is_not_in_the_repr_of_the_settings():
     assert secret not in repr(loaded)
     assert config == AiConfig("https://x.example/v1", "m", "", secret)  # equality still holds
     assert config != AiConfig("https://x.example/v1", "m", "", "another-key-0000000")
+
+
+def _finding(conn, title="Web keeps restarting"):
+    from vegapunk.watch import findings
+
+    draft = findings.FindingDraft("web", title, "Diagnosis.", "Fix.", ())
+    return findings.upsert_finding(conn, draft, key=f"k-{title}", trigger="watch", now=NOW)
+
+
+def test_a_conversation_can_be_linked_to_a_finding(conn):
+    fid = _finding(conn)
+    add_conversation(conn, "a" * 32, "About: Web keeps restarting", NOW, finding_id=fid)
+    add_conversation(conn, "b" * 32, "Plain", NOW + timedelta(minutes=1))
+    assert get_conversation(conn, "a" * 32)["finding_id"] == fid
+    assert get_conversation(conn, "b" * 32)["finding_id"] is None
+    assert conversation_for_finding(conn, fid)["id"] == "a" * 32
+    assert conversation_for_finding(conn, fid + 1) is None
+    items = {i["id"]: i for i in list_conversations(conn)}
+    assert (items["a" * 32]["finding_id"], items["a" * 32]["finding_title"]) == (
+        fid,
+        "Web keeps restarting",
+    )
+    assert (items["b" * 32]["finding_id"], items["b" * 32]["finding_title"]) == (None, None)
+
+
+def test_a_second_conversation_for_the_same_finding_is_refused(conn):
+    import sqlite3
+
+    fid = _finding(conn)
+    add_conversation(conn, "a" * 32, "one", NOW, finding_id=fid)
+    with pytest.raises(sqlite3.IntegrityError):
+        add_conversation(conn, "b" * 32, "two", NOW, finding_id=fid)
+
+
+def test_a_pruned_finding_leaves_the_conversation_unlinked(conn):
+    fid = _finding(conn)
+    add_conversation(conn, "a" * 32, "About it", NOW, finding_id=fid)
+    conn.execute("DELETE FROM findings WHERE id = ?", (fid,))
+    assert get_conversation(conn, "a" * 32)["finding_id"] is None
+    (item,) = list_conversations(conn)
+    assert (item["finding_id"], item["finding_title"]) == (None, None)
+
+
+def test_conversation_ids_by_finding_maps_only_linked_ones(conn):
+    a, b = _finding(conn, "one"), _finding(conn, "two")
+    add_conversation(conn, "a" * 32, "x", NOW, finding_id=a)
+    add_conversation(conn, "c" * 32, "plain", NOW)
+    assert conversation_ids_by_finding(conn) == {a: "a" * 32}
+    assert b not in conversation_ids_by_finding(conn)

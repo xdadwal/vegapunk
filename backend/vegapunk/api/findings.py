@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, StrictBool, StrictInt
 
+from vegapunk.ai import store
 from vegapunk.api.queries import z
 from vegapunk.auth.admin import Admin
 from vegapunk.auth.routes import Db, require_admin
@@ -94,8 +95,12 @@ async def list_all(
 
 def _list(conn, status: str | None, q: str | None, runner_status: dict | None) -> dict:
     rows = findings.list_findings(conn, status=status, query=q)
+    linked = store.conversation_ids_by_finding(conn)
     return {
-        "items": [{k: r[k] for k in _ITEM_FIELDS} for r in rows],
+        "items": [
+            {**{k: r[k] for k in _ITEM_FIELDS}, "conversation_id": linked.get(r["id"])}
+            for r in rows
+        ],
         "open_count": findings.open_count(conn),
         "checks": _checks(conn, runner_status),
     }
@@ -126,7 +131,8 @@ def get_one(finding_id: str, conn: Db, _: Admin_) -> dict:
     found = findings.get_finding(conn, _finding_id(finding_id))
     if found is None:
         raise HTTPException(404, NO_SUCH)
-    return found
+    conversation = store.conversation_for_finding(conn, found["id"])
+    return {**found, "conversation_id": conversation["id"] if conversation else None}
 
 
 @router.post("/{finding_id}/review", status_code=204)

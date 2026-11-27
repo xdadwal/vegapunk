@@ -159,6 +159,9 @@ def make_operator(settings: Settings, provider: FakeProvider, docker=None, calls
 
 
 async def collect(
-    operator: Operator, message: str, conversation_id: str | None = None
+    operator: Operator,
+    message: str,
+    conversation_id: str | None = None,
+    finding_id: int | None = None,
 ) -> list[dict]:
-    return [event async for event in operator.chat(message, conversation_id)]
+    return [event async for event in operator.chat(message, conversation_id, finding_id)]

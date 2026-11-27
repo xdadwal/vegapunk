@@ -6,11 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StrictInt, StringConstraints
 from starlette.background import BackgroundTask
 
 from vegapunk.ai import store
-from vegapunk.ai.operator import OperatorBusy, OperatorOff, UnknownConversation
+from vegapunk.ai.operator import OperatorBusy, OperatorOff, UnknownConversation, UnknownFinding
 from vegapunk.auth.admin import Admin
 from vegapunk.auth.routes import Db, require_admin
 from vegapunk.db import connect
@@ -23,10 +23,14 @@ Message = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_MESSAGE)
 ]
 
+FindingId = Annotated[StrictInt, Field(ge=1, le=2**63 - 1)]  # SQLite's integer range
+
 
 class ChatIn(BaseModel):
     message: Message
     conversation_id: str | None = None
+    # Ask about this finding. Ignored when `conversation_id` is given.
+    finding_id: FindingId | None = None
 
 
 def _line(event: dict) -> bytes:
@@ -43,7 +47,7 @@ def _busy(detail: str) -> JSONResponse:
 
 @router.post("/chat")
 async def chat(body: ChatIn, request: Request, _: Admin_):
-    events = request.app.state.operator.chat(body.message, body.conversation_id)
+    events = request.app.state.operator.chat(body.message, body.conversation_id, body.finding_id)
     # Every check that can fail happens before the first event, so pulling one event first
     # turns those failures into proper HTTP errors before any response has started.
     try:
@@ -56,6 +60,8 @@ async def chat(body: ChatIn, request: Request, _: Admin_):
         return _busy("The agent is already answering.")
     except UnknownConversation:
         return _gone()
+    except UnknownFinding:
+        return JSONResponse({"detail": "That finding no longer exists."}, status_code=404)
 
     async def stream() -> AsyncIterator[bytes]:
         # aclosing ends the run and frees the session when the client leaves mid-answer.
