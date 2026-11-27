@@ -2,8 +2,9 @@ services:
   vegapunk:
     container_name: vegapunk
     build: .
+    # The host port. Set VEGAPUNK_PORT to use another one if 8000 is taken.
     ports:
-      - "8000:8000"
+      - "${VEGAPUNK_PORT:-8000}:8000"
     volumes:
       - vegapunk-data:/data
       # Vegapunk reads container state and usage from Docker. Read the README before
