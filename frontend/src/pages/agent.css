@@ -32,3 +32,7 @@
 .agent-finding-text {
   color: var(--ink);
 }
+
+.agent-stopped {
+  margin-top: var(--space-2);
+}

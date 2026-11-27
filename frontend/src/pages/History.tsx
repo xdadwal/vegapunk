@@ -145,7 +145,15 @@ export default function History() {
                         {c.finding_title ? `About finding: ${c.finding_title}` : 'About a finding'}
                       </div>
                     )}
-                    <div className="vp-service-meta">{formatDayTime(c.updated_at)} UTC</div>
+                    <div className="vp-service-meta">
+                      {formatDayTime(c.updated_at)} UTC
+                      {c.answering && (
+                        <>
+                          {' · '}
+                          <span className="history-answering">Answering…</span>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="history-actions">
                     <Button

@@ -1,8 +1,12 @@
-import { act, fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter, useNavigate } from 'react-router'
+
+import App from '../App'
 
 import { CONFIGURED, aiSettings, findingDetail } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
+import { LocationProbe } from '../test-probe'
 import type { AiSettings, ChatEvent } from '../types'
 
 const CID = 'c'.repeat(32)
@@ -669,5 +673,347 @@ describe('Agent page: about a finding', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/findings/f1'))).toBe(false)
     expect(await composer()).toHaveValue('')
+  })
+})
+
+const STREAM = `GET /agent/conversations/${CID}/stream`
+const STOP = `POST /agent/conversations/${CID}/stop`
+const QUESTION_ONLY = {
+  id: CID,
+  title: 'Is anything wrong?',
+  updated_at: '2026-01-01T12:00:00Z',
+  finding_id: null,
+  finding_title: null,
+  available: true,
+  answering: true,
+  messages: [{ role: 'user', text: 'Is anything wrong?', steps: [] }],
+}
+const ANSWERED = {
+  ...QUESTION_ONLY,
+  answering: false,
+  messages: [
+    ...QUESTION_ONLY.messages,
+    { role: 'assistant', text: '`db` is stopped.', steps: [{ label: 'Read the status of the containers', status: 'done' }] },
+  ],
+}
+const STOPPED: ChatEvent = { type: 'error', code: 'stopped', message: 'Stopped.' }
+
+function calls(fetchMock: ReturnType<typeof stubApi>['fetchMock'], key: string) {
+  return (fetchMock.mock.calls as unknown as [string, RequestInit | undefined][]).filter(
+    ([url, init]) => `${init?.method ?? 'GET'} ${url.replace(/^\/api/, '')}` === key,
+  )
+}
+
+describe('Agent page: answers that keep running', () => {
+  it('follows an answer in progress on arrival, rebuilding it from the replay, then shows the stored one', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    let finished = false
+    const { fetchMock } = agentPage(
+      {
+        conversation: () => ({ body: finished ? ANSWERED : QUESTION_ONLY }),
+        extra: { [STREAM]: { stream: (c) => void (stream = c) } },
+      },
+      `/agent?c=${CID}`,
+    )
+    expect(await screen.findByRole('article', { name: 'You' })).toHaveTextContent('Is anything wrong?')
+    const answer = await screen.findByRole('article', { name: 'Agent' })
+    expect(within(answer).getByText('Thinking…')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    await vi.waitFor(() => expect(stream).toBeDefined())
+    expect(calls(fetchMock, STREAM)[0][1]!.signal).toBeInstanceOf(AbortSignal)
+
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
+      stream.enqueue(enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'running' })))
+      stream.enqueue(enc.encode(line({ type: 'text', text: 'Looking so far' })))
+    })
+    expect(answer).toHaveTextContent('Looking so far')
+    expect(within(answer).getByText(/Running:/)).toBeVisible()
+
+    finished = true
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'done' })))
+      stream.enqueue(enc.encode(line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } })))
+      stream.close()
+    })
+    await vi.waitFor(() => expect(screen.getByRole('article', { name: 'Agent' })).toHaveTextContent('db is stopped.'))
+    expect(screen.getAllByRole('article', { name: 'Agent' })).toHaveLength(1)
+    expect(screen.getAllByRole('article', { name: 'You' })).toHaveLength(1)
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+    expect(calls(fetchMock, STOP)).toHaveLength(0)
+  })
+
+  it('shows the stored answer when it finished before it could be followed', async () => {
+    let reads = 0
+    const { fetchMock } = agentPage(
+      {
+        conversation: () => {
+          reads += 1
+          return { body: reads === 1 ? QUESTION_ONLY : ANSWERED }
+        },
+        extra: { [STREAM]: { status: 404, body: { detail: 'No answer is running.', code: 'idle' } } },
+      },
+      `/agent?c=${CID}`,
+    )
+    await vi.waitFor(() => expect(screen.getByRole('article', { name: 'Agent' })).toHaveTextContent('db is stopped.'))
+    expect(screen.queryByText('Thinking…')).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+    expect(calls(fetchMock, `GET /agent/conversations/${CID}`)).toHaveLength(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows a stopped answer with a quiet note, not as an error', async () => {
+    agentPage(
+      {
+        conversation: { body: QUESTION_ONLY },
+        extra: { [STREAM]: { stream: [line({ type: 'text', text: 'Half of it' }), line(STOPPED)] } },
+      },
+      `/agent?c=${CID}`,
+    )
+    const note = await screen.findByText('Stopped.')
+    expect(note).toBeVisible()
+    expect(note.closest('.vp-alert')).toBeNull()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('article', { name: 'Agent' })).toHaveTextContent('Half of it')
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+  })
+
+  it('shows a stopped event in a sent answer the same way', async () => {
+    agentPage({
+      chat: {
+        stream: [
+          line({ type: 'conversation', id: CID, title: 't', finding_id: null }),
+          line({ type: 'text', text: 'Half of it' }),
+          line(STOPPED),
+        ],
+      },
+    })
+    await ask()
+    const note = await screen.findByText('Stopped.')
+    expect(note.closest('.vp-alert')).toBeNull()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('Stop asks the server to stop the answer, with the app header, and ends the stream', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) }, extra: { [STOP]: { status: 204 } } })
+    const user = await ask()
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
+      stream.enqueue(enc.encode(line({ type: 'text', text: 'Part of an answer' })))
+    })
+    await screen.findByText('Part of an answer')
+    await later()
+    await user.click(screen.getByRole('button', { name: 'Stop' }))
+    await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
+    expect(new Headers(calls(fetchMock, STOP)[0][1]!.headers).get('X-Requested-With')).toBe('vegapunk')
+    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true)
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+    expect(screen.getByText('Part of an answer')).toBeVisible()
+    expect(screen.getByText('Stopped.').closest('.vp-alert')).toBeNull()
+  })
+
+  it('Stop on a followed answer stops it on the server', async () => {
+    const { fetchMock } = agentPage(
+      { conversation: { body: QUESTION_ONLY }, extra: { [STREAM]: { stream: () => {} }, [STOP]: { status: 204 } } },
+      `/agent?c=${CID}`,
+    )
+    await screen.findByRole('button', { name: 'Stop' })
+    await later()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
+    expect(calls(fetchMock, STREAM)[0][1]!.signal!.aborted).toBe(true)
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+  })
+
+  it('shows the stored answer when Stop finds it had already finished', async () => {
+    let finished = false
+    agentPage(
+      {
+        conversation: () => ({ body: finished ? ANSWERED : QUESTION_ONLY }),
+        extra: {
+          [STREAM]: { stream: () => {} },
+          [STOP]: () => {
+            finished = true
+            return { status: 404, body: { detail: 'No answer is running.', code: 'idle' } }
+          },
+        },
+      },
+      `/agent?c=${CID}`,
+    )
+    await screen.findByRole('button', { name: 'Stop' })
+    await later()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    await vi.waitFor(() => expect(screen.getByRole('article', { name: 'Agent' })).toHaveTextContent('db is stopped.'))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+  })
+
+  it('leaving the page only drops the stream: the answer is not stopped', async () => {
+    const { fetchMock, view } = agentPage({ chat: { stream: () => {} } })
+    await ask()
+    await screen.findByRole('button', { name: 'Stop' })
+    const signal = chatCall(fetchMock)![1].signal!
+    view.unmount()
+    expect(signal.aborted).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/stop'))).toBe(false)
+  })
+
+  it('going to another page only drops the stream too', async () => {
+    const { fetchMock } = agentPage({
+      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+      extra: { 'GET /agent/conversations': { body: { items: [] } } },
+    })
+    await ask()
+    await screen.findByRole('button', { name: 'Stop' })
+    const signal = chatCall(fetchMock)![1].signal!
+    await userEvent.click(screen.getByRole('link', { name: 'History' }))
+    await screen.findByRole('heading', { level: 1, name: 'History' })
+    expect(signal.aborted).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/stop'))).toBe(false)
+  })
+
+  it('a reattached stream is dropped, not stopped, when the page is left', async () => {
+    const { fetchMock, view } = agentPage(
+      { conversation: { body: QUESTION_ONLY }, extra: { [STREAM]: { stream: () => {} } } },
+      `/agent?c=${CID}`,
+    )
+    await screen.findByRole('button', { name: 'Stop' })
+    await vi.waitFor(() => expect(calls(fetchMock, STREAM)).toHaveLength(1))
+    view.unmount()
+    expect(calls(fetchMock, STREAM)[0][1]!.signal!.aborted).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/stop'))).toBe(false)
+  })
+
+  it('New conversation while answering leaves the answer running', async () => {
+    const { fetchMock } = agentPage({
+      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+    })
+    await ask()
+    await screen.findByRole('button', { name: 'Stop' })
+    await later()
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(await screen.findByText('Ask about this host')).toBeVisible()
+    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/stop'))).toBe(false)
+  })
+
+  it('follows the answer instead of failing when Send finds this conversation still answering', async () => {
+    let answering = false
+    const STORED = { ...ANSWERED, messages: ANSWERED.messages }
+    agentPage(
+      {
+        chat: () => {
+          answering = true // started from another tab, say
+          return { status: 409, body: { detail: 'The agent is already answering.', code: 'busy' } }
+        },
+        conversation: () => ({
+          body: answering
+            ? { ...STORED, answering: true, messages: [...STORED.messages, { role: 'user', text: 'From elsewhere', steps: [] }] }
+            : STORED,
+        }),
+        extra: { [STREAM]: { stream: (c) => c.enqueue(enc.encode(line({ type: 'text', text: 'Answering elsewhere' }))) } },
+      },
+      `/agent?c=${CID}`,
+    )
+    await screen.findByRole('article', { name: 'Agent' })
+    await ask('mine')
+    expect(await screen.findByText('Answering elsewhere')).toBeVisible()
+    expect(screen.getByText('From elsewhere')).toBeVisible()
+    expect(screen.queryByText('The agent is already answering. Wait for it to finish.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expect(await composer()).toHaveValue('mine')
+  })
+
+  it('says the agent is busy when Send finds another conversation answering', async () => {
+    agentPage(
+      {
+        chat: { status: 409, body: { detail: 'The agent is already answering.', code: 'busy' } },
+        conversation: { body: ANSWERED },
+      },
+      `/agent?c=${CID}`,
+    )
+    await screen.findByRole('article', { name: 'Agent' })
+    await ask('mine')
+    expect(await screen.findByText('The agent is already answering. Wait for it to finish.')).toBeVisible()
+    expect(screen.getAllByRole('article', { name: 'You' })).toHaveLength(1)
+    expect(await composer()).toHaveValue('mine')
+  })
+})
+
+describe('Agent page: second review fixes', () => {
+  it('shows the earlier messages when asking about a finding resumes its conversation', async () => {
+    agentPage(
+      {
+        chat: {
+          stream: [
+            line({ type: 'conversation', id: CID, title: 'About: web', finding_id: 7 }),
+            line({ type: 'text', text: 'New answer.' }),
+            line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } }),
+          ],
+        },
+        conversation: {
+          body: {
+            ...QUESTION_ONLY,
+            finding_id: 7,
+            finding_title: 'web keeps restarting',
+            messages: [
+              { role: 'user', text: 'Earlier question', steps: [] },
+              { role: 'assistant', text: 'Earlier answer.', steps: [] },
+              { role: 'user', text: 'New question', steps: [] },
+            ],
+          },
+        },
+        extra: { 'GET /findings/7': { body: findingDetail({ id: '7', title: 'web keeps restarting' }) } },
+      },
+      '/agent?about=7',
+    )
+    await screen.findByTestId('agent-finding')
+    await userEvent.clear(await composer())
+    await ask('New question')
+    expect(await screen.findByText('Earlier question')).toBeVisible()
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole('article').map((a) => a.textContent)).toEqual([
+        'Earlier question',
+        expect.stringContaining('Earlier answer.'),
+        'New question',
+        expect.stringContaining('New answer.'),
+      ]),
+    )
+  })
+
+  it('drops an older finding when a later ?about= is unknown', async () => {
+    function Go() {
+      const navigate = useNavigate()
+      return <button onClick={() => void navigate('/agent?about=nope')}>go</button>
+    }
+    const { sent } = stubApi({
+      'GET /setup/status': { body: { admin_created: true } },
+      'GET /me': { body: ADMIN },
+      'GET /settings/ai': { body: CONFIGURED },
+      'POST /agent/chat': { stream: ANSWER.map(line) },
+      'GET /findings/7': { body: findingDetail({ id: '7', title: 'web keeps restarting' }) },
+      'GET /findings/nope': { status: 404, body: { detail: 'No such finding.' } },
+    })
+    render(
+      <MemoryRouter initialEntries={['/agent?about=7']}>
+        <App />
+        <LocationProbe />
+        <Go />
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('agent-finding')
+    await vi.waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/agent$/))
+    await userEvent.click(screen.getByRole('button', { name: 'go' }))
+    await vi.waitFor(() => expect(screen.queryByTestId('agent-finding')).not.toBeInTheDocument())
+    await userEvent.clear(await composer())
+    await ask('hello')
+    await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(1))
+    expect(sent('POST /agent/chat')[0]).toEqual({ message: 'hello', conversation_id: null })
   })
 })

@@ -97,6 +97,8 @@ export type Conversation = {
   updated_at: string
   finding_id: number | null
   finding_title: string | null
+  /** The agent is answering in it right now; the answer can be followed at `/stream`. */
+  answering?: boolean
 }
 
 export type ConversationDetail = Conversation & { available: boolean; messages: StoredMessage[] }

@@ -9,6 +9,8 @@ export type Msg = {
   status?: 'thinking' | 'streaming'
   /** The reason an answer ended early, shown beneath it. */
   error?: string
+  /** The answer was stopped on request: shown beneath it as a quiet note, not as an error. */
+  stopped?: boolean
 }
 
 function lastAssistant(messages: Msg[]): number {
@@ -34,6 +36,7 @@ export function applyEvent(messages: Msg[], event: ChatEvent): Msg[] {
     case 'done':
       return updateLast(messages, ({ status: _status, ...m }) => m)
     case 'error':
+      if (event.code === 'stopped') return updateLast(messages, ({ status: _status, ...m }) => ({ ...m, stopped: true }))
       return updateLast(messages, ({ status: _status, ...m }) => ({ ...m, error: event.message }))
     default:
       return messages
@@ -44,7 +47,7 @@ export function applyEvent(messages: Msg[], event: ChatEvent): Msg[] {
  * and nothing else explains why. */
 export function finish(messages: Msg[]): Msg[] {
   return updateLast(messages, ({ status, ...m }) =>
-    status && m.text === '' && !m.error && m.steps.length === 0 ? { ...m, text: 'Stopped.' } : m,
+    status && m.text === '' && !m.error && !m.stopped && m.steps.length === 0 ? { ...m, text: 'Stopped.' } : m,
   )
 }
 

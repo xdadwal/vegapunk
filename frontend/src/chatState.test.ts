@@ -46,6 +46,19 @@ describe('applyEvent', () => {
     expect(m[1].status).toBeUndefined()
   })
 
+  it('marks a stopped answer as stopped, not as failed, keeping what was written', () => {
+    const partial = applyEvent(waiting, { type: 'text', text: 'Partly' })
+    const m = applyEvent(partial, { type: 'error', code: 'stopped', message: 'Stopped.' })
+    expect(m[1]).toMatchObject({ text: 'Partly', stopped: true })
+    expect(m[1].error).toBeUndefined()
+    expect(m[1].status).toBeUndefined()
+  })
+
+  it('leaves an empty stopped answer empty, so finish does not add Stopped. as its text', () => {
+    const m = finish(applyEvent(waiting, { type: 'error', code: 'stopped', message: 'Stopped.' }))
+    expect(m[1]).toMatchObject({ text: '', stopped: true })
+  })
+
   it('ignores the conversation event and does not change its input', () => {
     const before = JSON.stringify(waiting)
     expect(applyEvent(waiting, { type: 'conversation', id: 'c', title: 't', finding_id: null })).toEqual(waiting)

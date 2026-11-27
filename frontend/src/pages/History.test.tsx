@@ -90,6 +90,15 @@ describe('History', () => {
     expect(screen.getByText('Dec 30, 12:30 AM UTC')).toBeVisible()
   })
 
+  it('says when the agent is still answering in a conversation', async () => {
+    historyPage([{ ...ITEMS[0], answering: true }, ITEMS[1]])
+    await conversations()
+    const [busy, idle] = items()
+    expect(within(busy).getByText('Answering…')).toBeVisible()
+    expect(within(busy).getByText(/Jan 2, 3:12 PM UTC/)).toBeVisible()
+    expect(within(idle).queryByText('Answering…')).not.toBeInTheDocument()
+  })
+
   it('has a breadcrumb back to the Agent page', async () => {
     historyPage()
     const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' })

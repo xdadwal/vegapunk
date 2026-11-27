@@ -24,18 +24,40 @@ function isEvent(value: unknown): value is ChatEvent {
  * A failure before streaming starts (a 409 because the agent is busy, say) throws an
  * ApiError whose `body.code` says which. A line that is not valid JSON is skipped.
  * Aborting resolves quietly, and also cancels the body reader, so it returns even when
- * the underlying `fetch` ignores the signal.
+ * the underlying `fetch` ignores the signal. It only stops reading: the answer goes on on
+ * the server until it ends or is stopped (`POST /agent/conversations/<id>/stop`).
  */
 export async function streamChat(body: Body, onEvent: (event: ChatEvent) => void, signal?: AbortSignal): Promise<void> {
-  let response: Response
-  try {
-    response = await fetch('/api/agent/chat', {
+  await read(
+    '/api/agent/chat',
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      credentials: 'same-origin',
-      signal,
-    })
+    },
+    onEvent,
+    signal,
+  )
+}
+
+/**
+ * Follow the answer the agent is writing in a conversation: what it has written so far, then
+ * the rest as it comes. Nothing running throws an ApiError whose `body.code` is `idle`.
+ * Aborting only stops reading; the answer goes on on the server.
+ */
+export async function followAnswer(id: string, onEvent: (event: ChatEvent) => void, signal?: AbortSignal): Promise<void> {
+  await read(`/api/agent/conversations/${encodeURIComponent(id)}/stream`, { method: 'GET' }, onEvent, signal)
+}
+
+async function read(
+  url: string,
+  init: RequestInit,
+  onEvent: (event: ChatEvent) => void,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, credentials: 'same-origin', signal })
   } catch (error) {
     if (isAbort(error)) return
     throw new ApiError(0, "Couldn't reach the server.")
