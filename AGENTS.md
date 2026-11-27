@@ -43,7 +43,8 @@ Out of scope: multiple hosts, a host agent, multiple users, non-Docker services.
 - The server runs on users' machines with access to their services: treat security as a first-class concern (least privilege, validate all inputs, never execute unvalidated commands, avoid storing secrets in plaintext).
 - Write tests alongside new functionality.
 - Keep `README.md` user-facing and brief; put contributor/dev details here or in `docs/` (`CONTRIBUTING.md` is the contributor guide, `docs/development.md` the developer guide).
-- Community files exist: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, and the issue forms, pull request template, `CODEOWNERS` and Dependabot config in `.github/`; keep them in step with the scope and the CI commands.
+- Community files exist: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, `GOVERNANCE.md`, `MAINTAINERS.md`, and the issue forms, pull request template, `CODEOWNERS` and Dependabot config in `.github/`; keep them in step with the scope and the CI commands.
+- Contributor tooling: the root `Makefile` (shortcuts for the commands below), `.editorconfig` (matches ruff's 100 and Prettier's 120 columns), the optional `.pre-commit-config.yaml`, and `.devcontainer/devcontainer.json` for VS Code and Codespaces. The dev container has not been run yet (unverified); keep the Makefile's `check` target identical to the CI jobs' commands.
 - Do not commit or push unless asked.
 
 ## Design decisions
@@ -93,6 +94,8 @@ Frontend, from `frontend/`:
 - `npm run build` — type-check and build
 
 Whole app: `docker compose up --build` builds one image that serves the API and the built frontend on port 8000 (`VEGAPUNK_PORT` changes the host port). `sh scripts/smoke.sh` builds the image, starts it under a throwaway project on a free port, checks that it becomes healthy and answers, and cleans up; it never touches a running `vegapunk` container.
+
+From the repository root, `make check` runs exactly what CI's backend and frontend jobs run (`make help` lists the other targets).
 
 CI (`.github/workflows/ci.yml`) runs lint, tests with coverage, and build for both, checks frontend formatting, checks both compose files, and builds the image and runs the smoke test, on every pull request.
 

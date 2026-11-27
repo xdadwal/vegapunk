@@ -43,7 +43,19 @@ A feature outside the first version needs a discussion before any code. Start on
 
 See [docs/development.md](docs/development.md) for the repository layout, running the backend and frontend dev servers, tests, the Docker build and how the main parts fit together.
 
-The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24 and, for the image, Docker with Compose. Docker should be running while you work, or the pages will have no container data.
+The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24, `make` and, for the image, Docker with Compose. Docker should be running while you work, or the pages will have no container data. From the repository root:
+
+```sh
+make setup      # install the backend and frontend dependencies
+make backend    # the API on http://localhost:8000
+make frontend   # in a second terminal: the web interface on http://localhost:5173
+```
+
+`make` on its own lists every target.
+
+**Dev container (not verified).** The repository has a [dev container](.devcontainer/devcontainer.json) configuration for VS Code Dev Containers and GitHub Codespaces, with Python 3.12, Node.js 24, uv and access to Docker. It has not been run by the maintainer yet, so if you try it, please say in an issue or discussion whether it worked.
+
+**pre-commit (optional).** [.pre-commit-config.yaml](.pre-commit-config.yaml) runs whitespace checks, ruff, oxlint and Prettier before each commit. To use it: `uv tool install pre-commit`, then `pre-commit install` in your clone. CI does not need it.
 
 ### Your first pull request
 
@@ -62,7 +74,7 @@ Not sure about something? Open the pull request as a draft and ask in it. Half-f
 
 ## Checks to run before you open a pull request
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request, and they are expected to pass. Run the same commands locally before you push.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request, and they are expected to pass. Run the same commands locally before you push. From the repository root, `make check` runs exactly the backend and frontend commands below (it takes a few minutes); `make format` fixes formatting in both.
 
 **Backend**, from `backend/`:
 
@@ -145,6 +157,10 @@ Please **don't** report a vulnerability in a public issue, pull request or discu
 ## Questions
 
 Ask in [Discussions](https://github.com/xdadwal/vegapunk/discussions). [SUPPORT.md](SUPPORT.md) lists where to go for what.
+
+## How the project is run
+
+[GOVERNANCE.md](GOVERNANCE.md) says how decisions are made and how to propose a change to the scope. [MAINTAINERS.md](MAINTAINERS.md) lists the maintainer and how to become one.
 
 ## Recognition
 

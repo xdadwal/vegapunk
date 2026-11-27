@@ -105,6 +105,9 @@ Contributions, ideas, and bug reports are welcome — feel free to open an issue
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other.
 - [SUPPORT.md](SUPPORT.md): where to ask questions and how to report a bug.
 - [Discussions](https://github.com/xdadwal/vegapunk/discussions): questions, ideas and sharing your setup.
+- [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md): how decisions are made and who maintains Vegapunk.
+
+`make setup` installs everything for development, and `make check` runs the same checks as CI.
 
 ## Project status and roadmap
 
