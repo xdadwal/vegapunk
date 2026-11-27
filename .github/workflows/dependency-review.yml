@@ -21,4 +21,5 @@ jobs:
       - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
+          # Fork PRs get a read-only token, so the comment cannot be posted there; same-repo PRs get it.
           comment-summary-in-pr: on-failure
