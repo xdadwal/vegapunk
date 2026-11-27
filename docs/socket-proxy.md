@@ -6,7 +6,7 @@ By default Vegapunk reads Docker through the Docker socket, mounted into its con
 
 Whoever can use the Docker socket controls Docker. That means they can start any container, mount any folder of the host into it, and so act as root on the host. Mounting the socket read-only (`:ro`) does not change that: the flag stops the socket file from being replaced, not requests from being sent through it.
 
-Vegapunk only reads. All its Docker calls are in one small module that has no way to start, stop or change anything. But that is a promise made by Vegapunk's code. If someone found a way to make Vegapunk send other requests, the socket would carry them.
+Vegapunk only reads. All its Docker calls are in one small module that only has read operations. But that is a promise made by Vegapunk's code. If someone found a way to make Vegapunk send other requests, the socket would carry them.
 
 The proxy moves most of that promise outside Vegapunk. Vegapunk no longer gets the socket. It gets the address of the proxy, which passes on only `GET` and `HEAD` requests to the parts of the API Vegapunk reads, and answers everything else with `403 Forbidden`.
 
@@ -33,7 +33,7 @@ What does not change:
 
 - Vegapunk shows the same data, and the agent can read container logs as before.
 - Your data. Vegapunk keeps the same data volume, so you can switch the proxy on and off without losing anything.
-- The proxy still has full access to the socket, and `CONTAINERS=1` allows every read under `/containers`. That includes **reading files from inside any container** (`GET /containers/<id>/archive`, and `GET /containers/<id>/export` for a container's whole filesystem) and every container's details, which include its environment variables. Vegapunk never reads container files and never shows or passes on environment variables, but the proxy does not stop these reads.
+- The proxy still has full access to the socket, and `CONTAINERS=1` allows every read under `/containers`. That includes **reading files from inside any container** (`GET /containers/<id>/archive`, and `GET /containers/<id>/export` for a container's whole filesystem) and every container's details, which include its environment variables. Vegapunk never reads container files and never stores, shows or passes on environment variables, but the proxy does not stop these reads.
 - `CONTAINERS=1` also passes `GET /containers/<id>/attach/ws`, which opens a WebSocket to the container. The Docker API documents it as able to send input to a container that was started with its input open (`docker run -i`, or `stdin_open: true` in Compose), so through the proxy someone could in principle type into such a container. Sending input was not tried here; opening the WebSocket through the proxy was, and it was accepted (`101 Switching Protocols`). Blocking it would need a custom HAProxy configuration, which this guide does not ship.
 - A path containing `..` (such as `/containers/../images/json`) gets past the proxy's `/containers` rule, but Docker answers it with a redirect to the cleaned path and no data, and following the redirect goes back through the proxy and is refused with `403`. (Seen with Docker Engine 29.6.1.)
 

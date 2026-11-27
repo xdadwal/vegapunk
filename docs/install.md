@@ -88,11 +88,11 @@ Some base URLs:
 
 ## How Vegapunk reads your host
 
-- **Docker access.** Vegapunk reads container state and usage through the Docker socket. The socket gives this container control of Docker, whatever the mount flags say, so treat Vegapunk as having that power. Vegapunk only reads from it, in one small module (`backend/vegapunk/host/docker.py`) that has no way to start, stop or change anything. To take that power away from Vegapunk's container, put the optional [read-only socket proxy](socket-proxy.md) in front of Docker.
+- **Docker access.** Vegapunk reads container state and usage through the Docker socket. The socket gives this container control of Docker, whatever the mount flags say, so treat Vegapunk as having that power. Vegapunk only reads from it, in one small module (`backend/vegapunk/host/docker.py`) that only has read operations. To take that power away from Vegapunk's container, put the optional [read-only socket proxy](socket-proxy.md) in front of Docker.
 - **`DOCKER_GID`.** The container runs as a non-root user and reaches the socket through the group that owns it. If the page says "Vegapunk can't read the Docker socket", set `DOCKER_GID` as shown in [Install](#install).
 - **What is measured.** CPU, memory and uptime come from the container's own `/proc`, which on Linux already reports the whole host. Storage is the disk Docker keeps its data on; to measure another disk, mount a folder on it read-only and set `VEGAPUNK_DISK_PATH` to that path. On Docker Desktop these numbers describe Docker's VM, not your computer (see [Troubleshooting](#docker-desktop-shows-the-wrong-memory-storage-or-host-name)).
 - **How often.** Every 15 seconds; set `VEGAPUNK_CAPTURE_INTERVAL` (seconds) to change it. Detail is kept for a day and 5-minute averages for 30 days.
-- **Logs are not stored.** The agent reads a container's logs live from Docker when it needs them; only the lines it cites as evidence in a finding are kept.
+- **Logs are not collected.** Vegapunk does not capture or keep container logs. The agent reads them live from Docker when it needs them. A finding keeps the redacted lines it cites as evidence. A chat keeps the redacted lines the agent read, as part of the conversation, until you delete it.
 
 ## Configuration
 
@@ -170,6 +170,8 @@ docker compose stop
 docker compose start
 ```
 
+If you use a folder mount (`compose.override.yaml`) instead of the volume, the `docker inspect` line returns nothing. Back the folder up directly with `tar` on the host instead, after `docker compose stop`, running it as root or as user 10001 so ownership is kept (not verified).
+
 `python:3.12-slim` is the base image in Vegapunk's `Dockerfile`, so it is normally on your machine already (Docker pulls it if not). Any image with GNU tar works. The archive keeps file ownership. Check what is in it:
 
 ```sh
@@ -193,7 +195,7 @@ docker volume rm "$VOLUME"
 
 On a new machine, clone the repository first and do not start it yet.
 
-Then, in the cloned folder, create the empty volume, unpack the backup into it as root, give the files back to user 10001 (which Vegapunk runs as and which must be able to write them), and start:
+Then (on a new machine, after cloning; on the same machine, straight after the removal above), in the cloned folder, create the empty volume, unpack the backup into it as root, give the files back to user 10001 (which Vegapunk runs as and which must be able to write them), and start:
 
 ```sh
 # The volume Compose will use: <project>_vegapunk-data, where the project is this folder's
@@ -204,6 +206,8 @@ docker run --rm -i -v "$VOLUME":/data python:3.12-slim \
   sh -c 'tar -C /data --same-owner -xpf - && chown -R 10001 /data' < ~/vegapunk-backup.tar
 docker compose up -d --build
 ```
+
+If you started Vegapunk with `-p <name>` or `COMPOSE_PROJECT_NAME`, add the same `-p <name>` to the `docker compose config` and `docker compose up` commands above.
 
 Compose may warn that the volume "already exists but was not created by Docker Compose". That is expected, and it uses the volume. After the start, the `docker inspect` line above shows the same name.
 

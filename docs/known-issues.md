@@ -6,7 +6,7 @@ Things we know are wrong, unverified, or deliberately limited. Each has a status
 
 What has been run, and what has not:
 
-- **Verified on Docker Desktop for macOS:** Vegapunk itself, with the agent and findings using Gemma (`docker.io/ai/gemma4:latest`) through Docker Model Runner; a fresh install, backup, restore and upgrade as written in the [install guide](install.md); and the [socket proxy](socket-proxy.md).
+- **Verified on Docker Desktop for macOS:** Vegapunk was used during development with Gemma (`docker.io/ai/gemma4:latest`) through Docker Model Runner, and the [install guide](install.md)'s "Test connection" against it was run; install, backup, restore and upgrade were run from a local copy of the repository (cloning from GitHub and the folder mount were not); and the [socket proxy](socket-proxy.md) was run.
 - **Not verified:** a Linux host, including the `DOCKER_GID` path (see 2); any hosted AI provider, and Ollama (see 6 and 8); the smoke test running in GitHub Actions; Windows.
 
 ## Open
@@ -81,4 +81,5 @@ On Docker Desktop the storage figure can read high (see known issue 1), which ca
 - **One answer at a time**, server-wide, with at most 8 model turns and 12 lookups each.
 - **An answer keeps running after the browser leaves**, until it ends, hits its limits (180 s, 8 turns, 12 lookups) or someone presses Stop, so a model you are billed for keeps working meanwhile. A sync log read already under way when Stop is pressed finishes in the background.
 - **A reattached answer replays merged text.** A reader who joins late gets the text so far as one event; past 5,000 events, step events are no longer kept for late readers (live readers still get them).
+- **Chat conversations keep the log lines the agent read** (redacted) in `conversations.db` until the conversation is deleted. After a year with no new message its messages are hidden (the conversation stays listed in History), not erased.
 - **Long conversations rely on logpose's own context handling,** which summarises when a provider rejects an over-long request.
