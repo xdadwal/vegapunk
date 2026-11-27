@@ -26,6 +26,10 @@ Vegapunk is a single server that runs on your homelab host. It periodically capt
 
 ## Screenshots
 
+![A 25-second tour of Vegapunk: the Overview, a restarting container, the finding the agent raised about it, and the agent answering a follow-up question from the container's logs](docs/images/demo.gif)
+
+*A short tour of a demo instance. The wait for the agent's answer is shortened.*
+
 ![The Overview page: two findings that need attention, the host's CPU, memory and storage, and a chart of CPU and memory over the last hour](docs/images/overview.png)
 
 | | |
