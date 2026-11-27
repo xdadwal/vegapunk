@@ -83,13 +83,25 @@ export type Step = { id?: string; label: string; status: StepStatus }
 
 /** One line of the chat stream. */
 export type ChatEvent =
-  | { type: 'conversation'; id: string; title: string }
+  | { type: 'conversation'; id: string; title: string; finding_id: number | null }
   | { type: 'text'; text: string }
   | { type: 'step'; id: string; label: string; status: StepStatus }
   | { type: 'done'; usage: { input_tokens: number; output_tokens: number } }
   | { type: 'error'; code: string; message: string }
 
-export type Conversation = { id: string; title: string; updated_at: string }
+/** `finding_id` is set when the conversation is about a finding; `finding_title` is that finding's
+ * title now (null once it is pruned, or if the row could not be read). */
+export type Conversation = {
+  id: string
+  title: string
+  updated_at: string
+  finding_id: number | null
+  finding_title: string | null
+  /** The agent is answering in it right now; the answer can be followed at `/stream`. */
+  answering?: boolean
+}
+
+export type ConversationDetail = Conversation & { available: boolean; messages: StoredMessage[] }
 
 export type StoredMessage = {
   role: 'user' | 'assistant'
@@ -107,3 +119,42 @@ export type AiSettings = {
   key_rejected_at: string | null
   key_unreadable: boolean
 }
+
+export type FindingStatus = 'open' | 'resolved' | 'reviewed'
+
+export type FindingItem = {
+  id: string
+  key: string
+  subject: string
+  title: string
+  status: FindingStatus
+  trigger: 'scheduled' | 'watch'
+  first_seen_at: string
+  last_seen_at: string
+  reviewed_at: string | null
+  resolved_at: string | null
+  /** The agent conversation about this finding, if one was started. */
+  conversation_id: string | null
+}
+
+export type FindingChecks = {
+  enabled: boolean
+  hour: number
+  watch_enabled: boolean
+  last_run_at: string | null
+  last_error: string | null
+  skipped: null | 'off' | 'key_rejected' | 'unsupported'
+  running: boolean
+}
+
+export type FindingList = { items: FindingItem[]; open_count: number; checks: FindingChecks }
+
+export type EvidenceLine = { source: 'log' | 'metric'; text: string; at: string | null }
+
+export type FindingDetail = FindingItem & {
+  diagnosis: string
+  suggested_fix: string
+  evidence: EvidenceLine[]
+}
+
+export type CheckSettings = { enabled: boolean; hour: number; watch_enabled: boolean }

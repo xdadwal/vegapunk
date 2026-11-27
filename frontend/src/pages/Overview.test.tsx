@@ -1,7 +1,7 @@
 import { act, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { SOURCE_NEVER, hostPayload, metricsPayload } from '../test-fixtures'
+import { SOURCE_NEVER, findingItem, findingList, hostPayload, metricsPayload } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 
 const BASE = {
@@ -223,5 +223,46 @@ describe('Overview polling', () => {
     expect(screen.getByText(/Showing the last data we had/)).toBeVisible()
     await tick(5000)
     expect(screen.queryByText(/Showing the last data we had/)).not.toBeInTheDocument()
+  })
+})
+
+describe('Overview needs attention', () => {
+  const open = (n: number) =>
+    findingList(
+      Array.from({ length: n }, (_, i) =>
+        findingItem({ id: `f/${i}`, title: `Problem ${i}`, subject: `svc${i}` }),
+      ),
+    )
+
+  it('shows no card when nothing is open', async () => {
+    withHost(hostPayload())
+    renderApp('/')
+    await screen.findByRole('link', { name: 'Containers running' })
+    expect(screen.queryByRole('heading', { name: 'Needs attention' })).not.toBeInTheDocument()
+  })
+
+  it('lists at most three open findings, each linked, and links to all', async () => {
+    withHost(hostPayload(), { 'GET /findings?status=open': { body: open(5) } })
+    renderApp('/')
+    const heading = await screen.findByRole('heading', { level: 2, name: 'Needs attention' })
+    const card = heading.closest('.vp-card') as HTMLElement
+    const links = within(card).getAllByRole('link')
+    expect(links.map((l) => l.textContent)).toEqual(['Problem 0', 'Problem 1', 'Problem 2', 'See all 5 findings'])
+    expect(links[0]).toHaveAttribute('href', '/findings/f%2F0')
+    expect(within(card).getByText('svc0')).toHaveClass('vp-mono')
+    expect(links[3]).toHaveAttribute('href', '/findings')
+  })
+
+  it('says "See the finding" for one', async () => {
+    withHost(hostPayload(), { 'GET /findings?status=open': { body: open(1) } })
+    renderApp('/')
+    expect(await screen.findByRole('link', { name: 'See the finding' })).toHaveAttribute('href', '/findings')
+  })
+
+  it('shows nothing extra when the findings request fails', async () => {
+    withHost(hostPayload(), { 'GET /findings?status=open': { status: 500, body: { detail: 'boom' } } })
+    renderApp('/')
+    expect(await screen.findByRole('link', { name: 'Containers running' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Needs attention' })).not.toBeInTheDocument()
   })
 })

@@ -41,4 +41,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
 
 # One worker only: capture runs in a thread inside this process and keeps the previous
 # CPU readings in memory, so a second worker would capture everything twice.
-CMD ["uvicorn", "vegapunk.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# On stop, uvicorn waits for open requests before the app shuts down, and a browser tab
+# following an answer stays open until the answer ends; after 3 s it cuts them off, then
+# the app stops the running answers. compose.yaml gives Docker's stop the time for both.
+CMD ["uvicorn", "vegapunk.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--timeout-graceful-shutdown", "3"]

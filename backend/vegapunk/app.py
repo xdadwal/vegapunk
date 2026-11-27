@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from vegapunk.ai.operator import Operator
 from vegapunk.api.agent import router as agent_router
 from vegapunk.api.containers import router as containers_router
+from vegapunk.api.findings import router as findings_router
+from vegapunk.api.findings import settings_router as check_settings_router
 from vegapunk.api.host import router as host_router
 from vegapunk.api.settings import router as settings_router
 from vegapunk.auth.routes import router as auth_router
@@ -19,6 +21,7 @@ from vegapunk.config import Settings
 from vegapunk.crypto import load_or_create_key
 from vegapunk.db import connect, migrate, prepare_data_dir
 from vegapunk.host.docker import DockerHost
+from vegapunk.watch.runner import Runner
 
 
 def _default_provider(**kwargs):
@@ -39,9 +42,10 @@ def create_app(
         app.state.started_at = datetime.now(UTC)
         prepare_data_dir(settings)
         app.state.crypto_key = load_or_create_key(settings.data_dir)
+        host = docker or DockerHost(settings.docker_url)
         app.state.operator = Operator(
             settings,
-            docker or DockerHost(settings.docker_url),
+            host,
             app.state.crypto_key,
             app.state.started_at,
             make_agent,
@@ -52,6 +56,7 @@ def create_app(
         finally:
             conn.close()
         scheduler = None
+        app.state.runner = None
         if settings.capture:
             scheduler = Scheduler(
                 settings.db_path,
@@ -59,9 +64,17 @@ def create_app(
                 settings.capture_interval,
             )
             scheduler.start()
+            app.state.runner = Runner(
+                settings, host, app.state.crypto_key, app.state.started_at, make_agent
+            )
+            app.state.runner.start()
         try:
             yield
         finally:
+            # First: a running answer still needs the databases and key for its cleanup.
+            await app.state.operator.shutdown()
+            if app.state.runner is not None:
+                await app.state.runner.stop()
             if scheduler is not None:
                 scheduler.stop()
 
@@ -73,6 +86,8 @@ def create_app(
     app.include_router(containers_router)
     app.include_router(settings_router)
     app.include_router(agent_router)
+    app.include_router(findings_router)
+    app.include_router(check_settings_router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

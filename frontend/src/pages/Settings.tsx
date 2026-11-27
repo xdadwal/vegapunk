@@ -8,9 +8,11 @@ import { Alert } from '../components/Alert'
 import { Button } from '../components/Button'
 import { EmptyState } from '../components/EmptyState'
 import { PageHeader } from '../components/PageHeader'
+import { Select } from '../components/Select'
 import { Spinner } from '../components/Spinner'
-import { formatClock } from '../format'
-import type { AiSettings } from '../types'
+import { Switch } from '../components/Switch'
+import { formatClock, formatHour } from '../format'
+import type { AiSettings, CheckSettings } from '../types'
 import { usePolling } from '../usePolling'
 import './overview.css'
 import './profile.css'
@@ -51,6 +53,127 @@ function TurnOff({ onDone }: { onDone: () => void }) {
         {confirming ? 'Confirm: turn off AI' : 'Turn off AI'}
       </Button>
     </div>
+  )
+}
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({ value: String(hour), label: formatHour(hour) }))
+
+function ChecksSection() {
+  const { request } = useAuth()
+  const [saved, setSaved] = useState<CheckSettings | null>(null)
+  const [enabled, setEnabled] = useState(true)
+  const [hour, setHour] = useState(0)
+  const [watch, setWatch] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [done, setDone] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+
+  useEffect(() => {
+    let current = true
+    request<CheckSettings>('/settings/checks').then(
+      (loaded) => {
+        if (!current) return
+        setSaved(loaded)
+        setEnabled(loaded.enabled)
+        setHour(loaded.hour)
+        setWatch(loaded.watch_enabled)
+        setLoadFailed(false)
+      },
+      () => current && setLoadFailed(true),
+    )
+    return () => {
+      current = false
+    }
+  }, [request, attempt])
+
+  async function save() {
+    setSaving(true)
+    setDone(false)
+    setFailure(null)
+    try {
+      const result = await request<CheckSettings>('/settings/checks', {
+        method: 'PUT',
+        body: { enabled, hour, watch_enabled: watch },
+      })
+      setSaved(result)
+      setDone(true)
+    } catch (error) {
+      setFailure(error instanceof ApiError ? error.detail : "Couldn't save the check settings.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  let body
+  if (saved) {
+    body = (
+      <form
+        className="profile-form"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+      >
+        <p className="page-note">
+          A daily check asks your AI provider to review every container and the host. The background watch uses simple
+          rules to notice a restart loop, a memory kill, sustained high use or filling storage, and only then asks your
+          AI provider, at most 20 times a day.
+        </p>
+        <Switch
+          label="Run a check every day"
+          checked={enabled}
+          onChange={(value) => {
+            setEnabled(value)
+            setDone(false)
+          }}
+        />
+        <Select
+          label="Time of day (UTC)"
+          options={HOUR_OPTIONS}
+          value={String(hour)}
+          disabled={!enabled}
+          onChange={(e) => {
+            setHour(Number(e.target.value))
+            setDone(false)
+          }}
+        />
+        <Switch
+          label="Watch for problems in the background"
+          checked={watch}
+          onChange={(value) => {
+            setWatch(value)
+            setDone(false)
+          }}
+        />
+        {failure && <Alert tone="danger" title={failure} />}
+        {done && <Alert tone="success" title="Saved." />}
+        <Button type="submit" variant="primary" loading={saving}>
+          Save
+        </Button>
+      </form>
+    )
+  } else if (loadFailed) {
+    body = (
+      <div className="profile-form">
+        <Alert tone="warning" title="Couldn't load the check settings." />
+        <Button onClick={() => setAttempt((n) => n + 1)}>Retry</Button>
+      </div>
+    )
+  } else {
+    body = (
+      <div role="status" className="page-note">
+        <Spinner /> Loading…
+      </div>
+    )
+  }
+
+  return (
+    <section className="vp-card profile-section" aria-labelledby="checks-h">
+      <h2 id="checks-h">Checks</h2>
+      {body}
+    </section>
   )
 }
 
@@ -109,6 +232,8 @@ export default function Settings() {
         <AiProviderForm key={String(data.configured)} initial={data} onSaved={() => void reload()} />
         {data.configured && <TurnOff onDone={() => void reload()} />}
       </section>
+
+      <ChecksSection />
     </div>
   )
 }

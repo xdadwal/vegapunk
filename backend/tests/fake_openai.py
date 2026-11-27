@@ -26,7 +26,12 @@ class FakeOpenAI:
     - {"text": ["chunk", ...], "chunk_delay": seconds}
     - {"tool_calls": [{"id": "call_1", "name": "list_containers", "arguments": {...}}]}
     - {"status": 500}            an HTTP error
+    - {"status": 400, "message": "..."}  an HTTP error with that error message
     - {"hang": True}             never answers
+    - {"wait": threading.Event(), ...}  sends nothing until the test sets the event, then
+      plays the rest of the entry (a slow model that is silent while it thinks)
+    - {"text": [...], "pause": threading.Event(), "pause_at": 2}  sends the chunks before
+      index `pause_at`, then nothing until the test sets the event
     """
 
     script: list[dict] = field(default_factory=list)
@@ -74,9 +79,13 @@ def create_app(fake: FakeOpenAI) -> FastAPI:
         turn = fake.script[index]
         if turn.get("hang"):
             await asyncio.sleep(3600)
+        if "wait" in turn:
+            while not turn["wait"].is_set():
+                await asyncio.sleep(0.01)
         if "status" in turn:
             return JSONResponse(
-                {"error": {"message": "scripted failure"}}, status_code=turn["status"]
+                {"error": {"message": turn.get("message", "scripted failure")}},
+                status_code=turn["status"],
             )
 
         base = {
@@ -109,7 +118,10 @@ def create_app(fake: FakeOpenAI) -> FastAPI:
                 yield chunk({"tool_calls": calls})
                 yield chunk({}, "tool_calls")
             else:
-                for piece in turn["text"]:
+                for index, piece in enumerate(turn["text"]):
+                    if "pause" in turn and index == turn.get("pause_at", 0):
+                        while not turn["pause"].is_set():
+                            await asyncio.sleep(0.01)
                     yield chunk({"content": piece})
                     if turn.get("chunk_delay"):
                         await asyncio.sleep(turn["chunk_delay"])
@@ -130,12 +142,18 @@ def free_port() -> int:
 
 
 @contextmanager
-def serve(app) -> Iterator[str]:
-    """Run an ASGI app on a free local port in a thread. Yields its base URL."""
+def serve(app, graceful: float = 1) -> Iterator[str]:
+    """Run an ASGI app on a free local port in a thread. Yields its base URL.
+
+    `graceful` is how long shutdown waits for open requests before cancelling them."""
     port = free_port()
     server = uvicorn.Server(
         uvicorn.Config(
-            app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=1
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            timeout_graceful_shutdown=graceful,
         )
     )
     thread = threading.Thread(target=server.run, daemon=True)

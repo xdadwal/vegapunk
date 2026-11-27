@@ -1,0 +1,25 @@
+.finding-article {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 860px;
+}
+
+.finding-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+.finding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Above the row's stretched title link, so it can be clicked and focused on its own. */
+.finding-row-chat {
+  position: relative;
+  z-index: 1;
+}

@@ -9,10 +9,14 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from vegapunk.db import transaction
+from vegapunk.timefmt import z
 
 BUCKET = 300
 RAW_KEEP = 24 * 3600
 ROLLUP_KEEP = 30 * 86_400
+RESTART_KEEP = 30 * 86_400
+INVESTIGATION_KEEP = 7 * 86_400
+FINDING_KEEP = 90 * 86_400
 RECENT = 600  # roll up the buckets touching the last ten minutes
 
 
@@ -51,9 +55,27 @@ def prune(conn: sqlite3.Connection, now: datetime) -> None:
             conn.execute(f"DELETE FROM {table} WHERE res = 0 AND ts < ?", (raw_cutoff,))
             conn.execute(f"DELETE FROM {table} WHERE res = ? AND ts < ?", (BUCKET, rollup_cutoff))
         conn.execute(
-            "DELETE FROM container_metrics WHERE container_id IN "
-            "(SELECT id FROM containers WHERE removed_at IS NOT NULL AND removed_at < ?)",
-            (removed_cutoff,),
+            "DELETE FROM container_restarts WHERE ts < ?",
+            (int((now - timedelta(seconds=RESTART_KEEP)).timestamp()),),
+        )
+        for table in ("container_metrics", "container_restarts"):
+            conn.execute(
+                f"DELETE FROM {table} WHERE container_id IN "
+                "(SELECT id FROM containers WHERE removed_at IS NOT NULL AND removed_at < ?)",
+                (removed_cutoff,),
+            )
+        # A used OOM marker is kept while a container still carries it, so a container that
+        # stays OOM-exited does not fire again once the week is up.
+        conn.execute(
+            "DELETE FROM investigations WHERE started_at < ? AND (marker IS NULL OR NOT EXISTS "
+            "(SELECT 1 FROM containers WHERE containers.exit_marker = investigations.marker))",
+            (z(now - timedelta(seconds=INVESTIGATION_KEEP)),),
+        )
+        # Open findings are kept at any age; evidence goes by ON DELETE CASCADE.
+        conn.execute(
+            "DELETE FROM findings WHERE (status = 'resolved' AND resolved_at < ?) "
+            "OR (status = 'reviewed' AND reviewed_at < ?)",
+            (z(now - timedelta(seconds=FINDING_KEEP)),) * 2,
         )
         conn.execute(
             "DELETE FROM containers WHERE removed_at IS NOT NULL AND removed_at < ?",

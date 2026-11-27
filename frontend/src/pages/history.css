@@ -8,3 +8,7 @@
 .history-actions {
   flex: none;
 }
+
+.history-answering {
+  color: var(--ink-muted);
+}

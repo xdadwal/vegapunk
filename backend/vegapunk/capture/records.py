@@ -34,6 +34,8 @@ class ContainerObservation:
     health: str | None
     restart_count: int
     started_at: datetime | None
+    oom_killed: bool = False
+    exit_marker: str | None = None  # Docker's FinishedAt; None if it never exited
 
 
 @dataclass(frozen=True)

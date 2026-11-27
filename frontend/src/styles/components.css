@@ -284,3 +284,14 @@ a.vp-btn { text-decoration: none; }
 
 /* The latest value at the end of a single line. */
 .vp-chart-end { font-size: 12px; line-height: 16px; font-weight: 600; fill: var(--ink); }
+.vp-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); font-size: 12px; line-height: 16px; color: var(--ink-muted); }
+.vp-pager-buttons { display: flex; gap: var(--space-2); }
+
+/* Switch: on is brand, off is an outlined track. */
+.vp-switch-field { display: flex; align-items: center; gap: var(--space-3); }
+.vp-switch { position: relative; flex: none; width: 36px; height: 20px; padding: 0; border-radius: 999px; border: 1px solid var(--line); background: transparent; cursor: pointer; transition: background .15s var(--ease), border-color .15s var(--ease); }
+.vp-switch[aria-checked="true"] { background: var(--brand); border-color: var(--brand); }
+.vp-switch:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.vp-switch:disabled { opacity: .5; cursor: not-allowed; }
+.vp-switch-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-muted); transition: transform .15s var(--ease), background .15s var(--ease); }
+.vp-switch[aria-checked="true"] .vp-switch-thumb { transform: translateX(16px); background: var(--surface-200); }

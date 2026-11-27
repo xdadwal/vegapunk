@@ -28,6 +28,25 @@ describe('api', () => {
     expect(new Headers(init.headers).get('content-type')).toBe('application/json')
   })
 
+  it('marks every request that changes something with the app header, and no GET', async () => {
+    const fetchMock = vi.fn(() => respond(204))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api('/findings')
+    for (const method of ['POST', 'PUT', 'DELETE']) await api('/findings/check', { method })
+
+    const sent = (fetchMock.mock.calls as unknown as [string, RequestInit][]).map(([, init]) => [
+      init.method,
+      new Headers(init.headers).get('x-requested-with'),
+    ])
+    expect(sent).toEqual([
+      ['GET', null],
+      ['POST', 'vegapunk'],
+      ['PUT', 'vegapunk'],
+      ['DELETE', 'vegapunk'],
+    ])
+  })
+
   it('returns undefined for 204', async () => {
     vi.stubGlobal('fetch', vi.fn(() => respond(204)))
     await expect(api('/auth/sign-out', { method: 'POST' })).resolves.toBeUndefined()

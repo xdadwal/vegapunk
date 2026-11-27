@@ -1,4 +1,4 @@
-import { streamChat } from './agentStream'
+import { followAnswer, streamChat } from './agentStream'
 import { ApiError } from './api'
 import type { ChatEvent } from './types'
 
@@ -168,6 +168,42 @@ describe('streamChat', () => {
     )
     const controller = new AbortController()
     const done = streamChat(BODY, () => {}, controller.signal)
+    setTimeout(() => controller.abort(), 10)
+    await expect(done).resolves.toBeUndefined()
+  })
+})
+
+describe('followAnswer', () => {
+  it('reads the running answer of a conversation with a GET', async () => {
+    const fetchMock = vi.fn(() => respond(['{"type":"text","text":"so far"}\n', '{"type":"done","usage":{}}\n']))
+    vi.stubGlobal('fetch', fetchMock)
+    const { events, onEvent } = collect()
+    await followAnswer('a/b', onEvent)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/agent/conversations/a%2Fb/stream')
+    expect(init.method ?? 'GET').toBe('GET')
+    expect(init.credentials).toBe('same-origin')
+    expect(events.map((e) => e.type)).toEqual(['text', 'done'])
+  })
+
+  it('throws ApiError with code idle when nothing is running', async () => {
+    const body = JSON.stringify({ detail: 'No answer is running.', code: 'idle' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(body, { status: 404 }))),
+    )
+    const error = await followAnswer('c', () => {}).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).body).toMatchObject({ code: 'idle' })
+  })
+
+  it('resolves quietly when aborted', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(streamOf([], { close: false })))),
+    )
+    const controller = new AbortController()
+    const done = followAnswer('c', () => {}, controller.signal)
     setTimeout(() => controller.abort(), 10)
     await expect(done).resolves.toBeUndefined()
   })

@@ -35,7 +35,7 @@ The decisions for this milestone are recorded at the top of its plan.
 - **Findings:** each has a status, a diagnosis, the evidence lines it cites, and a suggested fix in words.
 - **Screens:** Findings, Finding detail, "Ask agent about this finding", and "Needs attention" on the Overview.
 
-Decision to confirm: background watching uses cheap rules (restart loops, out-of-memory kills, sustained high CPU or memory, filling disk) to decide when to call the model, so the provider is not called on every sample.
+Decision confirmed in the M4 plan (D1/D2): background watching uses cheap rules (restart loops, out-of-memory kills, sustained high CPU or memory, filling disk) to decide when to call the model, so the provider is not called on every sample.
 
 ## Milestone 5: Release
 

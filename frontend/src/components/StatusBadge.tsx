@@ -8,11 +8,11 @@ const WORDS: Record<Status, string> = {
 }
 
 /** A dot and a word, so state is never shown by colour alone. */
-export function StatusBadge({ status }: { status: Status }) {
+export function StatusBadge({ status, label }: { status: Status; label?: string }) {
   return (
     <span className={`vp-badge vp-status-${status}`}>
       <span className="vp-dot" aria-hidden="true" />
-      {WORDS[status]}
+      {label ?? WORDS[status]}
     </span>
   )
 }

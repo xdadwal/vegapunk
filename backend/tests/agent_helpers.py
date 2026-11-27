@@ -36,6 +36,9 @@ class Turn:
     deltas: tuple[ProviderEvent, ...] = ()
     error: BaseException | None = None
     delay: float = 0.0
+    # Waits for this event before sending the delta at index `wait_at` (a test-held gate).
+    wait: asyncio.Event | None = None
+    wait_at: int = 0
 
     @classmethod
     def text(cls, text: str, chunks: list[str] | None = None) -> "Turn":
@@ -67,6 +70,12 @@ class Turn:
             stop_reason="tool_use",
             deltas=tuple(deltas),
         )
+
+    @classmethod
+    def gated(cls, chunks: list[str], wait: asyncio.Event, at: int) -> "Turn":
+        """Text in `chunks`, holding before chunk number `at` until `wait` is set."""
+        turn = cls.text("".join(chunks), chunks)
+        return cls(turn.message, turn.stop_reason, turn.deltas, wait=wait, wait_at=at)
 
     @classmethod
     def fail(cls, error: BaseException) -> "Turn":
@@ -101,7 +110,9 @@ class FakeProvider:
             await asyncio.sleep(turn.delay)
         if turn.error is not None:
             raise turn.error
-        for delta in turn.deltas:
+        for index, delta in enumerate(turn.deltas):
+            if turn.wait is not None and index == turn.wait_at:
+                await turn.wait.wait()
             yield delta
         yield CompletionDone(message=turn.message, stop_reason=turn.stop_reason, usage=Usage())  # type: ignore[arg-type]
 
@@ -159,6 +170,9 @@ def make_operator(settings: Settings, provider: FakeProvider, docker=None, calls
 
 
 async def collect(
-    operator: Operator, message: str, conversation_id: str | None = None
+    operator: Operator,
+    message: str,
+    conversation_id: str | None = None,
+    finding_id: int | None = None,
 ) -> list[dict]:
-    return [event async for event in operator.chat(message, conversation_id)]
+    return [event async for event in operator.chat(message, conversation_id, finding_id)]
