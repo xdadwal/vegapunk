@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from tests.agent_helpers import FakeProvider, Turn, make_operator, save_config
+from tests.agent_helpers import FakeProvider, Turn, collect, make_operator, save_config
 from tests.helpers import listing, now, obs
 from vegapunk.ai import operator as operator_module
 from vegapunk.ai.operator import (
@@ -233,6 +233,45 @@ def test_shutdown_cancels_a_running_answer_and_leaves_no_task(ready):
     answer, seen, leftover, op = run(go())
     assert answer.done and seen[-1] == STOPPED and leftover == []
     assert not op._lock.locked()
+
+
+def test_shutdown_before_the_answer_task_has_run_leaves_nothing_behind(ready):
+    """Cancelled before its first step, the task never runs its own cleanup."""
+
+    async def go():
+        op = make_operator(ready, FakeProvider([Turn.text("never")]))
+        starting = asyncio.create_task(op.start_answer("hi", None))
+        await asyncio.sleep(0)  # start_answer has made the task, which has not run yet
+        (answer,) = op._running
+        await asyncio.wait_for(op.shutdown(), 5)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 2)
+        return op, answer
+
+    op, answer = run(go())
+    assert not op._running and answer.done
+    assert not op._lock.locked()
+
+
+def test_a_continued_conversation_moves_to_the_top_when_its_answer_starts(ready):
+    async def go():
+        gate = asyncio.Event()
+        op = make_operator(
+            ready,
+            FakeProvider([Turn.text("a"), Turn.text("b"), Turn.gated(["c", "d"], gate, 1)]),
+        )
+        first = (await collect(op, "First"))[0]["id"]
+        second = (await collect(op, "Second"))[0]["id"]
+        before = [r["id"] for r in rows(ready)]
+        answer = await op.start_answer("More?", first)
+        during = [r["id"] for r in rows(ready)]
+        gate.set()
+        await answer.wait()
+        return first, second, before, during
+
+    first, second, before, during = run(go())
+    assert before == [second, first]
+    assert during == [first, second]  # while it is still answering
 
 
 def test_the_record_is_bounded(monkeypatch):

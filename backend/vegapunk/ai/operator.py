@@ -241,6 +241,12 @@ class Answer:
     def done(self) -> bool:
         return self._ended.is_set()
 
+    @property
+    def finished(self) -> bool:
+        """Its last event (done or error) is out, so the run is stored: only cleanup is
+        left. Becomes true before `done`."""
+        return self._final
+
     def _publish(self, event: dict) -> None:
         self._final = self._final or event["type"] in _FINAL
         last = self._record[-1] if self._record else None
@@ -348,6 +354,8 @@ class Operator:
         answer._task = asyncio.create_task(
             self._produce(answer, self.chat(message, conversation_id, finding_id), started)
         )
+        # A task cancelled before its first step never runs `_produce`'s own cleanup.
+        answer._task.add_done_callback(lambda _: self._ended(answer, started))
         self._running.add(answer)
         # Shielded: a caller cancelled while waiting leaves the answer running.
         return await asyncio.shield(started)
@@ -380,9 +388,16 @@ class Operator:
             if not answer._final:
                 answer._publish(_error(*_PROBLEM))
         finally:
-            if self._active.get(answer.conversation_id or "") is answer:
-                del self._active[answer.conversation_id]
-            self._running.discard(answer)
+            self._ended(answer, started)
+
+    def _ended(self, answer: Answer, started: asyncio.Future) -> None:
+        """Forget a finished answer. Safe to call twice."""
+        if not started.done():
+            started.cancel()
+        if self._active.get(answer.conversation_id or "") is answer:
+            del self._active[answer.conversation_id]
+        self._running.discard(answer)
+        if not answer.done:
             answer._end()
 
     def active(self, conversation_id: str) -> Answer | None:
@@ -437,6 +452,8 @@ class Operator:
             title = existing["title"] if existing else store.make_title(message)
             if existing is None:
                 await self._db(lambda c: store.add_conversation(c, cid, title, datetime.now(UTC)))
+            else:  # to the top of History now, not only once a long answer ends
+                await self._db(lambda c: store.touch_conversation(c, cid, datetime.now(UTC)))
             linked = existing["finding_id"] if existing else None
             yield {"type": "conversation", "id": cid, "title": title, "finding_id": linked}
 

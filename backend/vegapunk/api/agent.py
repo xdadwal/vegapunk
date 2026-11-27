@@ -133,9 +133,11 @@ def conversations(conn: Db, request: Request, _: Admin_) -> dict:
 async def conversation(conversation_id: str, request: Request, _: Admin_):
     operator = request.app.state.operator
     answer = operator.active(conversation_id)
+    if answer is not None and answer.finished:  # stored already: only cleanup is left
+        answer = None
     try:
         messages = await operator.history(conversation_id)
-        if answer is not None and answer.done:  # it ended meanwhile: now it is stored
+        if answer is not None and answer.finished:  # it was stored meanwhile
             answer, messages = None, await operator.history(conversation_id)
     except UnknownConversation:
         return _gone()

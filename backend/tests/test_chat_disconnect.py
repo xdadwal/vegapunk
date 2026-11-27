@@ -209,6 +209,38 @@ def test_leaving_mid_answer_keeps_it_running_and_it_is_stored(settings, spec):
         gate.set()
 
 
+def test_detail_read_after_the_answer_is_saved_shows_it_once(settings, spec, monkeypatch):
+    """The answer is stored when its run ends, before the agent's cleanup has finished. A
+    detail read in between must not add the question again (the page would show the answer
+    twice), nor say it is still answering."""
+    from vegapunk.ai import operator as operator_module
+
+    cleanup = threading.Event()
+    touch = operator_module.store.touch_conversation
+
+    def slow_touch(conn, cid, when):
+        cleanup.wait(10)
+        return touch(conn, cid, when)
+
+    fake = FakeOpenAI(script=[{"text": ["All ", "good."]}])
+    try:
+        with stack(settings, fake, spec) as (client, app, _):
+            monkeypatch.setattr(operator_module.store, "touch_conversation", slow_touch)
+            first = leave(client, lambda events: events[-1]["type"] == "done")
+            cid = first[0]["id"]
+            assert app.state.operator.active(cid) is not None  # still cleaning up
+            shown = detail(client, cid)
+            assert [(m["role"], m["text"]) for m in shown["messages"]] == [
+                ("user", "Is anything wrong?"),
+                ("assistant", "All good."),
+            ]
+            assert shown["answering"] is False
+            cleanup.set()
+            wait_for(lambda: app.state.operator.active(cid) is None, what="the cleanup")
+    finally:
+        cleanup.set()
+
+
 def test_reattaching_replays_what_was_said_then_follows_to_the_end(settings, spec):
     pause = threading.Event()
     fake = FakeOpenAI(script=[{"text": ["one ", "two ", "three"], "pause": pause, "pause_at": 2}])
