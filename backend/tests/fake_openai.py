@@ -28,6 +28,8 @@ class FakeOpenAI:
     - {"status": 500}            an HTTP error
     - {"status": 400, "message": "..."}  an HTTP error with that error message
     - {"hang": True}             never answers
+    - {"wait": threading.Event(), ...}  sends nothing until the test sets the event, then
+      plays the rest of the entry (a slow model that is silent while it thinks)
     """
 
     script: list[dict] = field(default_factory=list)
@@ -75,6 +77,9 @@ def create_app(fake: FakeOpenAI) -> FastAPI:
         turn = fake.script[index]
         if turn.get("hang"):
             await asyncio.sleep(3600)
+        if "wait" in turn:
+            while not turn["wait"].is_set():
+                await asyncio.sleep(0.01)
         if "status" in turn:
             return JSONResponse(
                 {"error": {"message": turn.get("message", "scripted failure")}},
