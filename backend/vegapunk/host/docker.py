@@ -84,3 +84,20 @@ class DockerHost:
                 return None
 
         return self._read(stats)
+
+    def container_logs(self, container_id: str, tail: int) -> list[str] | None:
+        """The last `tail` lines of a container's output, oldest first. None if it is gone."""
+
+        def logs(c):
+            try:
+                raw = c.containers.get(container_id).logs(
+                    tail=tail, timestamps=True, stdout=True, stderr=True
+                )
+            except docker.errors.NotFound:
+                return None
+            lines = raw.decode("utf-8", errors="replace").split("\n")
+            if lines and lines[-1] == "":
+                lines.pop()
+            return [line.removesuffix("\r") for line in lines]
+
+        return self._read(logs)

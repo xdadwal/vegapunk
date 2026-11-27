@@ -24,6 +24,20 @@ Open http://localhost:8000 and create the admin account. Data lives in the `vega
 - **Behind an HTTPS reverse proxy?** Set `VEGAPUNK_SECURE_COOKIES=1` so the sign-in cookie is only sent over HTTPS.
 - **Using a folder instead of the volume?** The container runs as user ID 10001, so that user must be able to write to it.
 
+## The agent
+
+Vegapunk has an agent you can ask about your host: "Is anything wrong right now?", "Why is a container restarting?". It answers by reading what Vegapunk has captured, plus a container's live logs. **It only reads. It can't start, stop or change anything.**
+
+It runs on your own AI provider. After you create the admin account, Vegapunk asks for one; you can skip that and add it later in Settings.
+
+- **Which provider.** Any server that speaks the OpenAI API: OpenAI itself, OpenRouter, or a local server such as Ollama or vLLM. Enter its base URL, an API key if it needs one, and a model. "Test connection" lists the models the server offers.
+  - OpenAI: base URL `https://api.openai.com/v1`.
+  - Ollama on the same machine: base URL `http://host.docker.internal:11434/v1`, no key needed. (Ollama must listen on an address the container can reach; by default it listens only on `127.0.0.1`, so start it with `OLLAMA_HOST=0.0.0.0`.)
+- **What is sent to the provider.** Your questions, what the agent reads to answer them (container names, images, state, CPU and memory), and log lines with secrets such as passwords, tokens, keys, private keys and credentials in URLs replaced by `[redacted]`. Redaction is best effort: it catches common shapes of secret, not every possible one, so don't point the agent at a provider you don't trust with your logs. Container environment variables are never read. Your instructions in Settings go to the provider too.
+- **Where the API key is kept.** Encrypted in Vegapunk's database, with the encryption key in `secret.key` beside it in the data volume. That keeps the key out of a copied database or backup. It does not protect against someone who can read the whole data volume, because the key and the data sit side by side. A saved key is only ever sent to the base URL it was saved for.
+- **Limits.** One answer at a time; at most 8 model turns and 12 lookups per answer; messages up to 4,000 characters.
+- **If the key stops working,** Vegapunk says so on the Agent page and in Settings and pauses the chat until you save a working one. Monitoring is not affected.
+
 ## Development
 
 You need [uv](https://docs.astral.sh/uv/) and Node.js 24.

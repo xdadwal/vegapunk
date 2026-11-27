@@ -49,3 +49,9 @@ def test_bad_interval_names_the_variable(value):
 def test_existing_settings_construction_still_works():
     s = Settings(data_dir=Path("d"), static_dir=None, secure_cookies=False)
     assert (s.capture, s.capture_interval) == (False, 15)
+
+
+def test_conversations_live_beside_the_database():
+    s = Settings(data_dir=Path("d"), static_dir=None, secure_cookies=False)
+    assert s.conversations_path == Path("d/conversations.db")
+    assert s.db_path == Path("d/vegapunk.db")

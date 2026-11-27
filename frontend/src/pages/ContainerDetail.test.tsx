@@ -31,7 +31,12 @@ describe('Container detail', () => {
     renderApp('/containers/web')
     expect(await screen.findByText('Online')).toBeVisible()
     expect(screen.getByRole('heading', { level: 1, name: 'web' })).toBeVisible()
-    expect(screen.getByText(/^nginx:1 · running · started 3 h ago$/)).toBeVisible()
+    const facts = within(screen.getByLabelText('Container facts'))
+    expect(facts.getByText('Image').nextSibling).toHaveTextContent('nginx:1')
+    expect(facts.getByText('Image').nextSibling).toHaveClass('vp-mono')
+    expect(facts.getByText('State').nextSibling).toHaveTextContent('running')
+    expect(facts.getByText('Started').nextSibling).toHaveTextContent(/ UTC \(3 h ago\)$/)
+    expect(facts.getByText('Memory limit').nextSibling).toHaveTextContent('1.0 GiB')
     const stat = (label: string) => screen.getByText(label).closest('.vp-stat') as HTMLElement
     expect(within(stat('CPU')).getByText('4.0')).toBeVisible()
     expect(within(stat('Memory used')).getByText('512.0 MiB')).toBeVisible()
@@ -122,7 +127,11 @@ describe('Container detail', () => {
       },
     })
     renderApp('/containers/web')
-    expect(await screen.findByText("This container isn't running.")).toBeVisible()
+    const alert = (await screen.findByText("This container isn't running.")).closest('.vp-alert')
+    expect(alert).toHaveClass('vp-alert-danger') // an exited container is offline, not neutral news
+    expect(within(screen.getByLabelText('Container facts')).getByText('Memory limit').nextSibling).toHaveTextContent(
+      '—',
+    )
     expect(within(screen.getByText('Uptime').closest('.vp-stat') as HTMLElement).getByText('—')).toBeVisible()
   })
 
@@ -182,7 +191,8 @@ describe('Container detail', () => {
     })
     renderApp('/containers/web')
     expect(await screen.findByText('This container was removed from the host.')).toBeVisible()
-    expect(screen.getByText(/^nginx:1 · removed · started /)).toBeVisible()
+    const state = within(screen.getByLabelText('Container facts')).getByText('State').nextSibling
+    expect(state).toHaveTextContent('Removed')
     expect(screen.queryByText(/running/)).not.toBeInTheDocument()
     expect(within(screen.getByText('Uptime').closest('.vp-stat') as HTMLElement).getByText('—')).toBeVisible()
   })

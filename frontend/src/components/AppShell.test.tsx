@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { SOURCE_NEVER, hostPayload, metricsPayload } from '../test-fixtures'
+import { SOURCE_NEVER, aiSettings, hostPayload, metricsPayload } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 
 const STARTING = hostPayload({
@@ -74,9 +74,13 @@ describe('App shell', () => {
     await user.click(await screen.findByRole('button', { name: /admin/ }))
     screen.getByRole('link', { name: 'Profile' }).focus()
     await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
     expect(screen.getByRole('button', { name: 'Sign out' })).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('link', { name: 'Profile' })).toHaveFocus() // wraps round
     await user.keyboard('{ArrowUp}')
-    expect(screen.getByRole('link', { name: 'Profile' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toHaveFocus()
   })
 
   it('opens the account menu by default on Profile', async () => {
@@ -97,5 +101,21 @@ describe('App shell', () => {
     await user.keyboard('{Escape}')
     expect(menu).toHaveAttribute('aria-expanded', 'false')
     expect(menu).toHaveFocus()
+  })
+
+  it('has Settings in the account menu, between Profile and Sign out', async () => {
+    signedIn()
+    renderApp('/')
+    await userEvent.click(await screen.findByRole('button', { name: /admin/ }))
+    const items = within(screen.getByRole('list', { name: 'Account' })).getAllByRole('listitem')
+    expect(items.map((i) => i.textContent)).toEqual(['Profile', 'Settings', 'Sign out'])
+  })
+
+  it('opens the account menu by default on Settings and marks it', async () => {
+    signedIn({ 'GET /settings/ai': { body: aiSettings() } })
+    renderApp('/settings')
+    const toggle = await screen.findByRole('button', { name: /admin/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
   })
 })

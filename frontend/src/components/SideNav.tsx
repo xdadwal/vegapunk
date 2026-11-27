@@ -1,4 +1,4 @@
-import { Boxes, Gauge } from 'lucide-react'
+import { Bot, Boxes, Gauge } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { NavLink } from 'react-router'
 
@@ -26,6 +26,16 @@ export function SideNav({ account }: { account: ReactNode }) {
               >
                 <Icon icon={Gauge} />
                 <span className="vp-sidenav-label">Overview</span>
+              </NavLink>
+            </li>
+            <li>
+              <NavLink
+                to="/agent"
+                className={({ isActive }) => cx('vp-sidenav-item', isActive && 'vp-sidenav-item-on')}
+                onClick={() => shell?.close()}
+              >
+                <Icon icon={Bot} />
+                <span className="vp-sidenav-label">Agent</span>
               </NavLink>
             </li>
             <li>

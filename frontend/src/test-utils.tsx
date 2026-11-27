@@ -2,8 +2,16 @@ import { render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 
 import App from './App'
+import { LocationProbe } from './test-probe'
 
-type Reply = { status?: number; body?: unknown; networkError?: boolean }
+type Reply = {
+  status?: number
+  body?: unknown
+  networkError?: boolean
+  /** Answer with a streamed body: lines to send then close, or a function handed the stream's
+   * controller so a test can send more later and decide when (or whether) it ends. */
+  stream?: string[] | ((controller: ReadableStreamDefaultController<Uint8Array>) => void)
+}
 type Handler = Reply | ((request: { body: unknown }) => Reply | Promise<Reply>)
 
 export const ADMIN = {
@@ -22,6 +30,20 @@ export function stubApi(routes: Record<string, Handler>) {
     const reply = await (typeof handler === 'function' ? handler({ body }) : handler)
     if (reply.networkError) throw new TypeError('Failed to fetch')
     const status = reply.status ?? 200
+    if (reply.stream) {
+      const source = reply.stream
+      const encoder = new TextEncoder()
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            if (typeof source === 'function') return source(controller)
+            for (const chunk of source) controller.enqueue(encoder.encode(chunk))
+            controller.close()
+          },
+        }),
+        { status },
+      )
+    }
     return new Response(status === 204 ? null : JSON.stringify(reply.body ?? {}), { status })
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -35,10 +57,12 @@ export function stubApi(routes: Record<string, Handler>) {
   return { fetchMock, sent }
 }
 
-export function renderApp(path = '/') {
+/** Render the app at `path`. With `probe`, the current URL is shown in a `location` output. */
+export function renderApp(path = '/', { probe = false } = {}) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <App />
+      {probe && <LocationProbe />}
     </MemoryRouter>,
   )
 }

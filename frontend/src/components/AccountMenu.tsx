@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, User } from 'lucide-react'
+import { ChevronDown, LogOut, Settings, User } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { NavLink, useMatch } from 'react-router'
@@ -14,7 +14,9 @@ type Props = { name: string; onSignOut: () => void }
 export function AccountMenu({ name, onSignOut }: Props) {
   const shell = useShell()
   const onProfile = useMatch('/profile') !== null
-  const [open, setOpen] = useState(onProfile)
+  const onSettings = useMatch('/settings') !== null
+  const onAdminPage = onProfile || onSettings
+  const [open, setOpen] = useState(onAdminPage)
   const menuId = useId()
   const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -57,6 +59,16 @@ export function AccountMenu({ name, onSignOut }: Props) {
             >
               <Icon icon={User} />
               <span className="vp-sidenav-label">Profile</span>
+            </NavLink>
+          </li>
+          <li>
+            <NavLink
+              to="/settings"
+              className={({ isActive }) => cx('vp-sidenav-item', isActive && 'vp-sidenav-item-on')}
+              onClick={() => shell?.close()}
+            >
+              <Icon icon={Settings} />
+              <span className="vp-sidenav-label">Settings</span>
             </NavLink>
           </li>
           <li>

@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+import { aiSettings } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 
 async function fill(user: ReturnType<typeof userEvent.setup>, username: string, a: string, b: string) {
@@ -30,7 +31,7 @@ describe('Setup', () => {
     expect(sent('POST /setup/admin')).toHaveLength(0)
   })
 
-  it('creates the account and enters the app', async () => {
+  it('creates the account and goes on to connect an AI provider', async () => {
     let created = false
     const { sent } = stubApi({
       'GET /setup/status': () => ({ body: { admin_created: created } }),
@@ -39,10 +40,11 @@ describe('Setup', () => {
         return { status: 201, body: ADMIN }
       },
       'GET /me': { body: ADMIN },
+      'GET /settings/ai': { body: aiSettings() },
     })
     renderApp('/')
     await fill(userEvent.setup(), 'admin', 'correct horse', 'correct horse')
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Connect an AI provider' })).toBeVisible()
     expect(sent('POST /setup/admin')).toEqual([{ username: 'admin', password: 'correct horse' }])
   })
 

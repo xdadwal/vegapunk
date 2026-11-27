@@ -50,6 +50,15 @@ function list(items = [DB, CACHE, WEB], extra: Parameters<typeof stubApi>[0] = {
 }
 
 describe('Containers', () => {
+  it('makes each whole row a link target, through the name', async () => {
+    list()
+    renderApp('/containers')
+    const rows = await screen.findAllByRole('row')
+    const row = rows.find((r) => r.querySelector('a'))!
+    expect(row).toHaveClass('vp-service-linked')
+    expect(within(row).getByRole('link')).toHaveClass('vp-card-link')
+  })
+
   it('lists containers in the order the server sends, with counts above', async () => {
     list()
     renderApp('/containers')

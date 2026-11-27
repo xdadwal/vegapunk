@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router'
 
 import { Alert } from '../components/Alert'
 import { Button } from '../components/Button'
+import { DescriptionList } from '../components/DescriptionList'
 import { EmptyState } from '../components/EmptyState'
 import { PageHeader } from '../components/PageHeader'
 import { RangeTabs } from '../components/RangeTabs'
@@ -13,7 +14,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { TimeSeriesChart } from '../components/TimeSeriesChart'
 import { RANGES } from '../ranges'
 import type { RangeId } from '../ranges'
-import { formatAgo, formatBytes, formatUptime, percentValue } from '../format'
+import { formatAgo, formatBytes, formatDayTime, formatUptime, percentValue } from '../format'
 import type { ContainerDetail as Detail } from '../types'
 import { usePolling } from '../usePolling'
 import './overview.css'
@@ -63,25 +64,30 @@ export default function ContainerDetail() {
 
   const now = data ? new Date(data.now) : null
   const running = !data?.removed && data?.state === 'running'
-  const description = data
+  const facts = data
     ? [
-        data.image,
-        data.removed ? 'removed' : data.state,
-        data.started_at && now && `started ${formatAgo(data.started_at, now)}`,
+        { term: 'Image', value: data.image, mono: true },
+        {
+          term: 'State',
+          value: data.removed ? 'Removed' : data.health ? `${data.state} (${data.health})` : data.state,
+        },
+        {
+          term: 'Started',
+          value:
+            data.started_at && now
+              ? `${formatDayTime(data.started_at)} UTC (${formatAgo(data.started_at, now)})`
+              : null,
+        },
+        {
+          term: 'Memory limit',
+          value: data.mem_limit !== null ? formatBytes(data.mem_limit) : data.mem_used !== null ? 'No limit' : null,
+        },
       ]
-        .filter(Boolean)
-        .join(' · ')
-    : undefined
+    : []
 
   return (
     <div className="page-stack">
-      <PageHeader
-        title={name}
-        mono
-        breadcrumbs={crumbs}
-        description={description}
-        meta={data && <StatusBadge status={data.status} />}
-      />
+      <PageHeader title={name} mono breadcrumbs={crumbs} meta={data && <StatusBadge status={data.status} />} />
       <RangeTabs value={range} onChange={setRange} />
 
       {loading || !data || !now ? (
@@ -91,7 +97,12 @@ export default function ContainerDetail() {
       ) : (
         <>
           {data.removed && <Alert tone="info" title="This container was removed from the host." />}
-          {!data.removed && !running && <Alert tone="info" title="This container isn't running." />}
+          {!data.removed && !running && (
+            <Alert
+              tone={data.status === 'offline' ? 'danger' : data.status === 'degraded' ? 'warning' : 'info'}
+              title="This container isn't running."
+            />
+          )}
           {error && <Alert tone="warning" title="Showing the last data we had. Couldn't reach the server." />}
 
           <div className="overview-stats">
@@ -124,41 +135,49 @@ export default function ContainerDetail() {
             </div>
           </div>
 
+          <div className="vp-card">
+            <DescriptionList label="Container facts" items={facts} />
+          </div>
+
           <section className="page-section" aria-labelledby="cpu-h">
             <h2 id="cpu-h">CPU, {phrase}</h2>
-            <TimeSeriesChart
-              label={`CPU, ${phrase}`}
-              unit="%"
-              dateAxis={range === '7d' || range === '30d'}
-              series={[
-                {
-                  name: 'CPU',
-                  color: 'var(--chart-1)',
-                  points: data.metrics.points.map((p) => ({
-                    ts: p.ts,
-                    value: p.cpu_pct,
-                  })),
-                },
-              ]}
-            />
+            <div className="vp-card">
+              <TimeSeriesChart
+                label={`CPU, ${phrase}`}
+                unit="%"
+                dateAxis={range === '7d' || range === '30d'}
+                series={[
+                  {
+                    name: 'CPU',
+                    color: 'var(--chart-1)',
+                    points: data.metrics.points.map((p) => ({
+                      ts: p.ts,
+                      value: p.cpu_pct,
+                    })),
+                  },
+                ]}
+              />
+            </div>
           </section>
           <section className="page-section" aria-labelledby="mem-h">
             <h2 id="mem-h">Memory, {phrase}</h2>
-            <TimeSeriesChart
-              label={`Memory, ${phrase}`}
-              unit="bytes"
-              dateAxis={range === '7d' || range === '30d'}
-              series={[
-                {
-                  name: 'Memory used',
-                  color: 'var(--chart-2)',
-                  points: data.metrics.points.map((p) => ({
-                    ts: p.ts,
-                    value: p.mem_used,
-                  })),
-                },
-              ]}
-            />
+            <div className="vp-card">
+              <TimeSeriesChart
+                label={`Memory, ${phrase}`}
+                unit="bytes"
+                dateAxis={range === '7d' || range === '30d'}
+                series={[
+                  {
+                    name: 'Memory used',
+                    color: 'var(--chart-2)',
+                    points: data.metrics.points.map((p) => ({
+                      ts: p.ts,
+                      value: p.mem_used,
+                    })),
+                  },
+                ]}
+              />
+            </div>
           </section>
         </>
       )}

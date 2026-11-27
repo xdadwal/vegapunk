@@ -7,20 +7,45 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from vegapunk.ai.operator import Operator
+from vegapunk.api.agent import router as agent_router
 from vegapunk.api.containers import router as containers_router
 from vegapunk.api.host import router as host_router
+from vegapunk.api.settings import router as settings_router
 from vegapunk.auth.routes import router as auth_router
 from vegapunk.capture.collectors import Collector, build_collectors
 from vegapunk.capture.scheduler import Scheduler
 from vegapunk.config import Settings
+from vegapunk.crypto import load_or_create_key
 from vegapunk.db import connect, migrate, prepare_data_dir
+from vegapunk.host.docker import DockerHost
 
 
-def create_app(settings: Settings, collectors: Sequence[Collector] | None = None) -> FastAPI:
+def _default_provider(**kwargs):
+    import logpose
+
+    return logpose.resolve("openai-compat", **kwargs)
+
+
+def create_app(
+    settings: Settings,
+    collectors: Sequence[Collector] | None = None,
+    make_provider=None,
+    docker: DockerHost | None = None,
+    make_agent=None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.started_at = datetime.now(UTC)
         prepare_data_dir(settings)
+        app.state.crypto_key = load_or_create_key(settings.data_dir)
+        app.state.operator = Operator(
+            settings,
+            docker or DockerHost(settings.docker_url),
+            app.state.crypto_key,
+            app.state.started_at,
+            make_agent,
+        )
         conn = connect(settings.db_path)
         try:
             migrate(conn)
@@ -42,9 +67,12 @@ def create_app(settings: Settings, collectors: Sequence[Collector] | None = None
 
     app = FastAPI(title="Vegapunk", lifespan=lifespan)
     app.state.settings = settings
+    app.state.make_provider = make_provider or _default_provider
     app.include_router(auth_router)
     app.include_router(host_router)
     app.include_router(containers_router)
+    app.include_router(settings_router)
+    app.include_router(agent_router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

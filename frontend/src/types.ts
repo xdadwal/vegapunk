@@ -76,3 +76,34 @@ export type ContainerDetail = ContainerItem & {
   now: string
   metrics: ContainerMetrics
 }
+
+export type StepStatus = 'running' | 'done' | 'failed'
+
+export type Step = { id?: string; label: string; status: StepStatus }
+
+/** One line of the chat stream. */
+export type ChatEvent =
+  | { type: 'conversation'; id: string; title: string }
+  | { type: 'text'; text: string }
+  | { type: 'step'; id: string; label: string; status: StepStatus }
+  | { type: 'done'; usage: { input_tokens: number; output_tokens: number } }
+  | { type: 'error'; code: string; message: string }
+
+export type Conversation = { id: string; title: string; updated_at: string }
+
+export type StoredMessage = {
+  role: 'user' | 'assistant'
+  text: string
+  steps: { label: string; status: 'done' | 'failed' }[]
+}
+
+export type AiSettings = {
+  configured: boolean
+  base_url: string
+  model: string
+  instructions: string
+  key_saved: boolean
+  key_hint: string | null
+  key_rejected_at: string | null
+  key_unreadable: boolean
+}

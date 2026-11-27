@@ -180,7 +180,8 @@ describe('TimeSeriesChart', () => {
       },
     ]
     const { container } = render(<TimeSeriesChart series={series} unit="%" label="CPU" />)
-    expect(container.querySelector('svg path')?.getAttribute('d')).toMatch(/^M[\d. ]+L[\d. ]+$/)
+    // the line is the path that is stroked; a lone point has no area to fill
+    expect(container.querySelector('svg path[stroke-width="2"]')?.getAttribute('d')).toMatch(/^M[\d. ]+L[\d. ]+$/)
   })
 
   it('labels hourly points with the day and the time, not the day alone', async () => {
@@ -248,5 +249,21 @@ describe('TimeSeriesChart width', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Chart' }))
     const plot = document.querySelector('.vp-chart-plot')
     expect(live().map((o) => o.element)).toContain(plot)
+  })
+
+  it('gives a single series an area wash and its latest value at the line end, and none for two', () => {
+    const one = [SERIES[0]]
+    const { container, rerender } = render(<TimeSeriesChart series={one} unit="%" label="CPU" />)
+    expect(container.querySelector('svg path[fill-opacity="0.1"]')).not.toBeNull()
+    expect(container.querySelector('.vp-chart-end')?.textContent).toBe('40%') // the last value that exists
+    rerender(<TimeSeriesChart series={SERIES} unit="%" label="CPU and memory" />)
+    expect(container.querySelector('svg path[fill-opacity="0.1"]')).toBeNull()
+    expect(container.querySelector('.vp-chart-end')).toBeNull()
+  })
+
+  it('draws the area one run at a time, so a gap stays a gap', () => {
+    const { container } = render(<TimeSeriesChart series={[SERIES[0]]} unit="%" label="CPU" />)
+    const area = container.querySelector('svg path[fill-opacity="0.1"]')!.getAttribute('d')!
+    expect(area.match(/M/g)).toHaveLength(1) // 10, 20 then a gap; the lone 40 has no area
   })
 })

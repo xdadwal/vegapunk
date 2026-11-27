@@ -43,7 +43,18 @@ export async function api<T = void>(path: string, options: Options = {}): Promis
   }
 
   if (response.status === 204) return undefined as T
+  if (!response.ok) throw await errorFromResponse(response)
 
+  const text = await response.text()
+  try {
+    return (text ? JSON.parse(text) : undefined) as T
+  } catch {
+    return undefined as T
+  }
+}
+
+/** The ApiError for a failed response: the server's `detail` when it sent one. */
+export async function errorFromResponse(response: Response): Promise<ApiError> {
   const text = await response.text()
   let parsed: unknown
   try {
@@ -51,7 +62,5 @@ export async function api<T = void>(path: string, options: Options = {}): Promis
   } catch {
     parsed = undefined
   }
-
-  if (!response.ok) throw new ApiError(response.status, detailOf(parsed, response.status), parsed)
-  return parsed as T
+  return new ApiError(response.status, detailOf(parsed, response.status), parsed)
 }
