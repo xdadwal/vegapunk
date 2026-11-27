@@ -1,0 +1,43 @@
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.page-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-muted);
+}
+
+.overview-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.page-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.page-section h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 220px);
+  gap: var(--space-4);
+}
+
+@media (max-width: 767px) {
+  .filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

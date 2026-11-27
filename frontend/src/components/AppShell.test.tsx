@@ -1,13 +1,22 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
+import { SOURCE_NEVER, hostPayload, metricsPayload } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
+
+const STARTING = hostPayload({
+  latest: null,
+  containers: { total: 0, running: 0, needs_attention: 0 },
+  capture: { interval_seconds: 15, sources: { host: SOURCE_NEVER, docker: SOURCE_NEVER } },
+})
 
 function signedIn(extra: Parameters<typeof stubApi>[0] = {}) {
   let signedOut = false
   return stubApi({
     'GET /setup/status': { body: { admin_created: true } },
     'GET /me': () => (signedOut ? { status: 401, body: { detail: 'Not signed in.' } } : { body: ADMIN }),
+    'GET /host': { body: STARTING },
+    'GET /host/metrics?range=1h': { body: metricsPayload() },
     'POST /auth/sign-out': () => {
       signedOut = true
       return { status: 204 }
@@ -32,8 +41,8 @@ describe('App shell', () => {
     renderApp('/')
     expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
-    expect(screen.getByText('Nothing to show yet')).toBeVisible()
-    expect(screen.getByText("Vegapunk isn't capturing data from this host yet.")).toBeVisible()
+    expect(await screen.findByText('Nothing to show yet')).toBeVisible()
+    expect(screen.getByText('Vegapunk is starting its first capture.')).toBeVisible()
   })
 
   it('opens the account menu and signs out', async () => {

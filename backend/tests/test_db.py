@@ -3,13 +3,15 @@ import pytest
 from vegapunk.config import Settings
 from vegapunk.db import DataDirError, SchemaTooNew, connect, migrate, prepare_data_dir
 
+LATEST = 2
+
 
 def test_migrate_creates_tables_and_is_repeatable(tmp_path):
     conn = connect(tmp_path / "v.db")
-    assert migrate(conn) == 1
-    assert migrate(conn) == 1
+    assert migrate(conn) == LATEST
+    assert migrate(conn) == LATEST
     names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"admin", "sessions", "sign_in_failures"} <= names
+    assert {"admin", "sessions", "sign_in_failures", "host_metrics", "containers"} <= names
 
 
 def test_refuses_database_from_newer_version(tmp_path):

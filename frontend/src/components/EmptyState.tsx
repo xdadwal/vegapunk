@@ -4,12 +4,22 @@ import type { ReactNode } from 'react'
 
 import { Icon } from './Icon'
 
-type Props = { title: string; children?: ReactNode; action?: ReactNode; icon?: LucideIcon }
+type Props = {
+  title: string
+  children?: ReactNode
+  action?: ReactNode
+  icon?: LucideIcon
+  /** The data failed to load: announced to screen readers and styled as a problem. */
+  error?: boolean
+}
 
 /** Fills a page that has nothing to show, and says why. */
-export function EmptyState({ title, children, action, icon = Box }: Props) {
+export function EmptyState({ title, children, action, icon = Box, error = false }: Props) {
   return (
-    <div className="vp-empty vp-empty-empty">
+    <div
+      className={`vp-empty vp-empty-${error ? 'error' : 'empty'}`}
+      role={error ? 'alert' : undefined}
+    >
       <div className="vp-empty-icon">
         <Icon icon={icon} size={24} />
       </div>

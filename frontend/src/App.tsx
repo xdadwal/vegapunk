@@ -4,6 +4,8 @@ import { AuthProvider } from './auth/AuthProvider'
 import { useAuth } from './auth/auth-context'
 import { AppLayout } from './components/AppLayout'
 import { Spinner } from './components/Spinner'
+import ContainerDetail from './pages/ContainerDetail'
+import Containers from './pages/Containers'
 import LoadError from './pages/LoadError'
 import Overview from './pages/Overview'
 import Profile from './pages/Profile'
@@ -42,6 +44,8 @@ function AppRoutes() {
         <Routes>
           <Route element={<AppLayout />}>
             <Route path="/" element={<Overview />} />
+            <Route path="/containers" element={<Containers />} />
+            <Route path="/containers/:name" element={<ContainerDetail />} />
             <Route path="/profile" element={<Profile />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
