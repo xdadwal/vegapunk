@@ -21,9 +21,7 @@ describe('Finding detail', () => {
     const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' })
     expect(within(crumbs).getByRole('link', { name: 'Findings' })).toHaveAttribute('href', '/findings')
     expect(within(crumbs).getByText('web · web')).toBeVisible()
-    expect(
-      screen.getByText(/^on web · since 3:00 PM UTC · Found by background watch$/),
-    ).toBeVisible()
+    expect(screen.getByText(/^on web · since 3:00 PM UTC · Found by background watch$/)).toBeVisible()
     for (const name of ['Diagnosis', 'Evidence', 'Suggested fix']) {
       expect(screen.getByRole('heading', { level: 2, name })).toBeVisible()
     }
@@ -196,7 +194,8 @@ describe('Finding detail', () => {
   it('offers a retry when loading fails', async () => {
     let calls = 0
     page({
-      'GET /findings/f1': () => (++calls === 1 ? { status: 500, body: { detail: 'Boom.' } } : { body: findingDetail() }),
+      'GET /findings/f1': () =>
+        ++calls === 1 ? { status: 500, body: { detail: 'Boom.' } } : { body: findingDetail() },
     })
     renderApp('/findings/f1')
     const user = userEvent.setup()

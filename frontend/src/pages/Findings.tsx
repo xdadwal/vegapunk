@@ -46,7 +46,8 @@ function FindingRow({ finding }: { finding: FindingItem }) {
           </Link>
         </div>
         <div className="vp-service-meta">
-          <span className="vp-mono">{finding.subject}</span> · <span>Found {formatClockSafe(finding.first_seen_at)}</span>
+          <span className="vp-mono">{finding.subject}</span> ·{' '}
+          <span>Found {formatClockSafe(finding.first_seen_at)}</span>
           {finding.conversation_id && (
             <>
               {' · '}
@@ -166,16 +167,17 @@ export default function Findings() {
         </Alert>
       )}
       {checks.skipped === 'unsupported' && (
-        <Alert tone="warning" title="Your AI provider can't give structured answers, so checks can't run. Try another model.">
+        <Alert
+          tone="warning"
+          title="Your AI provider can't give structured answers, so checks can't run. Try another model."
+        >
           Change the model in {settings}.
         </Alert>
       )}
       {checks.last_error && <Alert tone="danger" title={`The last check failed: ${checks.last_error}`} />}
 
       {items.length === 0 ? (
-        <EmptyState title="No findings yet">
-          {emptyDescription(checks)}
-        </EmptyState>
+        <EmptyState title="No findings yet">{emptyDescription(checks)}</EmptyState>
       ) : (
         <>
           <div className="filters">

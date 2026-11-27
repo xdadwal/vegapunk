@@ -43,7 +43,19 @@ A feature outside the first version needs a discussion before any code. Start on
 
 See [docs/development.md](docs/development.md) for the repository layout, running the backend and frontend dev servers, tests, the Docker build and how the main parts fit together.
 
-The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24 and, for the image, Docker with Compose. Docker should be running while you work, or the pages will have no container data.
+The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24, `make` and, for the image, Docker with Compose. Docker should be running while you work, or the pages will have no container data. From the repository root:
+
+```sh
+make setup      # install the backend and frontend dependencies
+make backend    # the API on http://localhost:8000
+make frontend   # in a second terminal: the web interface on http://localhost:5173
+```
+
+`make` on its own lists every target.
+
+**Dev container (not verified).** The repository has a [dev container](.devcontainer/devcontainer.json) configuration for VS Code Dev Containers and GitHub Codespaces, with Python 3.12, Node.js 24, uv and access to Docker. It has not been run by the maintainer yet, so if you try it, please say in an issue or discussion whether it worked.
+
+**pre-commit (optional).** [.pre-commit-config.yaml](.pre-commit-config.yaml) runs whitespace checks, ruff, oxlint and Prettier before each commit. To use it: `uv tool install pre-commit`, then `pre-commit install` in your clone. CI does not need it.
 
 ### Your first pull request
 
@@ -62,7 +74,7 @@ Not sure about something? Open the pull request as a draft and ask in it. Half-f
 
 ## Checks to run before you open a pull request
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request, and they are expected to pass. Run the same commands locally before you push.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request, and they are expected to pass. Run the same commands locally before you push. From the repository root, `make check` runs exactly the backend and frontend commands below (it takes a few minutes); `make format` fixes formatting in both.
 
 **Backend**, from `backend/`:
 
@@ -70,7 +82,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on eve
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
-uv run pytest
+uv run pytest --cov --cov-report=term-missing --cov-report=xml
 ```
 
 Run `uv run ruff format .` to fix formatting.
@@ -80,9 +92,12 @@ Run `uv run ruff format .` to fix formatting.
 ```sh
 npm ci
 npm run lint
-npm test
+npm run format:check
+npm run test:coverage
 npm run build
 ```
+
+Run `npm run format` to fix formatting. The coverage commands fail if coverage drops below its floor; for a quick run while you work, `uv run pytest` and `npm test` are fine.
 
 **Docker**, from the repository root:
 
@@ -101,6 +116,7 @@ The full set is in [AGENTS.md](AGENTS.md#conventions). The ones that come up mos
 
 - **Write tests alongside new code.** Backend tests live in `backend/tests/`; frontend tests sit next to the file they test (`Thing.test.tsx`).
 - **Keep changes small and simple.** Prefer a plain solution over a new abstraction.
+- **Frontend code is formatted with Prettier** (`npm run format`), as backend code is with ruff.
 - **Frontend styling uses the design tokens** in `frontend/src/styles/tokens.css` and the component styles in `components.css`. Don't hard-code colours, spacing or fonts.
 - **Say "Agent", not "AI"**, for the operator in the interface. "AI" is only for the provider settings.
 - **Migrations are never edited once shipped.** A schema change is a new numbered file in `backend/vegapunk/migrations/` (`0007_name.sql`).
@@ -120,7 +136,7 @@ The full set is in [AGENTS.md](AGENTS.md#conventions). The ones that come up mos
 
 ### Review and merging
 
-`main` is protected. Every pull request needs an approving review from the maintainer (the code owner) before it can be merged. CI runs on every pull request and is expected to pass. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
+`main` is protected. Every pull request from a contributor needs an approving review from the maintainer (the code owner) and passing CI checks (`backend`, `frontend` and `docker`) before it can be merged. The maintainer's own pull requests pass the same checks but, with no second maintainer yet, are merged without another person's review. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
 
 Expect questions and change requests; they're part of the process, not a judgement on you. If a pull request has gone quiet for a week, a friendly ping is fine.
 
@@ -141,6 +157,10 @@ Please **don't** report a vulnerability in a public issue, pull request or discu
 ## Questions
 
 Ask in [Discussions](https://github.com/xdadwal/vegapunk/discussions). [SUPPORT.md](SUPPORT.md) lists where to go for what.
+
+## How the project is run
+
+[GOVERNANCE.md](GOVERNANCE.md) says how decisions are made and how to propose a change to the scope. [MAINTAINERS.md](MAINTAINERS.md) lists the maintainer and how to become one.
 
 ## Recognition
 

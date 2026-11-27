@@ -2,6 +2,30 @@
 
 Nothing is published to a registry. A release is a version tag and GitHub release notes; users build the image from the repository with `docker compose up --build`.
 
+## Versioning policy
+
+Vegapunk follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): `MAJOR.MINOR.PATCH`, one version for the whole project (the same in `backend/pyproject.toml` and `frontend/package.json`).
+
+**While the version is 0.y.z**, Vegapunk is pre-release and a minor version (0.1 to 0.2) may include breaking changes. They are always listed under "Changed" or "Removed" in [CHANGELOG.md](../CHANGELOG.md), so read it before upgrading. A patch version (0.1.0 to 0.1.1) has fixes only.
+
+**What counts as a stable interface**, so that breaking it is a breaking change:
+
+- the environment variables documented in the [install guide](install.md#configuration);
+- the documented options of `compose.yaml` and `compose.socket-proxy.yaml` (the port, `DOCKER_GID`, the data volume, the socket proxy setup);
+- the data directory: a newer version opens a data directory written by an older one, and updates it on start with forward-only migrations.
+
+**What is not a stable interface**, and can change in any release:
+
+- the HTTP API under `/api`, which exists for Vegapunk's own web interface;
+- the database schema itself, beyond the promise that migrations carry existing data forward;
+- the agent's prompt, its tools and what they return.
+
+**Deprecations.** Where practical, something that will be removed is announced as deprecated in the changelog at least one minor release before it is removed.
+
+**Supported versions.** Only the latest release is supported and gets security fixes; see [SECURITY.md](../SECURITY.md#supported-versions).
+
+**Upgrades are forward-only.** An older version refuses a database written by a newer one, so going back means restoring a backup taken before the upgrade ([Upgrading](install.md#upgrading)).
+
 ## Checklist
 
 1. Before the first release, enable private vulnerability reporting (repository Settings → Code security) and check it with `gh api repos/xdadwal/vegapunk/private-vulnerability-reporting`, which must report `{"enabled":true}`. `SECURITY.md` tells people to report vulnerabilities that way, and the file is public as soon as a branch containing it is pushed, so do this before pushing a branch that contains `SECURITY.md` (the repository owner does this).

@@ -18,6 +18,7 @@ dependencies = [
 dev = [
     "httpx",
     "pytest",
+    "pytest-cov",
     "ruff",
 ]
 
@@ -27,6 +28,22 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["vegapunk"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# A regression guard, not a target: about 3 points under the measured total (97.8% on
+# 2026-11-27). Raise it when coverage rises; do not lower it to make a change pass.
+fail_under = 95
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pragma: no cover",
+]
 
 [tool.ruff]
 line-length = 100

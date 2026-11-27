@@ -1,0 +1,51 @@
+// A development environment for VS Code Dev Containers and GitHub Codespaces.
+// Not yet run by the maintainer: see "Dev container" in docs/development.md.
+{
+  "name": "Vegapunk",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": false
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "24"
+    },
+    // The host's Docker, so the dev backend sees real containers and `make smoke` can build.
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "remoteUser": "vscode",
+  // The uv installer puts uv in ~/.local/bin.
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/home/vscode/.local/bin"
+  },
+  "postCreateCommand": "curl -LsSf https://astral.sh/uv/0.11.6/install.sh | sh && PATH=\"$HOME/.local/bin:$PATH\" make setup",
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": { "label": "Backend (API)" },
+    "5173": { "label": "Frontend (Vite)", "onAutoForward": "openBrowser" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "oxc.oxc-vscode",
+        "esbenp.prettier-vscode",
+        "editorconfig.editorconfig"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/backend/.venv/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "[typescript][typescriptreact][javascript][css][json][jsonc][html]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        // Keep Prettier off the design system files listed there.
+        "prettier.ignorePath": "frontend/.prettierignore"
+      }
+    }
+  }
+}

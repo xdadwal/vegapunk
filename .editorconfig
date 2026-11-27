@@ -1,0 +1,39 @@
+# Editor settings that match the formatters: ruff for Python (backend/pyproject.toml)
+# and Prettier for the frontend (frontend/.prettierrc.json). https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# ruff: line-length = 100
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# Prettier: printWidth = 120
+[*.{ts,tsx,js,mjs,cjs,css,html,json}]
+indent_size = 2
+max_line_length = 120
+
+[*.{yaml,yml,sql}]
+indent_size = 2
+
+# pyproject.toml uses 4 spaces, as Python does.
+[*.toml]
+indent_size = 4
+
+# Shell scripts and the Dockerfile use 4 spaces.
+[{*.sh,Dockerfile}]
+indent_size = 4
+
+# Two trailing spaces are a line break in Markdown.
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

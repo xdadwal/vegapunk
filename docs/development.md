@@ -5,8 +5,12 @@ This page is for people working on Vegapunk's code. To install and run it, see t
 - [How it fits together](#how-it-fits-together)
 - [Repository layout](#repository-layout)
 - [Running it locally](#running-it-locally)
+- [Make targets](#make-targets)
 - [Tests, lint and build](#tests-lint-and-build)
 - [The Docker image and the smoke test](#the-docker-image-and-the-smoke-test)
+- [Dev container](#dev-container)
+- [pre-commit hooks](#pre-commit-hooks)
+- [Editor settings](#editor-settings)
 - [The data directory and migrations](#the-data-directory-and-migrations)
 - [Common changes](#common-changes)
 - [How the tests work](#how-the-tests-work)
@@ -97,6 +101,35 @@ Open the address Vite prints (http://localhost:5173 by default). The dev server 
 
 The backend reads Docker from `unix:///var/run/docker.sock` unless you set `VEGAPUNK_DOCKER_URL`. The other settings are listed in the [install guide](install.md#configuration).
 
+The same from the repository root, with the Makefile: `make setup` once, then `make backend` and, in a second terminal, `make frontend`. If a Vegapunk container already runs on port 8000 on your machine, stop it first or the backend cannot bind the port.
+
+## Make targets
+
+The root `Makefile` is a set of shortcuts for the commands on this page; it runs nothing that you could not run by hand. `make` (or `make help`) lists them. It works with GNU make 3.81, the version macOS ships.
+
+| Target | What it runs |
+|---|---|
+| `make setup` | `uv sync --locked` in `backend/`, `npm ci` in `frontend/` |
+| `make backend` | the API with reload on http://localhost:8000 |
+| `make frontend` | the Vite dev server on http://localhost:5173 |
+| `make test` | `test-backend` and `test-frontend` |
+| `make test-backend` | `uv run pytest` |
+| `make test-frontend` | `npm test` |
+| `make lint` | `ruff check` and `oxlint` |
+| `make format` | `ruff format` and Prettier (changes files) |
+| `make format-check` | the same, checking only |
+| `make coverage` | both test suites with coverage, failing below the floor |
+| `make build` | `npm run build` (type-check and build into `frontend/dist`) |
+| `make check` | exactly the commands of CI's backend and frontend jobs, in order |
+| `make smoke` | `sh scripts/smoke.sh` (needs Docker) |
+| `make up` | `docker compose up -d --build`: the whole app on port 8000 |
+| `make down` | `docker compose down`: stops and removes the container; the data volume is kept |
+| `make clean` | removes `frontend/dist`, coverage reports and tool caches; not the data directory or installed dependencies |
+
+`make check` takes a few minutes, mostly the backend tests. It does not run the Docker job; run `make smoke` for that. `make up` and `make down` use the same Compose project as an install from this folder, so they act on that install: `down` stops it (without deleting its data).
+
+`make up`, `make down` and `make smoke` have not been run through the Makefile (not verified); they call `docker compose` and `scripts/smoke.sh` directly, and the smoke script itself has been run.
+
 ## Tests, lint and build
 
 These are the commands CI runs ([.github/workflows/ci.yml](../.github/workflows/ci.yml)).
@@ -107,7 +140,7 @@ Backend, from `backend/`:
 uv sync --locked          # install exactly what uv.lock says
 uv run ruff check .       # lint
 uv run ruff format --check .   # formatting (use `uv run ruff format .` to fix)
-uv run pytest             # tests
+uv run pytest --cov --cov-report=term-missing --cov-report=xml   # tests with coverage
 ```
 
 Frontend, from `frontend/`:
@@ -115,11 +148,14 @@ Frontend, from `frontend/`:
 ```sh
 npm ci                    # install exactly what package-lock.json says
 npm run lint              # oxlint
-npm test                  # Vitest, once
+npm run format:check      # Prettier (use `npm run format` to fix)
+npm run test:coverage     # Vitest, once, with coverage
 npm run build             # type-check and build into dist/
 ```
 
-To run one backend test file, pass it to pytest: `uv run pytest tests/test_tools.py`. To run one frontend test file, pass it to Vitest: `npm test -- src/pages/Containers.test.tsx`.
+For a quick run without coverage, `uv run pytest` and `npm test` are fine. To run one backend test file, pass it to pytest: `uv run pytest tests/test_tools.py`. To run one frontend test file, pass it to Vitest: `npm test -- src/pages/Containers.test.tsx`.
+
+Coverage has a floor, set a few points under the measured figure as a guard against regressions: `fail_under` in `backend/pyproject.toml` and `test.coverage.thresholds` in `frontend/vite.config.ts`. A run below it fails. CI shows the figures on the job's summary page and keeps the reports as artifacts. Locally, the frontend report is in `frontend/coverage/` (open `lcov-report/index.html`).
 
 ## The Docker image and the smoke test
 
@@ -137,6 +173,33 @@ sh scripts/smoke.sh
 `scripts/smoke.sh` builds the image, starts it under a throwaway Compose project on a free port, waits for Docker to report it healthy, requests `/api/health` and `/api/setup/status`, and always removes the container, network, volume and image it made. It does not touch a Vegapunk you already run (the container named `vegapunk`, port 8000 or its volume).
 
 `docker compose up --build` from the root runs the whole app on port 8000, as a user would.
+
+## Dev container
+
+**Not verified: this configuration has not been run by the maintainer** (neither with the Dev Containers CLI or VS Code nor in GitHub Codespaces). Its file parses, the Dev Containers CLI reads it, and its base image and features exist, but nobody has built it yet. If you try it, please report what happened in an issue or discussion, whether it worked or not.
+
+[.devcontainer/devcontainer.json](../.devcontainer/devcontainer.json) works with VS Code's Dev Containers extension and with GitHub Codespaces. It is Microsoft's Ubuntu 24.04 base image with Python 3.12, Node.js 24 and the Docker CLI connected to the host's Docker (docker-outside-of-docker). The dev container uses the host's Docker, which gives anything running inside it root-equivalent control of the host's Docker daemon, the same trust level as mounting the Docker socket; only use it on a machine and with code you trust. When it is created it installs uv and runs `make setup`. Ports 8000 (backend) and 5173 (frontend) are forwarded, and VS Code gets the Python, Ruff, oxc, Prettier and EditorConfig extensions, with format on save.
+
+Because Docker is the host's, the dev backend shows the host's containers. Two things to expect:
+
+- The host figures (CPU, memory, storage) describe the dev container, not the host.
+- `make smoke` builds and starts the image on the host's Docker. Its final requests go to `127.0.0.1` inside the dev container, which may not reach a port published on the host, so that last step may fail there even when the image is healthy.
+
+## pre-commit hooks
+
+[.pre-commit-config.yaml](../.pre-commit-config.yaml) is optional; CI does not use it. It runs the whitespace and end-of-file fixers, YAML and TOML syntax checks, a merge-conflict check, a large-file check (1 MB, except `docs/images/`), a private-key check, ruff (lint, and formatting, which it fixes) on `backend/`, and oxlint and Prettier's check on `frontend/` (using the frontend's own `node_modules`, so run `make setup` first).
+
+```sh
+uv tool install pre-commit
+pre-commit install            # in your clone: runs the hooks on each commit
+pre-commit run --all-files    # run them on everything
+```
+
+To try it without installing anything, run `uvx pre-commit run --all-files`. The design system copies in `frontend/src/styles/` are left alone, as Prettier leaves them, and four backend test files are allowed to contain the fake private keys that the redaction tests use.
+
+## Editor settings
+
+[.editorconfig](../.editorconfig) sets UTF-8, LF line endings, a final newline and no trailing whitespace (except in Markdown), 4 spaces for Python, shell and TOML, 2 for TypeScript, CSS, HTML, JSON, YAML and SQL, and tabs in the Makefile. Line lengths match the formatters: 100 for Python (ruff) and 120 for the frontend (Prettier). The formatters remain the authority.
 
 ## The data directory and migrations
 

@@ -1,0 +1,50 @@
+# Optional local hooks; CI does not depend on them. `make check` runs what CI runs.
+#   uv tool install pre-commit && pre-commit install
+# Run on everything with `pre-commit run --all-files`.
+
+# Copied from the design system and kept as is (as in frontend/.prettierignore).
+exclude: ^frontend/src/styles/(tokens|components)\.css$
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: ^docs/images/
+      - id: end-of-file-fixer
+        exclude: ^docs/images/
+      - id: check-yaml
+        # Syntax only: the compose files use Compose's !override and !reset tags.
+        args: [--unsafe]
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+        exclude: ^docs/images/ # screenshots and the demo recording
+      - id: detect-private-key
+        # Fake keys that the redaction tests feed in.
+        exclude: ^backend/tests/test_(redact|tools|gate_prompt|agent_e2e)\.py$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.6 # keep in step with ruff in backend/uv.lock
+    hooks:
+      - id: ruff-check
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  - repo: local
+    hooks:
+      - id: oxlint
+        name: oxlint (frontend)
+        entry: npm --prefix frontend run lint
+        language: system
+        pass_filenames: false
+        files: ^frontend/
+      - id: prettier
+        name: prettier --check (frontend)
+        entry: npm --prefix frontend run format:check
+        language: system
+        pass_filenames: false
+        files: ^frontend/

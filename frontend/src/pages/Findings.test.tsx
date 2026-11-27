@@ -152,9 +152,7 @@ describe('Findings', () => {
   it('names no scheduled check before one has run', async () => {
     show(findingList([OPEN], { last_run_at: null }))
     renderApp('/findings')
-    expect(
-      await screen.findByText('What the agent noticed in container logs, metrics and storage'),
-    ).toBeVisible()
+    expect(await screen.findByText('What the agent noticed in container logs, metrics and storage')).toBeVisible()
     expect(screen.queryByText(/last scheduled check/)).toBeNull()
   })
 

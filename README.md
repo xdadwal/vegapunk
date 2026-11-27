@@ -26,6 +26,10 @@ Vegapunk is a single server that runs on your homelab host. It periodically capt
 
 ## Screenshots
 
+![A 25-second tour of Vegapunk: the Overview, a restarting container, the finding the agent raised about it, and the agent answering a follow-up question from the container's logs](docs/images/demo.gif)
+
+*A short tour of a demo instance. The wait for the agent's answer is shortened.*
+
 ![The Overview page: two findings that need attention, the host's CPU, memory and storage, and a chart of CPU and memory over the last hour](docs/images/overview.png)
 
 | | |
@@ -105,6 +109,7 @@ Contributions, ideas, and bug reports are welcome — feel free to open an issue
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other.
 - [SUPPORT.md](SUPPORT.md): where to ask questions and how to report a bug.
 - [Discussions](https://github.com/xdadwal/vegapunk/discussions): questions, ideas and sharing your setup.
+- [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md): how decisions are made and who maintains Vegapunk.
 
 ## Project status and roadmap
 

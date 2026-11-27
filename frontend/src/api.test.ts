@@ -10,10 +10,7 @@ describe('api', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(api('/me')).resolves.toEqual({ username: 'admin' })
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/me',
-      expect.objectContaining({ credentials: 'same-origin' }),
-    )
+    expect(fetchMock).toHaveBeenCalledWith('/api/me', expect.objectContaining({ credentials: 'same-origin' }))
   })
 
   it('sends a JSON body with its method', async () => {
@@ -48,12 +45,18 @@ describe('api', () => {
   })
 
   it('returns undefined for 204', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => respond(204)))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => respond(204)),
+    )
     await expect(api('/auth/sign-out', { method: 'POST' })).resolves.toBeUndefined()
   })
 
   it("throws ApiError with the server's detail", async () => {
-    vi.stubGlobal('fetch', vi.fn(() => respond(401, JSON.stringify({ detail: 'Not signed in.' }))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => respond(401, JSON.stringify({ detail: 'Not signed in.' }))),
+    )
     const error = await api('/me').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({ status: 401, detail: 'Not signed in.' })
@@ -61,19 +64,28 @@ describe('api', () => {
 
   it('keeps the whole body so callers can read extra fields', async () => {
     const body = { detail: 'paused', locked_until: '2026-01-01T15:12:00Z' }
-    vi.stubGlobal('fetch', vi.fn(() => respond(429, JSON.stringify(body))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => respond(429, JSON.stringify(body))),
+    )
     const error = (await api('/auth/sign-in', { method: 'POST' }).catch((e: unknown) => e)) as ApiError
     expect(error.body).toEqual(body)
   })
 
   it('falls back to a generic detail', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => respond(500, '<html>oops</html>')))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => respond(500, '<html>oops</html>')),
+    )
     await expect(api('/me')).rejects.toMatchObject({ status: 500, detail: 'Request failed (500)' })
   })
 
   it('does not show validation lists as the detail', async () => {
     const body = { detail: [{ loc: ['body', 'password'], msg: 'too short' }] }
-    vi.stubGlobal('fetch', vi.fn(() => respond(422, JSON.stringify(body))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => respond(422, JSON.stringify(body))),
+    )
     await expect(api('/setup/admin', { method: 'POST' })).rejects.toMatchObject({
       status: 422,
       detail: 'Request failed (422)',
@@ -81,7 +93,10 @@ describe('api', () => {
   })
 
   it('reports a network failure as status 0', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    )
     await expect(api('/me')).rejects.toMatchObject({
       status: 0,
       detail: "Couldn't reach the server.",

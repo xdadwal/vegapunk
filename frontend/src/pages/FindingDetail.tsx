@@ -110,7 +110,10 @@ export default function FindingDetail() {
         </section>
         <section className="page-section" aria-labelledby="evidence-h">
           <h2 id="evidence-h">Evidence</h2>
-          <EvidenceLog lines={data.evidence} title={hasLog ? `docker logs ${data.subject} · times in UTC` : undefined} />
+          <EvidenceLog
+            lines={data.evidence}
+            title={hasLog ? `docker logs ${data.subject} · times in UTC` : undefined}
+          />
         </section>
         <section className="page-section" aria-labelledby="fix-h">
           <h2 id="fix-h">Suggested fix</h2>
@@ -123,9 +126,7 @@ export default function FindingDetail() {
         <p className="page-note">This stopped on its own at {formatClockSafe(data.resolved_at)}.</p>
       )}
       {failure && <Alert tone="danger" title={failure} />}
-      {data.conversation_id && (
-        <p className="page-note">You&apos;ve already asked the agent about this finding.</p>
-      )}
+      {data.conversation_id && <p className="page-note">You&apos;ve already asked the agent about this finding.</p>}
       <div className="finding-actions">
         {data.conversation_id ? (
           <Link className="vp-btn vp-btn-secondary" to={`/agent?c=${encodeURIComponent(data.conversation_id)}`}>
