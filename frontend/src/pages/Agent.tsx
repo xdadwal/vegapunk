@@ -28,6 +28,7 @@ const STARTER = "What's going on here, and what should I check first?"
 const BUSY = 'The agent is already answering. Wait for it to finish.'
 const THINKING: Msg = { role: 'assistant', text: '', steps: [], status: 'thinking' }
 const STOPPED: ChatEvent = { type: 'error', code: 'stopped', message: 'Stopped.' }
+const CANT_STOP = "Couldn't stop the answer. It may still finish."
 
 type Loaded =
   | { id: string; kind: 'ok'; unavailable: boolean }
@@ -48,6 +49,11 @@ function codeOf(error: ApiError): string | undefined {
   return typeof body === 'object' && body !== null && 'code' in body
     ? String((body as { code: unknown }).code)
     : undefined
+}
+
+/** Whether `at` (a Date.now() time) was half a second ago or less. */
+function justNow(at: number): boolean {
+  return Date.now() - at <= 500
 }
 
 /** Whether two threads would show the same thing, so a reload that changes nothing is not applied. */
@@ -86,6 +92,8 @@ export default function Agent() {
   const abort = useRef<AbortController | null>(null) // the answer being read, sent from here or followed
   const liveId = useRef<string | null>(null) // the conversation of that answer, once known
   const stopping = useRef<AbortController | null>(null) // the read that Stop ended
+  const stopAsked = useRef<AbortController | null>(null) // the read whose answer Stop is stopping
+  const stopWhenKnown = useRef<AbortController | null>(null) // Stop came before the conversation's id
   const shownId = useRef<string | null>(null) // the conversation on screen
   const sentAt = useRef(0)
   const followRef = useRef<(id: string) => AbortController>(() => new AbortController())
@@ -102,6 +110,8 @@ export default function Agent() {
   // is still answering in it, follow the answer.
   useEffect(() => {
     if (!cParam || cParam === ownId) return
+    // An answer followed in another conversation is no longer the one on screen.
+    if (liveId.current !== cParam) abort.current?.abort()
     let ignore = false
     let following: AbortController | null = null
     requestRef.current<ConversationDetail>(`/agent/conversations/${encodeURIComponent(cParam)}`).then(
@@ -248,6 +258,7 @@ export default function Agent() {
   /** Follow the answer the agent is writing in a conversation whose last message on screen is
    * a waiting answer: what was written so far, then the rest. */
   function follow(id: string): AbortController {
+    abort.current?.abort()
     const controller = new AbortController()
     abort.current = controller
     liveId.current = id
@@ -258,12 +269,14 @@ export default function Agent() {
         await followAnswer(
           id,
           (event) => {
+            if (controller.signal.aborted) return
             if (event.type === 'done') done = true
             watch(event)
           },
           controller.signal,
         )
-        settle(controller)
+        // Dropped (another conversation, or the page left): what is on screen is not this one's.
+        if (!controller.signal.aborted || stopping.current === controller) settle(controller)
       } catch (error) {
         const failure = error instanceof ApiError ? error : new ApiError(0, "Couldn't reach the server.")
         if (failure.status === 404 && codeOf(failure) === 'idle') {
@@ -306,23 +319,38 @@ export default function Agent() {
     if (earlier.length > 0) setMessages((current) => [...earlier, ...current.slice(offset)])
   }
 
-  async function stop() {
+  function stop() {
     // Send turns into Stop in the same place, so a double-click on Send must not stop it.
-    if (Date.now() - sentAt.current <= 500) return
+    if (justNow(sentAt.current)) return
     const controller = abort.current
-    if (!controller) return
+    if (!controller || stopAsked.current === controller || stopWhenKnown.current === controller) return
     const id = liveId.current
-    stopping.current = controller
-    controller.abort()
-    if (!id) return
+    // A new conversation's id comes with its first event: stop it then, and keep reading meanwhile.
+    if (!id) stopWhenKnown.current = controller
+    else void stopOnServer(id, controller)
+  }
+
+  /** Ask the server to stop the answer, then stop reading it. If the server can't, keep
+   * reading: the answer may still finish. */
+  async function stopOnServer(id: string, controller: AbortController) {
+    stopAsked.current = controller
     try {
       await requestRef.current(`/agent/conversations/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      if (abort.current === controller) {
+        stopping.current = controller
+        controller.abort()
+      }
     } catch (error) {
-      // Idle: it had already finished, so show the answer as stored. Anything else: leave it.
       if (error instanceof ApiError && error.status === 404 && codeOf(error) === 'idle') {
+        // It had already finished: show the answer as stored.
+        if (abort.current === controller) controller.abort()
         const detail = await loadDetail(id)
         if (detail && !detail.answering) showStored(id, detail, controller)
+      } else {
+        setNotice({ tone: 'warning', text: CANT_STOP })
       }
+    } finally {
+      if (stopAsked.current === controller) stopAsked.current = null
     }
   }
 
@@ -358,6 +386,7 @@ export default function Agent() {
           if (event.type === 'conversation') {
             liveId.current = event.id
             shownId.current = event.id // before the next render: showEarlier may answer first
+            if (stopWhenKnown.current === controller) void stopOnServer(event.id, controller)
             setOwnId(event.id)
             setParams({ c: event.id }, { replace: true })
             const linked = event.finding_id
@@ -481,7 +510,7 @@ export default function Agent() {
         onSubmit={(text) => void send(text)}
       />
       {streaming ? (
-        <Button onClick={() => void stop()}>
+        <Button onClick={() => stop()}>
           <Icon icon={Square} />
           Stop
         </Button>

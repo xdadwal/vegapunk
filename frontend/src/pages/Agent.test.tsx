@@ -171,7 +171,7 @@ describe('Agent page', () => {
 
   it('turns Send into Stop and stops the answer, keeping the partial text', async () => {
     let stream!: ReadableStreamDefaultController<Uint8Array>
-    const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) } })
+    const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) }, extra: { [STOP]: { status: 204 } } })
     const user = await ask()
     await act(async () => {
       stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
@@ -181,7 +181,7 @@ describe('Agent page', () => {
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
     await later()
     await user.click(screen.getByRole('button', { name: 'Stop' }))
-    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true)
+    await vi.waitFor(() => expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true))
     expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
     expect(screen.getByText('Part of an answer')).toBeVisible()
     expect(screen.getByRole('article', { name: 'Agent' })).not.toHaveAttribute('aria-busy')
@@ -189,7 +189,10 @@ describe('Agent page', () => {
   })
 
   it('says Stopped. when there was nothing to keep', async () => {
-    agentPage({ chat: { stream: () => {} } })
+    agentPage({
+      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+      extra: { [STOP]: { status: 204 } },
+    })
     const user = await ask()
     await screen.findByRole('button', { name: 'Stop' })
     await later()
@@ -808,7 +811,7 @@ describe('Agent page: answers that keep running', () => {
     await user.click(screen.getByRole('button', { name: 'Stop' }))
     await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
     expect(new Headers(calls(fetchMock, STOP)[0][1]!.headers).get('X-Requested-With')).toBe('vegapunk')
-    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true)
+    await vi.waitFor(() => expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true))
     expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
     expect(screen.getByText('Part of an answer')).toBeVisible()
     expect(screen.getByText('Stopped.').closest('.vp-alert')).toBeNull()
@@ -823,7 +826,7 @@ describe('Agent page: answers that keep running', () => {
     await later()
     await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
     await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
-    expect(calls(fetchMock, STREAM)[0][1]!.signal!.aborted).toBe(true)
+    await vi.waitFor(() => expect(calls(fetchMock, STREAM)[0][1]!.signal!.aborted).toBe(true))
     expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
   })
 
@@ -1015,5 +1018,114 @@ describe('Agent page: second review fixes', () => {
     await ask('hello')
     await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(1))
     expect(sent('POST /agent/chat')[0]).toEqual({ message: 'hello', conversation_id: null })
+  })
+})
+
+describe('Agent page: Stop and reattach edge cases', () => {
+  const CANT_STOP = "Couldn't stop the answer. It may still finish."
+
+  it('Stop before the conversation is known stops it on the server once it is', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) }, extra: { [STOP]: { status: 204 } } })
+    const user = await ask()
+    await vi.waitFor(() => expect(stream).toBeDefined())
+    await later()
+    await user.click(screen.getByRole('button', { name: 'Stop' }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(chatCall(fetchMock)![1].signal!.aborted).toBe(false) // still reading: the id is not known yet
+    expect(screen.queryByText('Stopped.')).not.toBeInTheDocument()
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
+    })
+    await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
+    await vi.waitFor(() => expect(chatCall(fetchMock)![1].signal!.aborted).toBe(true))
+    expect(await screen.findByText('Stopped.')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
+  })
+
+  it.each([
+    ['a network error', { networkError: true }],
+    ['a refusal', { status: 403, body: { detail: 'Forbidden.' } }],
+    ['a server error', { status: 500, body: { detail: 'Internal error.' } }],
+  ])('says the answer may still finish when Stop fails with %s', async (_, reply) => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) }, extra: { [STOP]: reply } })
+    const user = await ask()
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
+      stream.enqueue(enc.encode(line({ type: 'text', text: 'Part of an answer' })))
+    })
+    await screen.findByText('Part of an answer')
+    await later()
+    await user.click(screen.getByRole('button', { name: 'Stop' }))
+    await vi.waitFor(() => expect(calls(fetchMock, STOP)).toHaveLength(1))
+    expect(await screen.findByText(CANT_STOP)).toBeVisible()
+    expect(screen.queryByText('Stopped.')).not.toBeInTheDocument()
+    // Still reading: the rest of the answer shows.
+    await act(async () => {
+      stream.enqueue(enc.encode(line({ type: 'text', text: ' and the rest' })))
+      stream.enqueue(enc.encode(line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } })))
+      stream.close()
+    })
+    expect(await screen.findByText('Part of an answer and the rest')).toBeVisible()
+    expect(screen.queryByText('Stopped.')).not.toBeInTheDocument()
+  })
+
+  it('stops following one conversation when the address switches to another', async () => {
+    const OTHER = 'd'.repeat(32)
+    function Go() {
+      const navigate = useNavigate()
+      return <button onClick={() => void navigate(`/agent?c=${OTHER}`)}>go</button>
+    }
+    let streamA!: ReadableStreamDefaultController<Uint8Array>
+    let answering = false
+    const { fetchMock } = stubApi({
+      'GET /setup/status': { body: { admin_created: true } },
+      'GET /me': { body: ADMIN },
+      'GET /settings/ai': { body: CONFIGURED },
+      // Send finds A answering (asked from another tab, say), so the page follows that answer.
+      'POST /agent/chat': () => {
+        answering = true
+        return { status: 409, body: { detail: 'The agent is already answering.', code: 'busy' } }
+      },
+      [`GET /agent/conversations/${CID}`]: () => ({ body: answering ? QUESTION_ONLY : ANSWERED }),
+      [STREAM]: { stream: (c) => void (streamA = c) },
+      [`GET /agent/conversations/${OTHER}`]: {
+        body: {
+          ...ANSWERED,
+          id: OTHER,
+          messages: [
+            { role: 'user', text: 'Other question', steps: [] },
+            { role: 'assistant', text: 'Other answer', steps: [] },
+          ],
+        },
+      },
+    })
+    render(
+      <MemoryRouter initialEntries={[`/agent?c=${CID}`]}>
+        <App />
+        <Go />
+      </MemoryRouter>,
+    )
+    await screen.findByRole('article', { name: 'Agent' })
+    await ask('mine')
+    await screen.findByRole('button', { name: 'Stop' })
+    await vi.waitFor(() => expect(streamA).toBeDefined())
+    await userEvent.click(screen.getByRole('button', { name: 'go' }))
+    expect(await screen.findByText('Other answer')).toBeVisible()
+    await vi.waitFor(() => expect(calls(fetchMock, STREAM)[0][1]!.signal!.aborted).toBe(true))
+    // Anything A still sends is not applied to B.
+    await act(async () => {
+      try {
+        streamA.enqueue(enc.encode(line({ type: 'text', text: 'From A' })))
+      } catch {
+        // already cancelled
+      }
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(screen.queryByText(/From A/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Stopped.')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('article', { name: 'Agent' })).toHaveLength(1)
+    expect(await screen.findByRole('button', { name: 'Send' })).toBeEnabled()
   })
 })
