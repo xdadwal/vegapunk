@@ -26,7 +26,7 @@ export function stubApi(routes: Record<string, Handler>) {
   // The side navigation asks for the open count on every signed-in page.
   routes = {
     'GET /findings?status=open': { body: findingList() },
-    'GET /settings/checks': { body: { enabled: true, hour: 2 } },
+    'GET /settings/checks': { body: { enabled: true, hour: 2, watch_enabled: true } },
     ...routes,
   }
   const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {

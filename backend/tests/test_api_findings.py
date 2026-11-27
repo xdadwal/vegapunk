@@ -83,6 +83,7 @@ def test_list_reports_checks(api):
     assert checks == {
         "enabled": True,
         "hour": checks["hour"],
+        "watch_enabled": True,
         "last_run_at": "2026-11-27T03:00:00Z",
         "last_error": None,
         "skipped": None,
@@ -91,6 +92,13 @@ def test_list_reports_checks(api):
     api.runner.skipped, api.runner.error = "key_rejected", "boom"
     c = api.get("/api/findings").json()["checks"]
     assert c["skipped"] == "key_rejected" and c["last_error"] == "boom"
+
+
+def test_list_reports_the_watch_switch_with_or_without_a_runner(api):
+    findings.save_check_settings(api.conn, True, 2, watch_enabled=False)
+    assert api.get("/api/findings").json()["checks"]["watch_enabled"] is False
+    api.app.state.runner = None
+    assert api.get("/api/findings").json()["checks"]["watch_enabled"] is False
 
 
 def test_last_error_hidden_while_running(api):
@@ -198,21 +206,32 @@ def test_check_without_runner(api):
 
 
 def test_check_settings_round_trip(api):
-    assert set(api.get("/api/settings/checks").json()) == {"enabled", "hour"}
-    r = api.put("/api/settings/checks", json={"enabled": False, "hour": 5})
-    assert r.status_code == 200 and r.json() == {"enabled": False, "hour": 5}
-    assert api.get("/api/settings/checks").json() == {"enabled": False, "hour": 5}
+    assert api.get("/api/settings/checks").json() == {
+        "enabled": True,
+        "hour": 2,
+        "watch_enabled": True,
+    }
+    saved = {"enabled": False, "hour": 5, "watch_enabled": False}
+    r = api.put("/api/settings/checks", json=saved)
+    assert r.status_code == 200 and r.json() == saved
+    assert api.get("/api/settings/checks").json() == saved
+    again = {"enabled": True, "hour": 5, "watch_enabled": True}
+    assert api.put("/api/settings/checks", json=again).json() == again
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        {"enabled": True, "hour": 24},
-        {"enabled": True, "hour": -1},
-        {"enabled": True, "hour": True},
-        {"enabled": True, "hour": "5"},
-        {"enabled": "yes", "hour": 5},
-        {"enabled": True},
+        {"enabled": True, "hour": 24, "watch_enabled": True},
+        {"enabled": True, "hour": -1, "watch_enabled": True},
+        {"enabled": True, "hour": True, "watch_enabled": True},
+        {"enabled": True, "hour": "5", "watch_enabled": True},
+        {"enabled": "yes", "hour": 5, "watch_enabled": True},
+        {"enabled": True, "watch_enabled": True},
+        {"enabled": True, "hour": 5},
+        {"enabled": True, "hour": 5, "watch_enabled": 1},
+        {"enabled": True, "hour": 5, "watch_enabled": "true"},
+        {"enabled": True, "hour": 5, "watch_enabled": None},
     ],
 )
 def test_check_settings_rejects_bad_input(api, body):

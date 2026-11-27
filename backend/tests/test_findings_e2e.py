@@ -213,6 +213,27 @@ def test_a_restart_loop_becomes_one_finding_with_only_real_evidence(tmp_path, mo
     assert_key_nowhere(bodies, logs)
 
 
+def test_the_watch_switch_in_settings_stops_and_restarts_signal_runs(tmp_path, monkeypatch, logs):
+    fake = FakeOpenAI(script=[logs_call(), answer(reported([REAL]))])
+    with stack(tmp_path, monkeypatch, fake) as (client, runner, _, _settings, _bodies):
+        current = client.get("/api/settings/checks").json()
+        assert current["watch_enabled"] is True
+        off = client.put("/api/settings/checks", json={**current, "watch_enabled": False})
+        assert off.status_code == 200 and off.json()["watch_enabled"] is False
+        tick(client, runner)
+        tick(client, runner)
+        assert fake.requests == []
+        page = client.get("/api/findings").json()
+        assert page["items"] == [] and page["checks"]["watch_enabled"] is False
+
+        on = client.put("/api/settings/checks", json={**current, "watch_enabled": True})
+        assert on.status_code == 200
+        tick(client, runner)
+        assert len(fake.requests) == 2
+        (item,) = client.get("/api/findings").json()["items"]
+        assert item["key"] == "restart_loop:web"
+
+
 def test_a_log_line_cannot_change_a_findings_status(tmp_path, monkeypatch, logs):
     """The injected line reaches the model only as tool output; cited verbatim it is stored as
     plain evidence text, and the model's answer has no way to set a status."""

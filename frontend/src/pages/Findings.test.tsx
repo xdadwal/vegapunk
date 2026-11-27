@@ -98,6 +98,24 @@ describe('Findings', () => {
     expect(await screen.findByText('Daily checks are off. Turn them on in Settings.')).toBeVisible()
   })
 
+  it('says the background watch is off when it is', async () => {
+    show(findingList([], { watch_enabled: false }))
+    renderApp('/findings')
+    expect(
+      await screen.findByText(
+        'The agent checks once a day at 2:00 AM UTC. The background watch is off. Turn it on in Settings.',
+      ),
+    ).toBeVisible()
+  })
+
+  it('says both are off when daily checks and the watch are off', async () => {
+    show(findingList([], { enabled: false, watch_enabled: false }))
+    renderApp('/findings')
+    expect(
+      await screen.findByText('Daily checks and the background watch are off. Turn them on in Settings.'),
+    ).toBeVisible()
+  })
+
   it('names the last scheduled check in the header', async () => {
     show(findingList([OPEN], { last_run_at: '2026-11-27T02:00:00Z' }))
     renderApp('/findings')

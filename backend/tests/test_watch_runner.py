@@ -122,9 +122,9 @@ def check_row(settings) -> dict:
     return rows(settings, "SELECT * FROM check_settings WHERE id = 1")[0]
 
 
-def set_check(settings, *, enabled=True, hour=2, last_run_at=None):
+def set_check(settings, *, enabled=True, hour=2, last_run_at=None, watch=True):
     def write(c):
-        save_check_settings(c, enabled, hour)
+        save_check_settings(c, enabled, hour, watch_enabled=watch)
         c.execute(
             "UPDATE check_settings SET last_run_at = ? WHERE id = 1",
             (last_run_at.isoformat() if last_run_at else None,),
@@ -792,6 +792,66 @@ def test_disabled_checks_do_not_run_but_rules_still_do(world, signals):
     signals.now = [RESTART]
     run(runner(world, inv, clock).tick())
     assert [c["focus"] for c in inv.calls] == [RESTART]
+
+
+def set_watch(settings, on: bool) -> None:
+    db(
+        settings,
+        lambda c: c.execute("UPDATE check_settings SET watch_enabled = ? WHERE id = 1", (int(on),)),
+    )
+
+
+def test_with_the_watch_off_a_firing_signal_starts_nothing_until_it_is_on(world, signals):
+    set_watch(world, False)
+    clock, inv = Clock(), Investigator([])
+    db(
+        world,
+        lambda c: findings_module.upsert_finding(
+            c, draft(subject="db"), key=DB_MEM.key, trigger="watch", now=T0 - timedelta(hours=1)
+        ),
+    )
+    signals.now = [RESTART]
+
+    async def go():
+        r = runner(world, inv, clock)
+        for _ in range(130):  # 32.5 minutes of ticks
+            await r.tick()
+            clock.advance(seconds=15)
+        assert inv.calls == []
+        # Its rule stopped firing, so the open finding resolved though the watch is off.
+        assert open_findings(world) == []
+        set_watch(world, True)  # read fresh on the next tick
+        for _ in range(100):
+            await r.tick()
+            clock.advance(seconds=15)
+
+    run(go())
+    assert [c["focus"] for c in inv.calls] == [RESTART]  # once, then the cooldown holds
+    assert rows(world, "SELECT key, status FROM findings") == [
+        {"key": DB_MEM.key, "status": "resolved"}
+    ]
+
+
+def test_with_the_watch_off_the_daily_check_still_runs(world, signals):
+    set_check(world, enabled=True, last_run_at=T0 - timedelta(hours=30), watch=False)
+    clock, inv = Clock(), Investigator([])
+    signals.now = [RESTART]
+    run(runner(world, inv, clock).tick())
+    assert [c["focus"] for c in inv.calls] == [None]
+
+
+def test_reading_the_watch_switch_adds_no_database_hop(world, signals, monkeypatch):
+    opened = []
+    real = Runner._with_db
+    monkeypatch.setattr(Runner, "_with_db", lambda self, fn: opened.append(1) or real(self, fn))
+    clock = Clock()
+    run(runner(world, Investigator([]), clock).tick())  # nothing firing
+    quiet = len(opened)
+    opened.clear()
+    set_watch(world, False)
+    signals.now = [RESTART]
+    run(runner(world, Investigator([]), clock).tick())
+    assert len(opened) == quiet
 
 
 # ---- the provider

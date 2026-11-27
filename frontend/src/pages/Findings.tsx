@@ -15,7 +15,7 @@ import { Select } from '../components/Select'
 import { Spinner } from '../components/Spinner'
 import { StatusBadge } from '../components/StatusBadge'
 import { formatClockSafe, formatHour } from '../format'
-import type { FindingItem, FindingList, FindingStatus, Status } from '../types'
+import type { FindingChecks, FindingItem, FindingList, FindingStatus, Status } from '../types'
 import { usePolling } from '../usePolling'
 import './overview.css'
 
@@ -53,6 +53,15 @@ function FindingRow({ finding }: { finding: FindingItem }) {
       </div>
     </div>
   )
+}
+
+function emptyDescription(checks: FindingChecks): string {
+  const daily = `The agent checks once a day at ${formatHour(checks.hour)}`
+  if (checks.enabled && checks.watch_enabled)
+    return `${daily} and watches for restarts, memory kills, high use and filling storage.`
+  if (checks.enabled) return `${daily}. The background watch is off. Turn it on in Settings.`
+  if (checks.watch_enabled) return 'Daily checks are off. Turn them on in Settings.'
+  return 'Daily checks and the background watch are off. Turn them on in Settings.'
 }
 
 export default function Findings() {
@@ -156,9 +165,7 @@ export default function Findings() {
 
       {items.length === 0 ? (
         <EmptyState title="No findings yet">
-          {checks.enabled
-            ? `The agent checks once a day at ${formatHour(checks.hour)} and watches for restarts, memory kills, high use and filling storage.`
-            : 'Daily checks are off. Turn them on in Settings.'}
+          {emptyDescription(checks)}
         </EmptyState>
       ) : (
         <>

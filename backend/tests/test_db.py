@@ -1,9 +1,18 @@
+import sqlite3
+
 import pytest
 
 from vegapunk.config import Settings
-from vegapunk.db import DataDirError, SchemaTooNew, connect, migrate, prepare_data_dir
+from vegapunk.db import (
+    DataDirError,
+    SchemaTooNew,
+    _migration_files,
+    connect,
+    migrate,
+    prepare_data_dir,
+)
 
-LATEST = 4
+LATEST = 5
 
 
 def test_migrate_creates_tables_and_is_repeatable(tmp_path):
@@ -51,3 +60,22 @@ def test_startup_fails_on_newer_schema(settings):
     conn.close()
     with pytest.raises(SchemaTooNew), TestClient(create_app(settings)):
         pass
+
+
+def test_0005_adds_the_watch_switch_on_to_a_database_at_0004(tmp_path):
+    conn = connect(tmp_path / "v.db")
+    for number, sql in _migration_files():
+        if number <= 4:
+            conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+    conn.execute("UPDATE check_settings SET enabled = 0, hour = 7, last_error = 'x' WHERE id = 1")
+    conn.execute(
+        "INSERT INTO findings (key, subject, title, diagnosis, suggested_fix, status, trigger, "
+        "first_seen_at, last_seen_at) VALUES ('k', 'web', 't', 'd', 'f', 'open', 'watch', "
+        "'2026-11-27T00:00:00Z', '2026-11-27T00:00:00Z')"
+    )
+    assert migrate(conn) == 5
+    row = conn.execute("SELECT * FROM check_settings WHERE id = 1").fetchone()
+    assert (row["enabled"], row["hour"], row["last_error"], row["watch_enabled"]) == (0, 7, "x", 1)
+    assert [r["key"] for r in conn.execute("SELECT key FROM findings")] == ["k"]
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE check_settings SET watch_enabled = 2 WHERE id = 1")

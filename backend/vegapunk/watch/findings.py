@@ -38,8 +38,9 @@ class FindingDraft:
 
 @dataclass(frozen=True)
 class CheckSettings:
-    enabled: bool
+    enabled: bool  # the daily check
     hour: int
+    watch_enabled: bool  # signal-triggered investigations
 
 
 def upsert_finding(
@@ -168,16 +169,25 @@ def open_count(conn: sqlite3.Connection) -> int:
 
 
 def load_check_settings(conn: sqlite3.Connection) -> CheckSettings:
-    row = conn.execute("SELECT enabled, hour FROM check_settings WHERE id = 1").fetchone()
-    return CheckSettings(enabled=bool(row["enabled"]), hour=row["hour"])
+    row = conn.execute(
+        "SELECT enabled, hour, watch_enabled FROM check_settings WHERE id = 1"
+    ).fetchone()
+    return CheckSettings(
+        enabled=bool(row["enabled"]), hour=row["hour"], watch_enabled=bool(row["watch_enabled"])
+    )
 
 
-def save_check_settings(conn: sqlite3.Connection, enabled: bool, hour: int) -> None:
+def save_check_settings(
+    conn: sqlite3.Connection, enabled: bool, hour: int, watch_enabled: bool = True
+) -> None:
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
         raise ValueError("Hour must be a whole number from 0 to 23.")
+    if not isinstance(watch_enabled, bool):
+        raise ValueError("The watch switch must be true or false.")
     with transaction(conn):
         conn.execute(
-            "UPDATE check_settings SET enabled = ?, hour = ? WHERE id = 1", (int(enabled), hour)
+            "UPDATE check_settings SET enabled = ?, hour = ?, watch_enabled = ? WHERE id = 1",
+            (int(enabled), hour, int(watch_enabled)),
         )
 
 
@@ -271,18 +281,21 @@ def last_reviewed_at(conn: sqlite3.Connection, key: str) -> datetime | None:
 class CheckState:
     enabled: bool
     hour: int
+    watch_enabled: bool
     last_run_at: datetime | None
     last_error: str | None
 
 
 def load_check_state(conn: sqlite3.Connection) -> CheckState:
     row = conn.execute(
-        "SELECT enabled, hour, last_run_at, last_error FROM check_settings WHERE id = 1"
+        "SELECT enabled, hour, watch_enabled, last_run_at, last_error "
+        "FROM check_settings WHERE id = 1"
     ).fetchone()
     last = row["last_run_at"]
     return CheckState(
         enabled=bool(row["enabled"]),
         hour=row["hour"],
+        watch_enabled=bool(row["watch_enabled"]),
         last_run_at=datetime.fromisoformat(last) if last else None,
         last_error=row["last_error"],
     )

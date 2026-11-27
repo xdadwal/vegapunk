@@ -14,6 +14,7 @@ from vegapunk.watch.findings import (
     investigation_counts,
     list_findings,
     load_check_settings,
+    load_check_state,
     open_count,
     open_keys,
     record_investigation,
@@ -121,13 +122,21 @@ def test_open_count_counts_only_open(conn):
 
 def test_check_settings_default_and_save(conn):
     s = load_check_settings(conn)
-    assert s.enabled is True and s.hour == 2
+    assert s.enabled is True and s.hour == 2 and s.watch_enabled is True
     save_check_settings(conn, False, 23)
     s = load_check_settings(conn)
-    assert s.enabled is False and s.hour == 23
+    assert s.enabled is False and s.hour == 23 and s.watch_enabled is True
+    save_check_settings(conn, True, 4, watch_enabled=False)
+    s = load_check_settings(conn)
+    assert (s.enabled, s.hour, s.watch_enabled) == (True, 4, False)
+    assert load_check_state(conn).watch_enabled is False
     for bad in (-1, 24):
         with pytest.raises(ValueError):
             save_check_settings(conn, True, bad)
+    for bad in (1, 0, "yes", None):
+        with pytest.raises(ValueError):
+            save_check_settings(conn, True, 4, watch_enabled=bad)
+    assert load_check_settings(conn).watch_enabled is False  # unchanged by the rejected saves
 
 
 def test_migrate_creates_tables_and_default_row(conn):

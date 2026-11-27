@@ -40,7 +40,7 @@ It runs on your own AI provider. After you create the admin account, Vegapunk as
 
 ## Findings
 
-The agent looks for problems on its own, in two ways. A daily check (at the hour you choose in Settings) asks your AI provider to review every container and the host. A background watch uses simple rules (a restart loop, a memory kill, sustained high CPU or memory, filling storage) and calls the provider only when one fires, at most 20 times a day. Both send container logs and metrics to your AI provider. You can turn the daily check off in Settings. The background watch has no switch of its own: it runs whenever an AI provider is saved, so remove the provider to stop it.
+The agent looks for problems on its own, in two ways. A daily check (at the hour you choose in Settings) asks your AI provider to review every container and the host. A background watch uses simple rules (a restart loop, a memory kill, sustained high CPU or memory, filling storage) and calls the provider only when one fires, at most 20 times a day. Both send container logs and metrics to your AI provider. You can turn the daily check and the background watch off separately in Settings, under Checks.
 
 Each finding has a diagnosis, the evidence it cites and a suggested fix in words. You can mark findings as reviewed; in this version Vegapunk does not change anything on your host. Secrets are redacted from logs before they are sent, but redaction is best effort and does not catch every possible secret.
 

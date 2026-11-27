@@ -126,6 +126,7 @@ export type FindingItem = {
 export type FindingChecks = {
   enabled: boolean
   hour: number
+  watch_enabled: boolean
   last_run_at: string | null
   last_error: string | null
   skipped: null | 'off' | 'key_rejected' | 'unsupported'
@@ -142,4 +143,4 @@ export type FindingDetail = FindingItem & {
   evidence: EvidenceLine[]
 }
 
-export type CheckSettings = { enabled: boolean; hour: number }
+export type CheckSettings = { enabled: boolean; hour: number; watch_enabled: boolean }

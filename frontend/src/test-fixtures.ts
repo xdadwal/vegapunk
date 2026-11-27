@@ -141,6 +141,7 @@ export function findingList(items: FindingItem[] = [], over: Partial<FindingList
     checks: {
       enabled: true,
       hour: 2,
+      watch_enabled: true,
       last_run_at: null,
       last_error: null,
       skipped: null,

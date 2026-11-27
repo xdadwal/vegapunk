@@ -72,6 +72,7 @@ class _Seen:
     held: set[str]  # keys whose condition still holds though their rule no longer fires
     open_rule_keys: set[str]
     provider: _Provider
+    watch_enabled: bool  # off: rules are still evaluated and findings resolved, nothing runs
 
 
 def _provider(conn: sqlite3.Connection, crypto_key: bytes) -> _Provider:
@@ -189,11 +190,13 @@ class Runner:
     def _see(self, conn: sqlite3.Connection, now: datetime) -> _Seen:
         signals = rules.evaluate(conn, now, self._settings.capture_interval)
         open_rule = {k for k in findings.open_keys(conn) if not k.startswith(SCHEDULED)}
-        if findings.load_check_state(conn).last_run_at is None:
+        check = findings.load_check_state(conn)
+        if check.last_run_at is None:
             # A fresh install: wait for the next check hour, so nothing runs before data.
             findings.set_check_last_run(conn, now)
         held = rules.active_oom_keys(conn)
-        return _Seen(signals, held, open_rule, _provider(conn, self._crypto_key))
+        provider = _provider(conn, self._crypto_key)
+        return _Seen(signals, held, open_rule, provider, check.watch_enabled)
 
     async def tick(self) -> None:
         now = self._clock()
@@ -211,7 +214,7 @@ class Runner:
             return
         async with self._lock:
             ran = False
-            for signal in seen.signals:
+            for signal in seen.signals if seen.watch_enabled else ():
                 if signal.key in seen.open_rule_keys:
                     continue
                 fresh = await self._db(lambda c, s=signal, r=ran: self._still_due(c, s, r))

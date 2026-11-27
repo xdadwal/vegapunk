@@ -63,6 +63,7 @@ function ChecksSection() {
   const [saved, setSaved] = useState<CheckSettings | null>(null)
   const [enabled, setEnabled] = useState(true)
   const [hour, setHour] = useState(0)
+  const [watch, setWatch] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -77,6 +78,7 @@ function ChecksSection() {
         setSaved(loaded)
         setEnabled(loaded.enabled)
         setHour(loaded.hour)
+        setWatch(loaded.watch_enabled)
         setLoadFailed(false)
       },
       () => current && setLoadFailed(true),
@@ -91,7 +93,10 @@ function ChecksSection() {
     setDone(false)
     setFailure(null)
     try {
-      const result = await request<CheckSettings>('/settings/checks', { method: 'PUT', body: { enabled, hour } })
+      const result = await request<CheckSettings>('/settings/checks', {
+        method: 'PUT',
+        body: { enabled, hour, watch_enabled: watch },
+      })
       setSaved(result)
       setDone(true)
     } catch (error) {
@@ -112,9 +117,9 @@ function ChecksSection() {
         }}
       >
         <p className="page-note">
-          A daily check asks your AI provider to review every container and the host. The background watch calls it
-          only when something looks wrong (a restart loop, a memory kill, sustained high use or filling storage), at
-          most 20 times a day. The background watch has no switch of its own: it runs while an AI provider is saved.
+          A daily check asks your AI provider to review every container and the host. The background watch uses simple
+          rules to notice a restart loop, a memory kill, sustained high use or filling storage, and only then asks your
+          AI provider, at most 20 times a day.
         </p>
         <Switch
           label="Run a check every day"
@@ -131,6 +136,14 @@ function ChecksSection() {
           disabled={!enabled}
           onChange={(e) => {
             setHour(Number(e.target.value))
+            setDone(false)
+          }}
+        />
+        <Switch
+          label="Watch for problems in the background"
+          checked={watch}
+          onChange={(value) => {
+            setWatch(value)
             setDone(false)
           }}
         />

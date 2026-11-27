@@ -36,6 +36,7 @@ _ITEM_FIELDS = (
 class ChecksIn(BaseModel):
     enabled: StrictBool
     hour: StrictInt
+    watch_enabled: StrictBool
 
 
 def _finding_id(raw: str) -> int:
@@ -59,6 +60,7 @@ def _checks(conn, runner_status: dict | None) -> dict:
         return {
             "enabled": state.enabled,
             "hour": state.hour,
+            "watch_enabled": state.watch_enabled,
             "last_run_at": z(state.last_run_at) if ran else None,
             "last_error": state.last_error,
             "skipped": None,
@@ -68,6 +70,7 @@ def _checks(conn, runner_status: dict | None) -> dict:
     return {
         "enabled": state.enabled,
         "hour": state.hour,
+        "watch_enabled": state.watch_enabled,
         "last_run_at": runner_status["last_run_at"] if ran else None,
         # The runner marks a run as interrupted when it starts; hide that during a run.
         "last_error": None if running else runner_status["last_error"],
@@ -142,13 +145,13 @@ def get_checks(conn: Db, _: Admin_) -> dict:
 
 def _check_settings(conn) -> dict:
     s = findings.load_check_settings(conn)
-    return {"enabled": s.enabled, "hour": s.hour}
+    return {"enabled": s.enabled, "hour": s.hour, "watch_enabled": s.watch_enabled}
 
 
 @settings_router.put("/checks")
 def put_checks(body: ChecksIn, conn: Db, _: Admin_) -> dict:
     try:
-        findings.save_check_settings(conn, body.enabled, body.hour)
+        findings.save_check_settings(conn, body.enabled, body.hour, body.watch_enabled)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     return _check_settings(conn)
