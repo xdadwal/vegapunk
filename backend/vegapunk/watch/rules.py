@@ -93,6 +93,14 @@ def _oom_kills(conn: sqlite3.Connection) -> list[Signal]:
     return out
 
 
+def active_oom_keys(conn: sqlite3.Connection) -> set[str]:
+    """The oom_kill keys whose container (the newest row for the name) is still marked as
+    killed for running out of memory. Once its marker is used the rule stops firing, but the
+    kill still holds until the container restarts or goes: the runner counts these as firing
+    for resolution only."""
+    return {f"oom_kill:{c['name']}" for c in _current_containers(conn) if c["oom_killed"]}
+
+
 def _sustained(samples: list[tuple[int, float | None]], now: int, interval: int) -> float | None:
     """The latest value if every sample over the last SUSTAIN is at least HIGH, with enough
     coverage and no large gap; otherwise None. `samples` are (ts, percent), oldest first."""

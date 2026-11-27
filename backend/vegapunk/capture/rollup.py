@@ -64,8 +64,11 @@ def prune(conn: sqlite3.Connection, now: datetime) -> None:
                 "(SELECT id FROM containers WHERE removed_at IS NOT NULL AND removed_at < ?)",
                 (removed_cutoff,),
             )
+        # A used OOM marker is kept while a container still carries it, so a container that
+        # stays OOM-exited does not fire again once the week is up.
         conn.execute(
-            "DELETE FROM investigations WHERE started_at < ?",
+            "DELETE FROM investigations WHERE started_at < ? AND (marker IS NULL OR NOT EXISTS "
+            "(SELECT 1 FROM containers WHERE containers.exit_marker = investigations.marker))",
             (z(now - timedelta(seconds=INVESTIGATION_KEEP)),),
         )
         # Open findings are kept at any age; evidence goes by ON DELETE CASCADE.

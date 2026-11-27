@@ -391,6 +391,46 @@ def test_open_findings_are_passed_to_the_investigation(world, signals):
 
 
 # ---- resolution
+OOM = Signal("oom_kill:web", "oom_kill", "web", "Killed for running out of memory.", "m1")
+
+
+def set_oom(settings, flag):
+    def write(c):
+        c.execute(
+            "UPDATE containers SET oom_killed = ?, exit_marker = 'm1' WHERE id = 'a'", (int(flag),)
+        )
+        c.commit()
+
+    db(settings, write)
+
+
+def test_an_oom_finding_stays_open_while_the_container_is_still_oom_killed(world, signals):
+    set_oom(world, True)
+    clock, inv = Clock(), Investigator([draft()])
+    signals.now = [OOM]
+
+    async def go():
+        r = runner(world, inv, clock)
+        await r.tick()
+        signals.now = []  # the marker is used: the rule stops firing
+        for _ in range(8):  # two hours, the container still dead
+            clock.advance(minutes=15)
+            await r.tick()
+        assert [f["key"] for f in open_findings(world)] == ["oom_kill:web"]
+        set_oom(world, False)  # restarted
+        clock.advance(seconds=15)
+        await r.tick()
+        clock.advance(minutes=29)
+        await r.tick()
+        assert len(open_findings(world)) == 1
+        clock.advance(minutes=1)
+        await r.tick()
+
+    run(go())
+    assert open_findings(world) == []
+    assert len(inv.calls) == 1
+
+
 def test_a_signal_absent_for_30_minutes_of_ticks_resolves_its_finding(world, signals):
     clock, inv = Clock(), Investigator([draft()])
     signals.now = [RESTART]
@@ -548,6 +588,46 @@ def test_a_reviewed_key_that_clears_and_returns_within_24_hours_stays_quiet(worl
 
     run(go())
     assert len(inv.calls) == 1
+
+
+def test_the_daily_check_does_not_bring_back_a_finding_reviewed_within_24_hours(world, signals):
+    set_check(world, enabled=True, last_run_at=T0 - timedelta(hours=30))
+    clock, inv = Clock(), Investigator([draft()])
+
+    async def go():
+        r = runner(world, inv, clock)
+        await r.tick()
+        (finding,) = open_findings(world)
+        db(world, lambda c: review(c, finding["id"], clock()))
+        clock.advance(hours=1)
+        assert await r.run_check_now() is True
+        await r._check_task
+        assert open_findings(world) == []
+        clock.advance(hours=24)
+        assert await r.run_check_now() is True
+        await r._check_task
+
+    run(go())
+    assert [f["key"] for f in open_findings(world)] == ["scheduled:web"]
+    assert [o[2] for o in outcomes(world)] == ["finding", "nothing", "finding"]
+
+
+def test_a_signal_run_does_not_bring_back_a_reviewed_scheduled_finding(world, signals):
+    set_check(world, enabled=True, last_run_at=T0 - timedelta(hours=30))
+    clock, inv = Clock(), Investigator([draft(subject="db")], [draft(subject="db")])
+
+    async def go():
+        r = runner(world, inv, clock)
+        await r.tick()
+        (finding,) = open_findings(world)
+        db(world, lambda c: review(c, finding["id"], clock()))
+        clock.advance(hours=1)
+        signals.now = [RESTART]  # its run also reports db, under its scheduled key
+        await r.tick()
+
+    run(go())
+    assert open_findings(world) == []
+    assert outcomes(world)[-1] == ("restart_loop:web", "watch", "nothing")
 
 
 # ---- the daily check

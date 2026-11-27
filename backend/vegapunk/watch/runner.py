@@ -63,6 +63,7 @@ class _Provider:
 @dataclass(frozen=True)
 class _Seen:
     signals: list[Signal]
+    held: set[str]  # keys whose condition still holds though their rule no longer fires
     open_rule_keys: set[str]
     provider: _Provider
 
@@ -162,7 +163,8 @@ class Runner:
         if findings.load_check_state(conn).last_run_at is None:
             # A fresh install: wait for the next check hour, so nothing runs before data.
             findings.set_check_last_run(conn, now)
-        return _Seen(signals, open_rule, _provider(conn, self._crypto_key))
+        held = rules.active_oom_keys(conn)
+        return _Seen(signals, held, open_rule, _provider(conn, self._crypto_key))
 
     async def tick(self) -> None:
         now = self._clock()
@@ -207,8 +209,10 @@ class Runner:
         return signal if self._due(conn, signal.key, now) else None
 
     def _note_firing(self, seen: _Seen, now: datetime, first: bool) -> list[str]:
-        """Update what is firing; return the keys whose absence has lasted CLEAR_AFTER."""
-        fired = {s.key for s in seen.signals}
+        """Update what is firing; return the keys whose absence has lasted CLEAR_AFTER. A
+        held key (an OOM kill whose marker is used) counts as firing here, though it starts
+        no investigation."""
+        fired = {s.key for s in seen.signals} | seen.held
         for key in fired:
             if not first and key not in self._known:
                 self._cleared_at[key] = now  # it was not firing before: it returns now
@@ -293,11 +297,14 @@ class Runner:
             await self._failed(run_id, focus, "error", PROBLEM)
             return True
 
-        items = self._keyed(drafts, focus)
-        outcome = "finding" if items else "discarded" if drafts else "nothing"
+        keyed = self._keyed(drafts, focus)
         done = self._clock()
 
         def finish(conn):
+            # A scheduled key stays quiet for a day after its finding was reviewed, as rule
+            # keys do; a draft skipped for that is neither a finding nor discarded.
+            items = [(k, d) for k, d in keyed if not self._review_quiet(conn, k, done)]
+            outcome = "finding" if items else "discarded" if len(keyed) < len(drafts) else "nothing"
             if items:
                 findings.store_findings(conn, items, trigger=trigger, now=done)
             findings.finish_investigation(conn, run_id, outcome)
@@ -307,6 +314,13 @@ class Runner:
         await self._db(finish)
         self._watch_error = None
         return True
+
+    @staticmethod
+    def _review_quiet(conn: sqlite3.Connection, key: str, now: datetime) -> bool:
+        if not key.startswith(SCHEDULED):
+            return False  # rule keys are gated before the run, in `_due`
+        reviewed = findings.last_reviewed_at(conn, key)
+        return reviewed is not None and now - reviewed < REVIEW_QUIET
 
     @staticmethod
     def _keyed(drafts: list[FindingDraft], focus: Signal | None) -> list[tuple[str, FindingDraft]]:

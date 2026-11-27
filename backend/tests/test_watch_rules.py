@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from vegapunk.capture.ingest import ingest
 from vegapunk.capture.records import ContainerList, ContainerObservation
 from vegapunk.watch.findings import record_investigation
-from vegapunk.watch.rules import Signal, evaluate
+from vegapunk.watch.rules import Signal, active_oom_keys, evaluate
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 T = int(NOW.timestamp())
@@ -171,6 +171,18 @@ def test_oom_needs_marker_and_flag_and_not_removed(conn):
     container(conn, "b", "b", oom=0, marker="m")
     container(conn, "c", "c", oom=1, marker="m", removed=True)
     assert keys(conn) == set()
+
+
+def test_active_oom_keys_hold_while_the_newest_row_is_oom_killed(conn):
+    container(conn, "a", "a", state="exited", oom=1, marker="m1")
+    container(conn, "b", "b", oom=0, marker="m")
+    container(conn, "c", "c", oom=1, marker="m", removed=True)
+    record_investigation(conn, "oom_kill:a", "watch", NOW, "finding", marker="m1")
+    assert evaluate(conn, NOW) == []  # the marker is used: no new signal ...
+    assert active_oom_keys(conn) == {"oom_kill:a"}  # ... but the kill still holds
+    conn.execute("UPDATE containers SET oom_killed = 0 WHERE id = 'a'")
+    conn.commit()
+    assert active_oom_keys(conn) == set()
 
 
 # sustained host cpu

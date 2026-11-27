@@ -250,6 +250,26 @@ def test_prune_trims_investigations_after_seven_days(conn):
     assert conn.execute("SELECT count(*) FROM investigations").fetchone()[0] == 1
 
 
+def test_prune_keeps_an_old_marker_while_a_container_still_carries_it(conn):
+    container(conn, T, 10, cid="web")
+    conn.execute("UPDATE containers SET oom_killed = 1, exit_marker = 'm1' WHERE id = 'web'")
+    old = _z(T - timedelta(days=8))
+    for key, marker in (("oom_kill:web", "m1"), ("oom_kill:web", "m0"), ("k", None)):
+        conn.execute(
+            "INSERT INTO investigations (key, trigger, started_at, outcome, marker) "
+            "VALUES (?, 'watch', ?, 'finding', ?)",
+            (key, old, marker),
+        )
+    conn.commit()
+    prune(conn, T)
+    left = conn.execute("SELECT marker FROM investigations").fetchall()
+    assert [r[0] for r in left] == ["m1"]  # the stale marker and the null one are gone
+    conn.execute("UPDATE containers SET exit_marker = 'm2' WHERE id = 'web'")
+    conn.commit()
+    prune(conn, T)
+    assert conn.execute("SELECT count(*) FROM investigations").fetchone()[0] == 0
+
+
 def test_prune_trims_closed_findings_after_ninety_days_and_keeps_open_ones(conn):
     def finding(key, status, first, resolved=None, reviewed=None):
         cur = conn.execute(
