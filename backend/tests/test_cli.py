@@ -1,3 +1,6 @@
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from vegapunk.__main__ import main
@@ -57,9 +60,6 @@ def test_reset_password_too_short_fails(signed_in, capsys):
 
 
 def test_version_prints_the_project_version(capsys):
-    import tomllib
-    from pathlib import Path
-
     expected = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())[
         "project"
     ]["version"]
