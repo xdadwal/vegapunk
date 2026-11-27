@@ -13,8 +13,9 @@ services:
     # docs/socket-proxy.md for how to update it.
     image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
     environment:
-      # Only GET and HEAD are passed on, so nothing can be started, stopped, changed or
-      # deleted, whatever the settings below allow.
+      # Only GET and HEAD are passed on, so no request that creates, starts, stops or
+      # deletes anything gets through, whatever the settings below allow. Some GETs under
+      # /containers still reach far: see "What does not change" in docs/socket-proxy.md.
       POST: "0"
       # The parts of the API Vegapunk reads.
       PING: "1"        # /_ping

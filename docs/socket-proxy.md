@@ -1,6 +1,6 @@
 # Optional: a read-only Docker socket proxy
 
-By default Vegapunk reads Docker through the Docker socket, mounted into its container. This page explains how to put a proxy between the two so that Docker itself refuses anything but reads.
+By default Vegapunk reads Docker through the Docker socket, mounted into its container. This page explains how to put a proxy between the two so that Vegapunk can no longer create, start, stop or delete anything through Docker: the proxy passes on only `GET` and `HEAD` requests to the parts of the Docker API Vegapunk reads. It is a large narrowing, not a perfect one; [what does not change](#what-changes-and-what-does-not) lists what still gets through.
 
 ## Why
 
@@ -8,7 +8,7 @@ Whoever can use the Docker socket controls Docker. That means they can start any
 
 Vegapunk only reads. All its Docker calls are in one small module that has no way to start, stop or change anything. But that is a promise made by Vegapunk's code. If someone found a way to make Vegapunk send other requests, the socket would carry them.
 
-The proxy makes the promise hold outside Vegapunk. Vegapunk no longer gets the socket. It gets the address of the proxy, which passes on only the reads Vegapunk needs and answers everything else with `403 Forbidden`.
+The proxy moves most of that promise outside Vegapunk. Vegapunk no longer gets the socket. It gets the address of the proxy, which passes on only `GET` and `HEAD` requests to the parts of the API Vegapunk reads, and answers everything else with `403 Forbidden`.
 
 ## What changes and what does not
 
@@ -25,7 +25,7 @@ What changes:
   | `INFO=1` | `/info` | Host facts |
   | `CONTAINERS=1` | `/containers/...` | The container list, each container's details, one-shot stats and logs |
 
-  Every other part of the API (images, volumes, networks, events, exec, build, swarm and the rest) is refused, and every `POST`, `PUT` and `DELETE` is refused, even under `/containers`. All settings are written out in [`compose.socket-proxy.yaml`](../compose.socket-proxy.yaml), so a default in the image cannot turn one on.
+  Every other part of the API (images, volumes, networks, events, exec, build, swarm and the rest) is refused, and every `POST`, `PUT` and `DELETE` is refused, even under `/containers`, so no request that creates, starts, stops or deletes anything is passed on. `GET` requests under `/containers` are passed on whatever they are (see below). All settings are written out in [`compose.socket-proxy.yaml`](../compose.socket-proxy.yaml), so a default in the image cannot turn one on.
 - The proxy has no published port. Only containers in the same Compose project can reach it.
 - The proxy runs with a read-only root filesystem, all Linux capabilities dropped and `no-new-privileges`.
 
@@ -33,7 +33,11 @@ What does not change:
 
 - Vegapunk shows the same data, and the agent can read container logs as before.
 - Your data. Vegapunk keeps the same data volume, so you can switch the proxy on and off without losing anything.
-- The proxy still has full access to the socket, and `CONTAINERS=1` allows every read under `/containers`. That includes **reading files from inside any container** (`GET /containers/<id>/archive`, and `GET /containers/<id>/export` for a container's whole filesystem) and every container's details, which include its environment variables. Vegapunk never reads container files and never shows or passes on environment variables, but the proxy does not stop these reads. The proxy turns "can control Docker" into "can read everything Docker knows about your containers", not into "can read only what Vegapunk shows".
+- The proxy still has full access to the socket, and `CONTAINERS=1` allows every read under `/containers`. That includes **reading files from inside any container** (`GET /containers/<id>/archive`, and `GET /containers/<id>/export` for a container's whole filesystem) and every container's details, which include its environment variables. Vegapunk never reads container files and never shows or passes on environment variables, but the proxy does not stop these reads.
+- `CONTAINERS=1` also passes `GET /containers/<id>/attach/ws`, which opens a WebSocket to the container. The Docker API documents it as able to send input to a container that was started with its input open (`docker run -i`, or `stdin_open: true` in Compose), so through the proxy someone could in principle type into such a container. Sending input was not tried here; opening the WebSocket through the proxy was, and it was accepted (`101 Switching Protocols`). Blocking it would need a custom HAProxy configuration, which this guide does not ship.
+- A path containing `..` (such as `/containers/../images/json`) gets past the proxy's `/containers` rule, but Docker answers it with a redirect to the cleaned path and no data, and following the redirect goes back through the proxy and is refused with `403`. (Seen with Docker Engine 29.6.1.)
+
+So the proxy turns "can control Docker" into "can read everything Docker knows about your containers, and can send input to containers that keep their input open", not into "can read only what Vegapunk shows".
 
 ## Turn it on
 
