@@ -35,6 +35,17 @@ Each line names a condition no happy-path test covers; the task in brackets owns
 
 ---
 
+## Implementation notes
+
+Where the build differs from this plan:
+
+- **Transactions (Task 1).** `get_db` does not commit. Connections are autocommit and usable from any thread, and every write runs inside `db.transaction(conn)`, which commits before the response is built. Review found that committing in the dependency teardown ran after the response was sent and failed under concurrent requests. Sign-in does its lockout check, password check and record in one transaction so parallel guesses are counted exactly. `backend/tests/test_concurrency.py` sends overlapping requests to a real server.
+- **Component styles (Task 5).** One `frontend/src/styles/components.css`, extracted from the design system's stylesheet, replaces the per-component CSS files.
+- **Auth state (Task 6).** `refresh()` returns the new state, so Sign in can explain a session that the browser did not keep. `useAuth` and its types live in `auth/auth-context.ts` and the provider in `auth/AuthProvider.tsx`.
+- **Forms (Tasks 6 and 7).** Forms check username and password rules before sending, counting characters as the server does, so people see specific messages instead of a generic 422.
+
+---
+
 ## File Structure
 
 ```

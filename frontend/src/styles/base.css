@@ -1,0 +1,61 @@
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+html,
+body {
+  margin: 0;
+  background: #0f1417;
+}
+
+/* The app root is full-bleed; pages that need padding add their own. */
+.vp-root {
+  padding: 0;
+}
+
+/* Components are sized in px against a 15px / 22px body. */
+.vp-root *,
+.vp-root *::before,
+.vp-root *::after {
+  box-sizing: border-box;
+}
+
+.vp-root a {
+  color: var(--brand);
+}
+
+.vp-root a:hover {
+  color: var(--ink);
+}
+
+.vp-root :focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .vp-root * {
+    transition-duration: 0.01ms !important;
+    transform: none !important;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: var(--space-2);
+  z-index: 10;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-200);
+  border: 1px solid var(--ink-muted);
+  color: var(--ink);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus {
+  transform: none;
+}

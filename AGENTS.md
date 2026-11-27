@@ -76,12 +76,23 @@ Backend, from `backend/`:
 - `uv run uvicorn vegapunk.main:app --reload` — run the API on http://localhost:8000
 - `uv run pytest` — run tests
 - `uv run ruff check .` and `uv run ruff format .` — lint and format
+- `uv run python -m vegapunk reset-password` — set a new admin password (reads the same data directory)
 
 Frontend, from `frontend/`:
 
 - `npm install` — install dependencies
 - `npm run dev` — run the dev server; requests to `/api` are proxied to the backend
+- `npm test` — run tests (Vitest and Testing Library)
 - `npm run lint` — lint
 - `npm run build` — type-check and build
 
-CI (`.github/workflows/ci.yml`) runs lint, tests, and build for both on every pull request.
+Whole app: `docker compose up --build` builds one image that serves the API and the built frontend on port 8000.
+
+CI (`.github/workflows/ci.yml`) runs lint, tests, and build for both, and builds the image, on every pull request.
+
+## Conventions
+
+- **Database:** stdlib `sqlite3` with numbered SQL migrations in `backend/vegapunk/migrations/`. Add a new file (`0002_name.sql`); never edit one that has shipped. Startup refuses a database written by a newer version.
+- **Configuration:** environment variables read once in `config.py`: `VEGAPUNK_DATA_DIR` (default `data`), `VEGAPUNK_STATIC_DIR` (the built frontend; set in the image), `VEGAPUNK_SECURE_COOKIES` (`1` behind HTTPS).
+- **API:** everything is under `/api`. Every route except health, setup, and sign-in requires the signed-in admin (`require_admin`).
+- **Frontend styling:** design tokens in `frontend/src/styles/tokens.css` and component styles in `components.css`, both taken from the design system. Use the tokens; do not hard-code colors, spacing, or fonts.

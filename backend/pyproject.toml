@@ -5,6 +5,7 @@ description = "Manage a homelab host and its services through a web interface."
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "argon2-cffi>=25.1.0",
     "fastapi",
     "uvicorn[standard]",
 ]

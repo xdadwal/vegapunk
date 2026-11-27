@@ -1,8 +1,4 @@
-from fastapi import FastAPI
+from vegapunk.app import create_app
+from vegapunk.config import load_settings
 
-app = FastAPI(title="Vegapunk")
-
-
-@app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+app = create_app(load_settings())

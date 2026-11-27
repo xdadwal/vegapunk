@@ -1,0 +1,12 @@
+services:
+  vegapunk:
+    container_name: vegapunk
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - vegapunk-data:/data
+    restart: unless-stopped
+
+volumes:
+  vegapunk-data:
