@@ -190,7 +190,9 @@ describe('Agent page', () => {
 
   it('says Stopped. when there was nothing to keep', async () => {
     agentPage({
-      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+      chat: {
+        stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))),
+      },
       extra: { [STOP]: { status: 204 } },
     })
     const user = await ask()
@@ -696,7 +698,11 @@ const ANSWERED = {
   answering: false,
   messages: [
     ...QUESTION_ONLY.messages,
-    { role: 'assistant', text: '`db` is stopped.', steps: [{ label: 'Read the status of the containers', status: 'done' }] },
+    {
+      role: 'assistant',
+      text: '`db` is stopped.',
+      steps: [{ label: 'Read the status of the containers', status: 'done' }],
+    },
   ],
 }
 const STOPPED: ChatEvent = { type: 'error', code: 'stopped', message: 'Stopped.' }
@@ -728,7 +734,9 @@ describe('Agent page: answers that keep running', () => {
 
     await act(async () => {
       stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
-      stream.enqueue(enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'running' })))
+      stream.enqueue(
+        enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'running' })),
+      )
       stream.enqueue(enc.encode(line({ type: 'text', text: 'Looking so far' })))
     })
     expect(answer).toHaveTextContent('Looking so far')
@@ -736,7 +744,9 @@ describe('Agent page: answers that keep running', () => {
 
     finished = true
     await act(async () => {
-      stream.enqueue(enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'done' })))
+      stream.enqueue(
+        enc.encode(line({ type: 'step', id: 's1', label: 'Read the status of the containers', status: 'done' })),
+      )
       stream.enqueue(enc.encode(line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } })))
       stream.close()
     })
@@ -866,7 +876,9 @@ describe('Agent page: answers that keep running', () => {
 
   it('going to another page only drops the stream too', async () => {
     const { fetchMock } = agentPage({
-      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+      chat: {
+        stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))),
+      },
       extra: { 'GET /agent/conversations': { body: { items: [] } } },
     })
     await ask()
@@ -894,7 +906,9 @@ describe('Agent page: answers that keep running', () => {
 
   it('New conversation while answering leaves the answer running', async () => {
     const { fetchMock } = agentPage({
-      chat: { stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))) },
+      chat: {
+        stream: (c) => c.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null }))),
+      },
     })
     await ask()
     await screen.findByRole('button', { name: 'Stop' })
@@ -917,10 +931,16 @@ describe('Agent page: answers that keep running', () => {
         },
         conversation: () => ({
           body: answering
-            ? { ...STORED, answering: true, messages: [...STORED.messages, { role: 'user', text: 'From elsewhere', steps: [] }] }
+            ? {
+                ...STORED,
+                answering: true,
+                messages: [...STORED.messages, { role: 'user', text: 'From elsewhere', steps: [] }],
+              }
             : STORED,
         }),
-        extra: { [STREAM]: { stream: (c) => c.enqueue(enc.encode(line({ type: 'text', text: 'Answering elsewhere' }))) } },
+        extra: {
+          [STREAM]: { stream: (c) => c.enqueue(enc.encode(line({ type: 'text', text: 'Answering elsewhere' }))) },
+        },
       },
       `/agent?c=${CID}`,
     )

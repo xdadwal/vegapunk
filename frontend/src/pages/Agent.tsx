@@ -391,11 +391,7 @@ export default function Agent() {
             setParams({ c: event.id }, { replace: true })
             const linked = event.finding_id
             setAbout((current) =>
-              linked == null
-                ? null
-                : current?.id === String(linked)
-                  ? current
-                  : { id: String(linked), title: null },
+              linked == null ? null : current?.id === String(linked) ? current : { id: String(linked), title: null },
             )
             if (conversationId === null && linked != null) void showEarlier(event.id, before.length)
           }

@@ -8,10 +8,7 @@ type Props = { tone: Tone; title: string; children?: ReactNode; action?: ReactNo
 
 export function Alert({ tone, title, children, action }: Props) {
   return (
-    <div
-      className={`vp-alert vp-alert-${tone}`}
-      role={tone === 'danger' || tone === 'warning' ? 'alert' : 'status'}
-    >
+    <div className={`vp-alert vp-alert-${tone}`} role={tone === 'danger' || tone === 'warning' ? 'alert' : 'status'}>
       <span className="vp-alert-mark" aria-hidden="true">
         {MARK[tone]}
       </span>

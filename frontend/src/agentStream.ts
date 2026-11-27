@@ -45,7 +45,11 @@ export async function streamChat(body: Body, onEvent: (event: ChatEvent) => void
  * the rest as it comes. Nothing running throws an ApiError whose `body.code` is `idle`.
  * Aborting only stops reading; the answer goes on on the server.
  */
-export async function followAnswer(id: string, onEvent: (event: ChatEvent) => void, signal?: AbortSignal): Promise<void> {
+export async function followAnswer(
+  id: string,
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   await read(`/api/agent/conversations/${encodeURIComponent(id)}/stream`, { method: 'GET' }, onEvent, signal)
 }
 

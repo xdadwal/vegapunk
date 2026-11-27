@@ -124,8 +124,10 @@ describe('Settings', () => {
 })
 
 describe('Settings checks', () => {
-  const checks = (body: object = { enabled: true, hour: 2, watch_enabled: true }, extra: Parameters<typeof stubApi>[0] = {}) =>
-    settingsPage(CONFIGURED, { 'GET /settings/checks': { body }, ...extra })
+  const checks = (
+    body: object = { enabled: true, hour: 2, watch_enabled: true },
+    extra: Parameters<typeof stubApi>[0] = {},
+  ) => settingsPage(CONFIGURED, { 'GET /settings/checks': { body }, ...extra })
   const section = async () => {
     const box = (await screen.findByRole('heading', { level: 2, name: 'Checks' })).closest('section') as HTMLElement
     await within(box).findAllByRole('switch')
@@ -195,7 +197,10 @@ describe('Settings checks', () => {
   })
 
   it('shows the server message when saving fails', async () => {
-    checks({ enabled: true, hour: 2 }, { 'PUT /settings/checks': { status: 422, body: { detail: 'Hour out of range.' } } })
+    checks(
+      { enabled: true, hour: 2 },
+      { 'PUT /settings/checks': { status: 422, body: { detail: 'Hour out of range.' } } },
+    )
     const box = await section()
     await userEvent.click(within(box).getByRole('button', { name: 'Save' }))
     expect(await within(box).findByRole('alert')).toHaveTextContent('Hour out of range.')
@@ -210,13 +215,18 @@ describe('Settings checks', () => {
         /The background watch uses simple rules to notice a restart loop, a memory kill, sustained high use or filling storage, and only then asks your AI provider, at most 20 times a day\./,
       ),
     ).toBeVisible()
-    expect(within(box).getByText(/A daily check asks your AI provider to review every container and the host\./)).toBeVisible()
+    expect(
+      within(box).getByText(/A daily check asks your AI provider to review every container and the host\./),
+    ).toBeVisible()
   })
 
   it('retries loading the checks from their own section', async () => {
     let calls = 0
     settingsPage(CONFIGURED, {
-      'GET /settings/checks': () => (++calls === 1 ? { status: 500, body: { detail: 'nope' } } : { body: { enabled: true, hour: 2, watch_enabled: true } }),
+      'GET /settings/checks': () =>
+        ++calls === 1
+          ? { status: 500, body: { detail: 'nope' } }
+          : { body: { enabled: true, hour: 2, watch_enabled: true } },
     })
     const box = (await screen.findByRole('heading', { level: 2, name: 'Checks' })).closest('section') as HTMLElement
     await userEvent.click(await within(box).findByRole('button', { name: 'Retry' }))

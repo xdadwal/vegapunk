@@ -37,9 +37,7 @@ describe('Profile', () => {
     await user.clear(screen.getByLabelText('Username'))
     await user.type(screen.getByLabelText('Username'), 'Not Valid')
     await user.click(screen.getByRole('button', { name: 'Save details' }))
-    expect(screen.getByLabelText('Display name')).toHaveAccessibleDescription(
-      'Enter a name of 1 to 64 characters.',
-    )
+    expect(screen.getByLabelText('Display name')).toHaveAccessibleDescription('Enter a name of 1 to 64 characters.')
     expect(screen.getByLabelText('Username')).toHaveAccessibleDescription(
       'Use 1 to 32 lowercase letters, numbers, dashes or underscores.',
     )
@@ -62,9 +60,7 @@ describe('Profile', () => {
     await user.type(screen.getByLabelText('Confirm new password'), 'battery staple')
     await user.click(screen.getByRole('button', { name: 'Change password' }))
     expect(await screen.findByText('Password changed. Other sessions were signed out.')).toBeVisible()
-    expect(sent('POST /me/password')).toEqual([
-      { current_password: 'correct horse', new_password: 'battery staple' },
-    ])
+    expect(sent('POST /me/password')).toEqual([{ current_password: 'correct horse', new_password: 'battery staple' }])
     expect(screen.getByLabelText('Current password')).toHaveValue('')
     expect(screen.getByLabelText('New password')).toHaveValue('')
   })
@@ -93,9 +89,7 @@ describe('Profile', () => {
     await user.type(screen.getByLabelText('New password'), 'battery staple')
     await user.type(screen.getByLabelText('Confirm new password'), 'battery stapl')
     await user.click(screen.getByRole('button', { name: 'Change password' }))
-    expect(screen.getByLabelText('Confirm new password')).toHaveAccessibleDescription(
-      "The two passwords don't match.",
-    )
+    expect(screen.getByLabelText('Confirm new password')).toHaveAccessibleDescription("The two passwords don't match.")
     expect(sent('POST /me/password')).toHaveLength(0)
   })
 

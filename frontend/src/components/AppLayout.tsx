@@ -14,12 +14,12 @@ export function AppLayout() {
   if (state.status !== 'signed-in') return null
   return (
     <AppShell
-      nav={(
+      nav={
         <SideNav
           openFindings={findings.data?.open_count ?? 0}
           account={<AccountMenu name={state.admin.display_name} onSignOut={() => void signOut()} />}
         />
-      )}
+      }
     >
       <Outlet />
     </AppShell>

@@ -57,10 +57,7 @@ const rows = () => {
 
 describe('History: conversations about a finding', () => {
   it('says which finding a conversation is about, as text, keeping the row link', async () => {
-    historyPage([
-      { ...ITEMS[0], finding_id: 7, finding_title: 'web keeps <b>restarting</b>' },
-      ITEMS[1],
-    ])
+    historyPage([{ ...ITEMS[0], finding_id: 7, finding_title: 'web keeps <b>restarting</b>' }, ITEMS[1]])
     await conversations()
     const [linked, plain] = items()
     expect(within(linked).getByText('About finding: web keeps <b>restarting</b>')).toHaveClass('vp-service-meta')

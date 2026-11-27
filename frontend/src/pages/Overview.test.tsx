@@ -229,9 +229,7 @@ describe('Overview polling', () => {
 describe('Overview needs attention', () => {
   const open = (n: number) =>
     findingList(
-      Array.from({ length: n }, (_, i) =>
-        findingItem({ id: `f/${i}`, title: `Problem ${i}`, subject: `svc${i}` }),
-      ),
+      Array.from({ length: n }, (_, i) => findingItem({ id: `f/${i}`, title: `Problem ${i}`, subject: `svc${i}` })),
     )
 
   it('shows no card when nothing is open', async () => {

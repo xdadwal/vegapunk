@@ -36,7 +36,8 @@ export function applyEvent(messages: Msg[], event: ChatEvent): Msg[] {
     case 'done':
       return updateLast(messages, ({ status: _status, ...m }) => m)
     case 'error':
-      if (event.code === 'stopped') return updateLast(messages, ({ status: _status, ...m }) => ({ ...m, stopped: true }))
+      if (event.code === 'stopped')
+        return updateLast(messages, ({ status: _status, ...m }) => ({ ...m, stopped: true }))
       return updateLast(messages, ({ status: _status, ...m }) => ({ ...m, error: event.message }))
     default:
       return messages

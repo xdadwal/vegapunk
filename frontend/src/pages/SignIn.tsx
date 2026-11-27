@@ -10,8 +10,7 @@ import { Input } from '../components/Input'
 import { formatClock } from '../format'
 import './auth.css'
 
-const MISMATCH =
-  "That username or password doesn't match. After 5 tries sign-in pauses for 15 minutes."
+const MISMATCH = "That username or password doesn't match. After 5 tries sign-in pauses for 15 minutes."
 
 function lockedUntil(error: ApiError): string | null {
   const body = error.body
@@ -80,8 +79,8 @@ export default function SignIn() {
           </Button>
         </form>
         <p className="auth-note">
-          Forgot your password? Run <code className="vp-mono">docker exec -it vegapunk python -m vegapunk reset-password</code>{' '}
-          on the host.
+          Forgot your password? Run{' '}
+          <code className="vp-mono">docker exec -it vegapunk python -m vegapunk reset-password</code> on the host.
         </p>
       </main>
     </div>

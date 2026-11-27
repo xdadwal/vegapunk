@@ -32,9 +32,7 @@ function DetailsForm({ admin }: { admin: Admin }) {
     const nameLength = [...name].length
     const found = {
       displayName: nameLength >= 1 && nameLength <= 64 ? undefined : 'Enter a name of 1 to 64 characters.',
-      username: USERNAME.test(username)
-        ? undefined
-        : 'Use 1 to 32 lowercase letters, numbers, dashes or underscores.',
+      username: USERNAME.test(username) ? undefined : 'Use 1 to 32 lowercase letters, numbers, dashes or underscores.',
     }
     setErrors(found)
     setSaved(false)
