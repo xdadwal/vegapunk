@@ -24,6 +24,19 @@ Vegapunk is a single server that runs on your homelab host. It periodically capt
 - It watches one host, the one it runs on. Multiple hosts are out of scope.
 - It manages Docker containers only, with one admin account and no other users.
 
+## Screenshots
+
+![The Overview page: two findings that need attention, the host's CPU, memory and storage, and a chart of CPU and memory over the last hour](docs/images/overview.png)
+
+| | |
+|---|---|
+| ![The Findings page listing three findings, two needing attention and one reviewed](docs/images/findings.png) | ![A finding about a container that keeps restarting, with its diagnosis, the log lines cited as evidence and a suggested fix](docs/images/finding-detail.png) |
+| **Findings** the agent raised, by status. | **A finding**: diagnosis, evidence and a suggested fix in words. |
+| ![The Agent chat answering why a container keeps restarting, after reading its details and logs](docs/images/agent.png) | ![The Containers page listing seven containers with their image, CPU, memory, restarts and status](docs/images/containers.png) |
+| **The agent** answering a question from the container's logs. | **Containers** with their status, usage and restarts. |
+
+Screenshots are from a demo instance with sample containers; the agent answer is a real answer from a local model (Gemma), and the findings are sample data.
+
 ## Quick start
 
 You need Docker with Compose.
