@@ -54,3 +54,21 @@ def test_reset_password_mismatch_fails(signed_in, capsys):
 def test_reset_password_too_short_fails(signed_in, capsys):
     assert main(["reset-password"], read_password=entries("short", "short")) == 1
     assert "at least 10" in capsys.readouterr().err
+
+
+def test_version_prints_the_project_version(capsys):
+    import tomllib
+    from pathlib import Path
+
+    expected = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())[
+        "project"
+    ]["version"]
+    assert main(["version"]) == 0
+    assert capsys.readouterr().out == f"Vegapunk {expected}\n"
+
+
+@pytest.mark.parametrize("argv", [[], ["nope"]])
+def test_missing_or_unknown_command_exits_with_2(argv):
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 2
