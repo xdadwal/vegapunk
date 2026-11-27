@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest a change or a new feature.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. The first version is deliberately narrow: **observer mode only** (Vegapunk reads and reports, and changes nothing on the host), **Docker containers only**, **one admin account**, **one host**. Managing containers and letting the agent act are planned for later. See [the scope in CONTRIBUTING.md](https://github.com/xdadwal/vegapunk/blob/main/CONTRIBUTING.md#what-the-first-version-is).
+
+        Not sure yet? Start in [Discussions](https://github.com/xdadwal/vegapunk/discussions) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way? Start with the problem, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like Vegapunk to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Other ways to solve it, or how you work around it today.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does it fit the first version?
+      description: Observer mode only, Docker containers only, one admin, one host.
+      options:
+        - It fits the first version (it only reads and reports)
+        - It goes beyond it (it changes something on the host, or needs more hosts, users or non-Docker services)
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to work on it?
+      options:
+        - Yes, I'd like to open a pull request
+        - Maybe, with some guidance
+        - "No"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I've read the scope in CONTRIBUTING.md.
+          required: true
+        - label: I have searched existing issues and discussions for this idea.
+          required: true

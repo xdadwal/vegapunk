@@ -6,6 +6,8 @@ All notable changes to Vegapunk are recorded here. The format follows
 
 ## [Unreleased]
 
+<!-- Credit contributors at the end of an entry: "... (thanks @username)". -->
+
 ## [0.1.0] - 2026-11-27
 
 First version. Vegapunk watches one Docker host and reports problems; it changes nothing on the host.

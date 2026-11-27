@@ -41,7 +41,8 @@ Out of scope: multiple hosts, a host agent, multiple users, non-Docker services.
 - Ask before introducing a new language, framework, or major dependency — and record the decision here once made.
 - The server runs on users' machines with access to their services: treat security as a first-class concern (least privilege, validate all inputs, never execute unvalidated commands, avoid storing secrets in plaintext).
 - Write tests alongside new functionality.
-- Keep `README.md` user-facing and brief; put contributor/dev details here or in `docs/`.
+- Keep `README.md` user-facing and brief; put contributor/dev details here or in `docs/` (`CONTRIBUTING.md` is the contributor guide, `docs/development.md` the developer guide).
+- Community files exist: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, and the issue forms, pull request template, `CODEOWNERS` and Dependabot config in `.github/`; keep them in step with the scope and the CI commands.
 - Do not commit or push unless asked.
 
 ## Design decisions

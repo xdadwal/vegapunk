@@ -1,0 +1,96 @@
+name: Bug report
+description: Something in Vegapunk doesn't work as the docs say.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please check [known issues](https://github.com/xdadwal/vegapunk/blob/main/docs/known-issues.md) first.
+
+        **Security vulnerabilities do not belong here.** Report them privately as described in [SECURITY.md](https://github.com/xdadwal/vegapunk/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? Include any error message shown on the page.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The steps that lead to the problem, as exactly as you can.
+      placeholder: |
+        1. Open Containers
+        2. Click a container
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Vegapunk version
+      description: "Run `docker exec vegapunk python -m vegapunk version`, or give the commit you built from."
+      placeholder: Vegapunk 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: How it is installed
+      description: Where Vegapunk runs.
+      options:
+        - Docker Desktop on macOS
+        - Docker Desktop on Windows
+        - Docker on Linux
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: platform-details
+    attributes:
+      label: Platform details
+      description: "Linux distribution or OS version, and the output of `docker compose version`."
+      placeholder: Debian 13, Docker Compose version v2.40.0
+  - type: dropdown
+    id: socket-proxy
+    attributes:
+      label: Do you use the socket proxy?
+      description: "The optional read-only Docker socket proxy from docs/socket-proxy.md."
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Output of `docker compose logs vegapunk`, run in the folder you installed Vegapunk in. It is formatted as code automatically.
+
+        **Remove secrets first:** API keys, passwords, tokens, host names and addresses. Replace them with `[redacted]`.
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Screenshots (with secrets removed), your AI provider if the agent is involved, or anything else that helps.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have removed secrets (API keys, passwords, tokens) from everything above.
+          required: true
+        - label: I have searched existing issues and known issues for this problem.
+          required: true

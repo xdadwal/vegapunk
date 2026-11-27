@@ -22,9 +22,14 @@ __pycache__/
 node_modules/
 dist/
 
-# Local data
+# Local data: the dev data directory and keys must never be committed
+/backend/data/
+/data/
 *.db
 *.sqlite3
+secret.key
+*.key
+*.pem
 
 # Local install settings and backups (a backup holds secret.key)
 compose.override.yaml
