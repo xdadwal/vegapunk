@@ -136,7 +136,7 @@ The full set is in [AGENTS.md](AGENTS.md#conventions). The ones that come up mos
 
 ### Review and merging
 
-`main` is protected. Every pull request needs an approving review from the maintainer (the code owner) before it can be merged. CI runs on every pull request and is expected to pass. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
+`main` is protected. Every pull request from a contributor needs an approving review from the maintainer (the code owner) and passing CI checks (`backend`, `frontend` and `docker`) before it can be merged. The maintainer's own pull requests pass the same checks but, with no second maintainer yet, are merged without another person's review. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
 
 Expect questions and change requests; they're part of the process, not a judgement on you. If a pull request has gone quiet for a week, a friendly ping is fine.
 

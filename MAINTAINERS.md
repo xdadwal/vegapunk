@@ -6,7 +6,7 @@
 |---|---|
 | [@xdadwal](https://github.com/xdadwal) | Everything: backend, frontend, agent, Docker, docs and releases |
 
-[.github/CODEOWNERS](.github/CODEOWNERS) makes the maintainer the reviewer for every file. How decisions are made is in [GOVERNANCE.md](GOVERNANCE.md).
+[.github/CODEOWNERS](.github/CODEOWNERS) makes the maintainer the reviewer for every file (a sole maintainer cannot approve their own pull requests, so those rely on the CI checks). How decisions are made is in [GOVERNANCE.md](GOVERNANCE.md).
 
 ## What maintainers do
 

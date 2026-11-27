@@ -61,10 +61,10 @@ check: ## Run what CI's backend and frontend jobs run
 smoke: ## Build the image and check it starts healthy (needs Docker)
 	sh scripts/smoke.sh
 
-up: ## Build and start the app with Docker Compose on port 8000
+up: ## Build and start the Compose install on port 8000 (run from this folder)
 	docker compose up -d --build
 
-down: ## Stop and remove the app's container (keeps the data volume)
+down: ## Stop the Compose install run from this folder (keeps the data volume); stops the instance you started from this clone
 	docker compose down
 
 clean: ## Remove build output, coverage reports and caches (not data or dependencies)

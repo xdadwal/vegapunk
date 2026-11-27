@@ -4,11 +4,11 @@ Vegapunk is a young, pre-release project (0.1.0) with one maintainer. This page 
 
 ## How the project is run
 
-Vegapunk is **maintainer-led**. The maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) has the final say on what is merged, what is in scope and when releases happen. The maintainer is also the code owner ([.github/CODEOWNERS](.github/CODEOWNERS)), so every pull request needs their approving review.
+Vegapunk is **maintainer-led**. The maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) has the final say on what is merged, what is in scope and when releases happen. The maintainer is also the code owner ([.github/CODEOWNERS](.github/CODEOWNERS)), so a contributor's pull request needs their approving review and passing CI checks (`backend`, `frontend` and `docker`). The maintainer's own pull requests pass the same CI checks but, with no second maintainer yet, are merged without another person's review.
 
 Decisions are made in the open:
 
-- **Small changes** (fixes, tests, docs, small features within scope) are decided in the pull request by **lazy consensus**: if nobody raises a concern and the maintainer approves, it is merged.
+- **Small changes** (fixes, tests, docs, small features within scope) are decided in the pull request by **lazy consensus**: if nobody raises a concern and the maintainer approves (or, for the maintainer's own changes, the CI checks pass), it is merged.
 - **Larger changes** (a new dependency, language or framework, a change to the architecture, anything that touches security) are discussed in an [issue](https://github.com/xdadwal/vegapunk/issues) or in [Discussions](https://github.com/xdadwal/vegapunk/discussions) before code is written. The decision and the reason are written down there.
 - **Lasting decisions** are recorded in [AGENTS.md](AGENTS.md), which holds the scope, architecture and conventions.
 

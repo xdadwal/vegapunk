@@ -178,7 +178,7 @@ sh scripts/smoke.sh
 
 **Not verified: this configuration has not been run by the maintainer** (neither with the Dev Containers CLI or VS Code nor in GitHub Codespaces). Its file parses, the Dev Containers CLI reads it, and its base image and features exist, but nobody has built it yet. If you try it, please report what happened in an issue or discussion, whether it worked or not.
 
-[.devcontainer/devcontainer.json](../.devcontainer/devcontainer.json) works with VS Code's Dev Containers extension and with GitHub Codespaces. It is Microsoft's Ubuntu 24.04 base image with Python 3.12, Node.js 24 and the Docker CLI connected to the host's Docker (docker-outside-of-docker). When it is created it installs uv and runs `make setup`. Ports 8000 (backend) and 5173 (frontend) are forwarded, and VS Code gets the Python, Ruff, oxc, Prettier and EditorConfig extensions, with format on save.
+[.devcontainer/devcontainer.json](../.devcontainer/devcontainer.json) works with VS Code's Dev Containers extension and with GitHub Codespaces. It is Microsoft's Ubuntu 24.04 base image with Python 3.12, Node.js 24 and the Docker CLI connected to the host's Docker (docker-outside-of-docker). The dev container uses the host's Docker, which gives anything running inside it root-equivalent control of the host's Docker daemon, the same trust level as mounting the Docker socket; only use it on a machine and with code you trust. When it is created it installs uv and runs `make setup`. Ports 8000 (backend) and 5173 (frontend) are forwarded, and VS Code gets the Python, Ruff, oxc, Prettier and EditorConfig extensions, with format on save.
 
 Because Docker is the host's, the dev backend shows the host's containers. Two things to expect:
 

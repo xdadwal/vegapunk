@@ -111,8 +111,6 @@ Contributions, ideas, and bug reports are welcome — feel free to open an issue
 - [Discussions](https://github.com/xdadwal/vegapunk/discussions): questions, ideas and sharing your setup.
 - [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md): how decisions are made and who maintains Vegapunk.
 
-`make setup` installs everything for development, and `make check` runs the same checks as CI.
-
 ## Project status and roadmap
 
 Vegapunk 0.1.0 is the first version: observer only, on one Docker host. The [roadmap](docs/plans/roadmap.md) shows how it was built and what is planned after it (container management and agent actions behind permission levels, a published image); what changed in each version is in the [changelog](CHANGELOG.md), and what is known to be wrong or unverified (including Linux) is in [known issues](docs/known-issues.md).
