@@ -114,7 +114,7 @@ function ChecksSection() {
         <p className="page-note">
           A daily check asks your AI provider to review every container and the host. The background watch calls it
           only when something looks wrong (a restart loop, a memory kill, sustained high use or filling storage), at
-          most 20 times a day.
+          most 20 times a day. The background watch has no switch of its own: it runs while an AI provider is saved.
         </p>
         <Switch
           label="Run a check every day"

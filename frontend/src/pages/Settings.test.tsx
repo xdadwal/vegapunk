@@ -167,8 +167,20 @@ describe('Settings checks', () => {
     expect(await within(box).findByRole('alert')).toHaveTextContent('Hour out of range.')
   })
 
-  it('offers a retry when the checks cannot be loaded', async () => {
-    settingsPage(CONFIGURED, { 'GET /settings/checks': { status: 500, body: { detail: 'nope' } } })
-    expect((await screen.findAllByRole('button', { name: 'Retry' })).length).toBeGreaterThan(0)
+  it('says the background watch has no switch of its own', async () => {
+    checks()
+    const box = await section()
+    expect(within(box).getByText(/The background watch has no switch of its own: it runs while an AI provider is saved\./)).toBeVisible()
+  })
+
+  it('retries loading the checks from their own section', async () => {
+    let calls = 0
+    settingsPage(CONFIGURED, {
+      'GET /settings/checks': () => (++calls === 1 ? { status: 500, body: { detail: 'nope' } } : { body: { enabled: true, hour: 2 } }),
+    })
+    const box = (await screen.findByRole('heading', { level: 2, name: 'Checks' })).closest('section') as HTMLElement
+    await userEvent.click(await within(box).findByRole('button', { name: 'Retry' }))
+    expect(await within(box).findByRole('switch', { name: 'Run a check every day' })).toBeChecked()
+    expect(calls).toBe(2)
   })
 })

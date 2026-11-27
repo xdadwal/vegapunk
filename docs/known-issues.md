@@ -63,6 +63,10 @@ A finding about the host has no container log lines to cite as evidence, so the 
 
 On Docker Desktop the storage figure can read high (see known issue 1), which can raise a filling-storage finding that is not real.
 
+### 11. The background watch has no separate off switch
+
+The Checks switch in Settings turns off only the daily check. The background watch runs whenever an AI provider is saved; remove the provider to stop it.
+
 ## Deliberate limits (decided, not bugs)
 
 - **Sign-in pause is server-wide.** Anyone who can reach Vegapunk can pause sign-in for 15 minutes with five wrong tries. Follows the design; acceptable behind a firewall.
