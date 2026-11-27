@@ -64,8 +64,8 @@ that is the maintainer, and reports go through GitHub only:
 
 * Report privately by opening a private security advisory titled
   "Conduct report" on this repository: open the **Security** tab and choose
-  **Report a vulnerability**. Only you and the maintainer can see it, and it is
-  not published.
+  **Report a vulnerability**. Only you and the repository's maintainers can see it;
+  it will not be published.
 * For behavior on GitHub that GitHub itself should act on, or if your report
   concerns the maintainer, you can also use GitHub's own **Report abuse** /
   **Report content** option on the comment, issue, or profile.

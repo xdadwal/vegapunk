@@ -13,6 +13,10 @@ Nothing is published to a registry. A release is a version tag and GitHub releas
 7. Push the commit and the tag: `git push origin main vX.Y.Z` (or, if `main` is protected, merge the commit through a pull request and push only the tag).
 8. Create the GitHub release for the tag and paste in that version's section of `CHANGELOG.md`.
 
+## Dependencies updated by hand
+
+Dependabot does not bump these, so check them when preparing a release: `logpose`, a git dependency pinned to a tag in `backend/pyproject.toml` (change the tag, then run `uv lock`), and the digest-pinned proxy image in `compose.socket-proxy.yaml` (see [the image](socket-proxy.md#the-image) in the socket proxy guide).
+
 ## Publishing later
 
 To publish an image, add a workflow that builds the image on a version tag and pushes it to a registry, and point `compose.yaml` at it with an `image:` line.

@@ -38,6 +38,7 @@ A few rules follow from this, and reviews check them:
 ```
 backend/              Python 3.12, FastAPI, SQLite (uv, ruff, pytest)
   vegapunk/
+    main.py           the app uvicorn loads (`vegapunk.main:app`)
     app.py            builds the FastAPI app: routers, startup, the capture thread
     config.py         environment variables, read once
     db.py             connections, transactions and migrations
@@ -69,12 +70,12 @@ A little more on the backend packages:
 - **`capture/`**: `collectors.py` turns what `host/` reads into the records in `records.py`. `ingest.py` is the only code that stores them. `scheduler.py` runs the collectors every interval in one thread and records each source's status in `capture_status`. `rollup.py` keeps raw samples for a day and 5-minute averages for 30 days. `status.py` is the one place Docker states become online, degraded, offline or unknown.
 - **`watch/`**: `rules.py` holds the watch rules (restart loop, out-of-memory kill, sustained high CPU or memory, filling storage) as plain reads of stored data. `runner.py` evaluates them and runs the daily check. `investigate.py` asks the model to look into a signal using the agent's tools, and checks every log line it cites. `findings.py` stores findings and their evidence.
 - **`ai/`**: `operator.py` builds a logpose agent for each chat answer and streams it. `tools.py` is the read-only tool set, `gate.py` the gate, `prompt.py` what the agent is told, `store.py` the AI settings and conversation list, `redact.py` the secret redaction.
-- **`api/`**: one module per area (`host.py`, `containers.py`, `findings.py`, `agent.py`, `settings.py`). `payloads.py` builds the responses; the agent's tools reuse the same functions, so the agent sees what the screens show.
+- **`api/`**: one module per area (`host.py`, `containers.py`, `findings.py`, `agent.py`, `settings.py`). `payloads.py` builds the responses; the agent's tools reuse the same functions, so the agent sees what the screens show. `queries.py` holds the reads the routes share, `metrics.py` the time series for the charts (raw samples or roll-ups per range), and `security.py` the `X-Requested-With` header check for the POSTs that take no JSON body.
 - **`auth/`**: the single admin account, argon2 password hashes, session tokens, sign-in lockout and `require_admin`.
 
 ## Running it locally
 
-You need [uv](https://docs.astral.sh/uv/) and Node.js 24. Docker must be running on your machine, because the backend captures from it.
+You need [uv](https://docs.astral.sh/uv/) and Node.js 24. Docker should be running, or the pages will have no container data: the backend still starts and records a capture error.
 
 Start the backend (http://localhost:8000):
 
@@ -171,7 +172,9 @@ Tools are in `backend/vegapunk/ai/tools.py`. Each is a small typed function deco
 - return something small (at most 8,000 characters) and come back with a short sentence instead of raising, so the model can explain a failure.
 - pass anything from a container through `redact`, as a whole text.
 
-Add its name to `TOOL_NAMES` and update the pinned list in `tests/test_tools.py`. Every tool call passes through the single gate in `ai/gate.py`, which `operator.py` and `watch/investigate.py` build from `TOOL_NAMES`, so a new tool needs no other wiring. [SECURITY.md](../SECURITY.md) lists the agent's tools; update it too.
+Define it inside `build_tools()` and add it to the list it returns, in the same position as its name in `TOOL_NAMES` (a test asserts the two match), and update the pinned list in `tests/test_tools.py`. Every tool call passes through the single gate in `ai/gate.py`, which `operator.py` and `watch/investigate.py` build from `TOOL_NAMES`.
+
+Adding a tool that writes is a deliberate, reviewed step, as [AGENTS.md](../AGENTS.md) says: it belongs behind the permission levels and needs agreement first. Any new tool means updating the tool count and list in [SECURITY.md](../SECURITY.md) and the tool count in AGENTS.md.
 
 ### Add an API route
 

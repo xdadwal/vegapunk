@@ -45,6 +45,12 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 3
+    # Stay on Python 3.12 and Node 24, the versions the project is built for.
+    ignore:
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: node
+        update-types: [version-update:semver-major]
     groups:
       docker-minor-and-patch:
         update-types: [minor, patch]

@@ -2,7 +2,7 @@
 
 <!-- What does this change, and why? Keep it to a few sentences. -->
 
-Fixes #
+<!-- The issue this addresses, if any, e.g. "Fixes #12". -->
 
 ## How it was tested
 

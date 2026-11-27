@@ -43,7 +43,7 @@ A feature outside the first version needs a discussion before any code. Start on
 
 See [docs/development.md](docs/development.md) for the repository layout, running the backend and frontend dev servers, tests, the Docker build and how the main parts fit together.
 
-The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24 and, for the image, Docker with Compose.
+The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24 and, for the image, Docker with Compose. Docker should be running while you work, or the pages will have no container data.
 
 ### Your first pull request
 
@@ -55,14 +55,14 @@ The short version: you need [uv](https://docs.astral.sh/uv/), Node.js 24 and, fo
    ```
 
 3. Make the change, with tests.
-4. Run the checks below.
+4. Run the [checks](#checks-to-run-before-you-open-a-pull-request) below.
 5. Push the branch to your fork and open a pull request against `main`. The template will ask a few questions; answer them briefly.
 
 Not sure about something? Open the pull request as a draft and ask in it. Half-finished work with a question is fine.
 
-## Checks a pull request must pass
+## Checks to run before you open a pull request
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request. Run the same commands locally before you push.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on every pull request, and they are expected to pass. Run the same commands locally before you push.
 
 **Backend**, from `backend/`:
 
@@ -120,7 +120,7 @@ The full set is in [AGENTS.md](AGENTS.md#conventions). The ones that come up mos
 
 ### Review and merging
 
-`main` is protected. Every pull request needs an approving review from the maintainer (the code owner) and passing CI before it can be merged. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
+`main` is protected. Every pull request needs an approving review from the maintainer (the code owner) before it can be merged. CI runs on every pull request and is expected to pass. Pull requests are merged with a merge commit, so your commits are kept as they are; tidy them up before asking for review if you like, but there's no need to squash. Force pushes to `main` are not allowed.
 
 Expect questions and change requests; they're part of the process, not a judgement on you. If a pull request has gone quiet for a week, a friendly ping is fine.
 
@@ -144,4 +144,4 @@ Ask in [Discussions](https://github.com/xdadwal/vegapunk/discussions). [SUPPORT.
 
 ## Recognition
 
-Contributions that change what users see are credited in [CHANGELOG.md](CHANGELOG.md) when they are released. Thank you for helping.
+Contributors may be credited in [CHANGELOG.md](CHANGELOG.md): an entry for a change you made ends with "(thanks @username)". Add it to your own entry under `Unreleased` if you like. Thank you for helping.
