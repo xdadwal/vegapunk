@@ -6,7 +6,7 @@ The first version (scope in [`AGENTS.md`](../../AGENTS.md)) is built in five mil
 |---|---|---|---|
 | 1 | Foundation | Run Vegapunk as a container, create the admin account, sign in, edit your profile | [2026-11-26-m1-foundation.md](2026-11-26-m1-foundation.md) |
 | 2 | Capture and read-only screens | See the host's CPU, memory, storage and every container, with trends | [2026-11-26-m2-capture.md](2026-11-26-m2-capture.md) |
-| 3 | AI provider and agent chat | Connect a provider and ask the agent about the host | To write |
+| 3 | AI provider and agent chat | Connect a provider and ask the agent about the host | [2026-11-26-m3-agent.md](2026-11-26-m3-agent.md) |
 | 4 | Findings | Get findings from scheduled and background checks, with diagnosis and evidence | To write |
 | 5 | Release | Install a published image by following the README | To write |
 
@@ -24,10 +24,10 @@ The decisions for this milestone are recorded at the top of its plan.
 - **Provider settings:** base URL, API key, and model for any OpenAI-compatible endpoint, with a "Test key" check and model listing through logpose.
 - **Key storage:** the API key is encrypted at rest with a key file in the data directory.
 - **Operator:** a logpose `Agent` with read-only tools (container status, live container logs, stored metrics) and one gate (`on_tool_call`) that every tool call passes through.
-- **Chat:** streamed replies over server-sent events, showing the steps the agent took; conversations stored as logpose sessions.
+- **Chat:** replies streamed to the browser as JSON lines, showing the steps the agent took; conversations stored as logpose sessions.
 - **Screens:** Setup step 2 (AI provider), Settings, Agent chat, History, and the "AI is off" and "key rejected" states.
 
-Decisions to confirm: `cryptography` (Fernet) for key encryption; secrets redaction rules for log lines sent to the provider; a cap on log lines per tool call.
+The decisions for this milestone are recorded at the top of its plan.
 
 ## Milestone 4: Findings
 
