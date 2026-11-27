@@ -6,9 +6,27 @@ import type { Conversation } from '../types'
 
 const id = (n: number) => String(n).repeat(32)
 const ITEMS: Conversation[] = [
-  { id: id(1), title: 'Why is pihole restarting?', updated_at: '2026-01-02T15:12:00Z' },
-  { id: id(2), title: 'Free up space on tank', updated_at: '2026-01-01T09:05:00Z' },
-  { id: id(3), title: 'Is anything wrong right now?', updated_at: '2025-12-30T00:30:00Z' },
+  {
+    id: id(1),
+    title: 'Why is pihole restarting?',
+    updated_at: '2026-01-02T15:12:00Z',
+    finding_id: null,
+    finding_title: null,
+  },
+  {
+    id: id(2),
+    title: 'Free up space on tank',
+    updated_at: '2026-01-01T09:05:00Z',
+    finding_id: null,
+    finding_title: null,
+  },
+  {
+    id: id(3),
+    title: 'Is anything wrong right now?',
+    updated_at: '2025-12-30T00:30:00Z',
+    finding_id: null,
+    finding_title: null,
+  },
 ]
 
 function historyPage(
@@ -36,6 +54,27 @@ const rows = () => {
         .map((r) => within(r).getByRole('link').textContent)
     : []
 }
+
+describe('History: conversations about a finding', () => {
+  it('says which finding a conversation is about, as text, keeping the row link', async () => {
+    historyPage([
+      { ...ITEMS[0], finding_id: 7, finding_title: 'web keeps <b>restarting</b>' },
+      ITEMS[1],
+    ])
+    await conversations()
+    const [linked, plain] = items()
+    expect(within(linked).getByText('About finding: web keeps <b>restarting</b>')).toHaveClass('vp-service-meta')
+    expect(within(linked).getAllByRole('link')).toHaveLength(1)
+    expect(within(linked).getByRole('link')).toHaveAttribute('href', `/agent?c=${id(1)}`)
+    expect(within(plain).queryByText(/About finding/)).not.toBeInTheDocument()
+  })
+
+  it('names no title when the finding has none', async () => {
+    historyPage([{ ...ITEMS[0], finding_id: 7, finding_title: null }])
+    await conversations()
+    expect(within(items()[0]).getByText('About a finding')).toBeVisible()
+  })
+})
 
 describe('History', () => {
   it('lists conversations in the order given, as links to the agent page, with their time', async () => {
@@ -74,15 +113,23 @@ describe('History', () => {
 
   it('treats the search text literally', async () => {
     historyPage([
-      { id: id(1), title: 'a.b', updated_at: '2026-01-01T00:00:00Z' },
-      { id: id(2), title: 'axb', updated_at: '2026-01-01T00:00:00Z' },
+      { id: id(1), title: 'a.b', updated_at: '2026-01-01T00:00:00Z', finding_id: null, finding_title: null },
+      { id: id(2), title: 'axb', updated_at: '2026-01-01T00:00:00Z', finding_id: null, finding_title: null },
     ])
     await userEvent.type(await screen.findByLabelText('Search conversations'), 'a.b')
     expect(rows()).toEqual(['a.b'])
   })
 
   it('shows titles as plain text', async () => {
-    historyPage([{ id: id(1), title: '<b>bold</b> <img src=x onerror=alert(1)>', updated_at: '2026-01-01T00:00:00Z' }])
+    historyPage([
+      {
+        id: id(1),
+        title: '<b>bold</b> <img src=x onerror=alert(1)>',
+        updated_at: '2026-01-01T00:00:00Z',
+        finding_id: null,
+        finding_title: null,
+      },
+    ])
     const link = await screen.findByRole('link', { name: /bold/ })
     expect(link.textContent).toBe('<b>bold</b> <img src=x onerror=alert(1)>')
     expect(document.querySelector('img')).toBeNull()

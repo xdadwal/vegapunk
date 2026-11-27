@@ -140,6 +140,11 @@ export default function History() {
                         {c.title}
                       </Link>
                     </div>
+                    {c.finding_id !== null && (
+                      <div className="vp-service-meta">
+                        {c.finding_title ? `About finding: ${c.finding_title}` : 'About a finding'}
+                      </div>
+                    )}
                     <div className="vp-service-meta">{formatDayTime(c.updated_at)} UTC</div>
                   </div>
                   <div className="history-actions">

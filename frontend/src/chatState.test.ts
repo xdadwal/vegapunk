@@ -48,7 +48,7 @@ describe('applyEvent', () => {
 
   it('ignores the conversation event and does not change its input', () => {
     const before = JSON.stringify(waiting)
-    expect(applyEvent(waiting, { type: 'conversation', id: 'c', title: 't' })).toEqual(waiting)
+    expect(applyEvent(waiting, { type: 'conversation', id: 'c', title: 't', finding_id: null })).toEqual(waiting)
     applyEvent(waiting, { type: 'text', text: 'x' })
     expect(JSON.stringify(waiting)).toBe(before)
   })

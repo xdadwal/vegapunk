@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { findingItem, findingList } from '../test-fixtures'
+import { CONFIGURED, findingItem, findingList } from '../test-fixtures'
 import { ADMIN, renderApp, stubApi } from '../test-utils'
 import type { FindingList } from '../types'
 
@@ -29,6 +29,29 @@ describe('Findings', () => {
     expect(link).toHaveClass('vp-card-link')
     expect(link).toHaveAttribute('href', '/findings/a')
     expect(screen.getByRole('row')).toHaveClass('vp-service-linked')
+  })
+
+  it('links a finding to its agent conversation, apart from the row link', async () => {
+    const cid = 'c'.repeat(32)
+    show(findingList([findingItem({ ...OPEN, conversation_id: cid }), RESOLVED]), {
+      'GET /settings/ai': { body: CONFIGURED },
+      [`GET /agent/conversations/${cid}`]: {
+        body: { id: cid, title: 't', updated_at: OPEN.last_seen_at, available: true, messages: [] },
+      },
+    })
+    renderApp('/findings', { probe: true })
+    const rows = await screen.findAllByRole('row')
+    const chat = within(rows[0]).getByRole('link', { name: 'Agent conversation' })
+    expect(chat).toHaveAttribute('href', `/agent?c=${cid}`)
+    expect(chat).toHaveClass('finding-row-chat')
+    expect(chat.closest('.vp-service-meta')).not.toBeNull()
+    expect(chat.closest('.vp-card-link')).toBeNull()
+    expect(within(rows[1]).queryByRole('link', { name: 'Agent conversation' })).not.toBeInTheDocument()
+    const user = userEvent.setup()
+    for (let i = 0; i < 50 && document.activeElement !== chat; i++) await user.tab()
+    expect(chat).toHaveFocus()
+    await user.click(chat)
+    expect(screen.getByTestId('location')).toHaveTextContent(`/agent?c=${cid}`)
   })
 
   it('names each status and shows the subject and time found', async () => {

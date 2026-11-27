@@ -17,3 +17,9 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+/* Above the row's stretched title link, so it can be clicked and focused on its own. */
+.finding-row-chat {
+  position: relative;
+  z-index: 1;
+}

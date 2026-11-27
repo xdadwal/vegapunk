@@ -12,7 +12,7 @@ const enc = new TextEncoder()
 const later = () => new Promise((resolve) => setTimeout(resolve, 550))
 
 const ANSWER: ChatEvent[] = [
-  { type: 'conversation', id: CID, title: 'Is anything wrong?' },
+  { type: 'conversation', id: CID, title: 'Is anything wrong?', finding_id: null },
   { type: 'step', id: 's1', label: 'Read the status of the containers', status: 'running' },
   { type: 'step', id: 's1', label: 'Read the status of the containers', status: 'done' },
   { type: 'text', text: '`db` is ' },
@@ -95,7 +95,7 @@ describe('Agent page', () => {
     expect(answer).toHaveAttribute('aria-busy', 'true')
 
     await act(async () => {
-      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't' })))
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
       stream.enqueue(enc.encode(line({ type: 'step', id: 's', label: 'Read the host', status: 'running' })))
     })
     expect(within(answer).getByText(/Running:/)).toBeVisible()
@@ -170,7 +170,7 @@ describe('Agent page', () => {
     const { fetchMock } = agentPage({ chat: { stream: (c) => void (stream = c) } })
     const user = await ask()
     await act(async () => {
-      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't' })))
+      stream.enqueue(enc.encode(line({ type: 'conversation', id: CID, title: 't', finding_id: null })))
       stream.enqueue(enc.encode(line({ type: 'text', text: 'Part of an answer' })))
     })
     expect(await screen.findByText('Part of an answer')).toBeVisible()
@@ -205,7 +205,7 @@ describe('Agent page', () => {
     const { sent } = agentPage({
       chat: {
         stream: [
-          line({ type: 'conversation', id: CID, title: 't' }),
+          line({ type: 'conversation', id: CID, title: 't', finding_id: null }),
           line({ type: 'error', code: 'timeout', message: 'The agent took too long to answer.' }),
         ],
       },
@@ -227,7 +227,7 @@ describe('Agent page: key rejected', () => {
         rejected = true // the provider rejects the key as the answer is asked for
         return {
           stream: [
-            line({ type: 'conversation', id: CID, title: 't' }),
+            line({ type: 'conversation', id: CID, title: 't', finding_id: null }),
             line({ type: 'error', code: 'key_rejected', message: 'Your AI provider rejected the API key.' }),
           ],
         }
@@ -417,7 +417,7 @@ describe('Agent page: safety and wiring', () => {
     agentPage({
       chat: {
         stream: [
-          line({ type: 'conversation', id: CID, title: 't' }),
+          line({ type: 'conversation', id: CID, title: 't', finding_id: null }),
           line({ type: 'text', text: '<img src=x onerror=alert(1)> <script>alert(2)</script>' }),
           line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } }),
         ],
@@ -487,13 +487,148 @@ describe('Agent page: review fixes', () => {
 
 describe('Agent page: about a finding', () => {
   const FINDING = { body: findingDetail({ id: 'f1', title: 'web keeps restarting' }) }
-  const QUESTION = 'Tell me more about this finding: web keeps restarting. What should I check first?'
+  const QUESTION = "What's going on here, and what should I check first?"
 
   it('fills the box with a question, sends nothing, and drops the param', async () => {
     const { sent } = agentPage({ extra: { 'GET /findings/f1': FINDING } }, '/agent?about=f1')
     await vi.waitFor(async () => expect(await composer()).toHaveValue(QUESTION))
     await vi.waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/agent$/))
     expect(sent('POST /agent/chat')).toHaveLength(0)
+  })
+
+  it('shows which finding the conversation is about, with a link to it', async () => {
+    agentPage({ extra: { 'GET /findings/f1': FINDING } }, '/agent?about=f1')
+    const banner = await screen.findByTestId('agent-finding')
+    expect(banner.tagName).toBe('DIV')
+    expect(banner).not.toHaveAttribute('role')
+    expect(banner).toHaveTextContent('This conversation is about a finding: web keeps restarting')
+    expect(within(banner).getByRole('link', { name: 'View finding' })).toHaveAttribute('href', '/findings/f1')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('opens the conversation already started about the finding instead', async () => {
+    const stored = {
+      id: CID,
+      title: 'About: web keeps restarting',
+      updated_at: '2026-11-26T15:00:00Z',
+      finding_id: 7,
+      finding_title: 'web keeps restarting',
+      available: true,
+      messages: [{ role: 'user', text: 'What is wrong with web?', steps: [] }],
+    }
+    const { sent } = agentPage(
+      {
+        conversation: { body: stored },
+        extra: { 'GET /findings/7': { body: findingDetail({ id: '7', conversation_id: CID }) } },
+      },
+      '/agent?about=7',
+    )
+    expect(await screen.findByRole('article', { name: 'You' })).toHaveTextContent('What is wrong with web?')
+    expect(screen.getByTestId('location')).toHaveTextContent(`/agent?c=${CID}`)
+    expect(await composer()).toHaveValue('')
+    expect(screen.getByTestId('agent-finding')).toHaveTextContent('web keeps restarting')
+    expect(sent('POST /agent/chat')).toHaveLength(0)
+  })
+
+  it('starts the conversation with the finding, then continues it like any other', async () => {
+    const { sent } = agentPage(
+      {
+        chat: {
+          stream: [
+            line({ type: 'conversation', id: CID, title: 'About: web keeps restarting', finding_id: 7 }),
+            line({ type: 'text', text: 'Look at its memory.' }),
+            line({ type: 'done', usage: { input_tokens: 1, output_tokens: 1 } }),
+          ],
+        },
+        extra: { 'GET /findings/7': { body: findingDetail({ id: '7', title: 'web keeps restarting' }) } },
+      },
+      '/agent?about=7',
+    )
+    await vi.waitFor(async () => expect(await composer()).toHaveValue(QUESTION))
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(1))
+    expect(sent('POST /agent/chat')[0]).toEqual({ message: QUESTION, conversation_id: null, finding_id: 7 })
+    expect(await screen.findByText('Look at its memory.')).toBeVisible()
+    await vi.waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(`/agent?c=${CID}`))
+    expect(screen.getByTestId('agent-finding')).toHaveTextContent(
+      'This conversation is about a finding: web keeps restarting',
+    )
+    await userEvent.type(await composer(), 'And then?{Enter}')
+    await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(2))
+    expect(sent('POST /agent/chat')[1]).toEqual({ message: 'And then?', conversation_id: CID })
+  })
+
+  it('says when the finding is gone, and keeps the message', async () => {
+    agentPage(
+      {
+        chat: { status: 404, body: { detail: 'That finding no longer exists.' } },
+        extra: { 'GET /findings/7': { body: findingDetail({ id: '7' }) } },
+      },
+      '/agent?about=7',
+    )
+    await vi.waitFor(async () => expect(await composer()).toHaveValue(QUESTION))
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('That finding no longer exists.')
+    expect(await composer()).toHaveValue(QUESTION)
+    expect(screen.queryByRole('article', { name: 'You' })).not.toBeInTheDocument()
+  })
+
+  it('shows the finding of a stored conversation', async () => {
+    const stored = {
+      id: CID,
+      title: 't',
+      updated_at: '2026-11-26T15:00:00Z',
+      finding_id: 7,
+      finding_title: '<b>web</b> keeps restarting',
+      available: true,
+      messages: [],
+    }
+    agentPage({ conversation: { body: stored } }, `/agent?c=${CID}`)
+    const banner = await screen.findByTestId('agent-finding')
+    expect(banner).toHaveTextContent('This conversation is about a finding: <b>web</b> keeps restarting')
+    expect(within(banner).getByRole('link', { name: 'View finding' })).toHaveAttribute('href', '/findings/7')
+  })
+
+  it('still links the finding of a stored conversation when its title is unknown', async () => {
+    const stored = {
+      id: CID,
+      title: 't',
+      updated_at: '2026-11-26T15:00:00Z',
+      finding_id: 7,
+      finding_title: null,
+      available: true,
+      messages: [],
+    }
+    agentPage({ conversation: { body: stored } }, `/agent?c=${CID}`)
+    const banner = await screen.findByTestId('agent-finding')
+    expect(banner).toHaveTextContent(/^This conversation is about a finding\.\s*View finding$/)
+    expect(within(banner).getByRole('link', { name: 'View finding' })).toHaveAttribute('href', '/findings/7')
+  })
+
+  it('shows no finding for a conversation without one', async () => {
+    const plain = {
+      id: CID,
+      title: 't',
+      updated_at: '2026-11-26T15:00:00Z',
+      finding_id: null,
+      finding_title: null,
+      available: true,
+      messages: [],
+    }
+    agentPage({ conversation: { body: plain } }, `/agent?c=${CID}`)
+    expect(await composer()).toBeEnabled()
+    expect(screen.queryByTestId('agent-finding')).not.toBeInTheDocument()
+  })
+
+  it('drops the finding on New conversation', async () => {
+    const { sent } = agentPage({ extra: { 'GET /findings/7': { body: findingDetail({ id: '7' }) } } }, '/agent?about=7')
+    await screen.findByTestId('agent-finding')
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(screen.queryByTestId('agent-finding')).not.toBeInTheDocument()
+    await userEvent.clear(await composer())
+    await userEvent.type(await composer(), 'hello{Enter}')
+    await vi.waitFor(() => expect(sent('POST /agent/chat')).toHaveLength(1))
+    expect(sent('POST /agent/chat')[0]).toEqual({ message: 'hello', conversation_id: null })
   })
 
   it('leaves the box empty and shows no error for an unknown id', async () => {

@@ -1,7 +1,9 @@
 import { ApiError, errorFromResponse } from './api'
 import type { ChatEvent } from './types'
 
-type Body = { message: string; conversation_id: string | null }
+/** `finding_id` starts a conversation about that finding; the server ignores it once
+ * `conversation_id` is set. */
+type Body = { message: string; conversation_id: string | null; finding_id?: number }
 
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'

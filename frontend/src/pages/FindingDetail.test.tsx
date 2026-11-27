@@ -155,6 +155,26 @@ describe('Finding detail', () => {
     expect(ask).toHaveClass('vp-btn', 'vp-btn-secondary')
   })
 
+  it('offers to continue the conversation already started about it', async () => {
+    const cid = 'c/d'
+    page({ 'GET /findings/f1': { body: findingDetail({ conversation_id: cid }) } })
+    renderApp('/findings/f1')
+    const go = await screen.findByRole('link', { name: 'Continue with the agent' })
+    expect(go).toHaveAttribute('href', '/agent?c=c%2Fd')
+    expect(go).toHaveClass('vp-btn', 'vp-btn-secondary')
+    expect(screen.getByText("You've already asked the agent about this finding.")).toHaveClass('page-note')
+    expect(screen.queryByRole('link', { name: 'Ask agent about this finding' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Mark as reviewed' })).toBeVisible()
+  })
+
+  it('does not say it was asked about when no conversation exists', async () => {
+    page({ 'GET /findings/f1': { body: findingDetail() } })
+    renderApp('/findings/f1')
+    await screen.findByRole('link', { name: 'Ask agent about this finding' })
+    expect(screen.queryByRole('link', { name: 'Continue with the agent' })).not.toBeInTheDocument()
+    expect(screen.queryByText("You've already asked the agent about this finding.")).not.toBeInTheDocument()
+  })
+
   it('puts the breadcrumb, the Ask link and Mark as reviewed in that focus order', async () => {
     page({ 'GET /findings/f1': { body: findingDetail() } })
     renderApp('/findings/f1')

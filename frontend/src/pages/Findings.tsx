@@ -17,6 +17,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { formatClockSafe, formatHour } from '../format'
 import type { FindingChecks, FindingItem, FindingList, FindingStatus, Status } from '../types'
 import { usePolling } from '../usePolling'
+import './findings.css'
 import './overview.css'
 
 const PAGE_SIZE = 10
@@ -46,6 +47,14 @@ function FindingRow({ finding }: { finding: FindingItem }) {
         </div>
         <div className="vp-service-meta">
           <span className="vp-mono">{finding.subject}</span> · <span>Found {formatClockSafe(finding.first_seen_at)}</span>
+          {finding.conversation_id && (
+            <>
+              {' · '}
+              <Link className="finding-row-chat" to={`/agent?c=${encodeURIComponent(finding.conversation_id)}`}>
+                Agent conversation
+              </Link>
+            </>
+          )}
         </div>
       </div>
       <div className="vp-service-status" role="cell">

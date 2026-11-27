@@ -17,19 +17,28 @@ import { Textarea } from '../components/Textarea'
 import { applyEvent, finish, fromStored } from '../chatState'
 import type { Msg } from '../chatState'
 import { formatClock } from '../format'
-import type { AiSettings, StoredMessage } from '../types'
+import type { AiSettings, ConversationDetail, FindingDetail } from '../types'
 import { usePolling } from '../usePolling'
 import './agent.css'
 import './overview.css'
 
 const MAX_MESSAGE = 4_000
+// The server gives the agent the finding itself, so the question need not repeat it.
+const STARTER = "What's going on here, and what should I check first?"
 
-type Detail = { id: string; title: string; updated_at: string; available: boolean; messages: StoredMessage[] }
 type Loaded =
   | { id: string; kind: 'ok'; unavailable: boolean }
   | { id: string; kind: 'gone' }
   | { id: string; kind: 'error'; detail: string }
 type Notice = { tone: 'warning' | 'danger'; text: string }
+/** The finding the conversation on screen is about. `title` is null when the server doesn't know it. */
+type About = { id: string; title: string | null }
+
+/** A finding id as the chat API takes it: a positive integer, or nothing. */
+function findingNumber(id: string): number | undefined {
+  const n = Number(id)
+  return /^[1-9][0-9]*$/.test(id) && Number.isSafeInteger(n) ? n : undefined
+}
 
 function codeOf(error: ApiError): string | undefined {
   const body = error.body
@@ -54,6 +63,7 @@ export default function Agent() {
   const [attempt, setAttempt] = useState(0)
   const [ownId, setOwnId] = useState<string | null>(null) // a conversation this page started itself
   const [rejectedNow, setRejectedNow] = useState(false)
+  const [about, setAbout] = useState<About | null>(null)
   const abort = useRef<AbortController | null>(null)
   const sentAt = useRef(0)
   const requestRef = useRef(request)
@@ -66,14 +76,18 @@ export default function Agent() {
   useEffect(() => {
     if (!cParam || cParam === ownId) return
     let ignore = false
-    requestRef.current<Detail>(`/agent/conversations/${encodeURIComponent(cParam)}`).then(
+    requestRef.current<ConversationDetail>(`/agent/conversations/${encodeURIComponent(cParam)}`).then(
       (detail) => {
         if (ignore) return
         setMessages(fromStored(detail.messages))
+        setAbout(
+          detail.finding_id != null ? { id: String(detail.finding_id), title: detail.finding_title ?? null } : null,
+        )
         setLoaded({ id: cParam, kind: 'ok', unavailable: !detail.available })
       },
       (error: unknown) => {
         if (ignore) return
+        setAbout(null)
         if (error instanceof ApiError && error.status === 404) setLoaded({ id: cParam, kind: 'gone' })
         else
           setLoaded({
@@ -88,18 +102,21 @@ export default function Agent() {
     }
   }, [cParam, ownId, attempt])
 
-  // Arriving from a finding (?about=<id>): put a question about it in the box. It is never sent,
-  // and only goes in an empty box on a page where nothing has been sent. An unknown id does nothing.
+  // Arriving from a finding (?about=<id>). If it already has a conversation, open that one.
+  // Otherwise the next message starts one about it: put a question in the box (never sent, and
+  // only into an empty box on a page where nothing has been sent). An unknown id does nothing.
   useEffect(() => {
     if (!aboutParam || cParam) return
     let ignore = false
-    requestRef.current<{ title: string }>(`/findings/${encodeURIComponent(aboutParam)}`).then(
+    requestRef.current<FindingDetail>(`/findings/${encodeURIComponent(aboutParam)}`).then(
       (finding) => {
         if (ignore) return
-        const tail = ' What should I check first?'
-        const head = 'Tell me more about this finding: '
-        const title = [...finding.title].slice(0, MAX_MESSAGE - head.length - tail.length - 1).join('')
-        if (!hasSent.current) setDraft((current) => (current === '' ? `${head}${title}.${tail}` : current))
+        if (finding.conversation_id) {
+          setParams({ c: finding.conversation_id }, { replace: true })
+          return
+        }
+        setAbout({ id: String(finding.id), title: finding.title })
+        if (!hasSent.current) setDraft((current) => (current === '' ? STARTER : current))
         setParams(
           (current) => {
             const next = new URLSearchParams(current)
@@ -125,6 +142,7 @@ export default function Agent() {
       setMessages([])
       setLoaded(null)
       setOwnId(null)
+      setAbout(null)
       setNotice(null)
       setDraftError(null)
     }
@@ -149,6 +167,7 @@ export default function Agent() {
     setMessages([])
     setLoaded(null)
     setOwnId(null)
+    setAbout(null)
     setNotice(null)
     setDraftError(null)
     setParams({}, { replace: true })
@@ -166,6 +185,7 @@ export default function Agent() {
     hasSent.current = true
     const before = messages
     const conversationId = ownId ?? cParam
+    const findingId = !conversationId && about ? findingNumber(about.id) : undefined
     setMessages([
       ...before,
       { role: 'user', text, steps: [] },
@@ -179,12 +199,22 @@ export default function Agent() {
     let started = false
     try {
       await streamChat(
-        { message: text, conversation_id: conversationId },
+        findingId === undefined
+          ? { message: text, conversation_id: conversationId }
+          : { message: text, conversation_id: conversationId, finding_id: findingId },
         (event) => {
           started = true
           if (event.type === 'conversation') {
             setOwnId(event.id)
             setParams({ c: event.id }, { replace: true })
+            const linked = event.finding_id
+            setAbout((current) =>
+              linked == null
+                ? null
+                : current?.id === String(linked)
+                  ? current
+                  : { id: String(linked), title: null },
+            )
           } else if (event.type === 'error' && event.code === 'key_rejected') {
             setRejectedNow(true)
             void settings.reload()
@@ -331,6 +361,17 @@ export default function Agent() {
         >
           {here.detail}
         </EmptyState>
+      )}
+
+      {about && (
+        <div className="agent-finding" data-testid="agent-finding">
+          <span className="agent-finding-text">
+            {about.title
+              ? `This conversation is about a finding: ${about.title}`
+              : 'This conversation is about a finding.'}
+          </span>{' '}
+          <Link to={`/findings/${encodeURIComponent(about.id)}`}>View finding</Link>
+        </div>
       )}
 
       <div className="agent-thread">

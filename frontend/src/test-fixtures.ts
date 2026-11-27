@@ -130,6 +130,7 @@ export function findingItem(over: Partial<FindingItem> = {}): FindingItem {
     last_seen_at: '2026-11-26T15:00:00Z',
     reviewed_at: null,
     resolved_at: null,
+    conversation_id: null,
     ...over,
   }
 }

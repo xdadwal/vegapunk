@@ -123,10 +123,19 @@ export default function FindingDetail() {
         <p className="page-note">This stopped on its own at {formatClockSafe(data.resolved_at)}.</p>
       )}
       {failure && <Alert tone="danger" title={failure} />}
+      {data.conversation_id && (
+        <p className="page-note">You&apos;ve already asked the agent about this finding.</p>
+      )}
       <div className="finding-actions">
-        <Link className="vp-btn vp-btn-secondary" to={`/agent?about=${encodeURIComponent(data.id)}`}>
-          Ask agent about this finding
-        </Link>
+        {data.conversation_id ? (
+          <Link className="vp-btn vp-btn-secondary" to={`/agent?c=${encodeURIComponent(data.conversation_id)}`}>
+            Continue with the agent
+          </Link>
+        ) : (
+          <Link className="vp-btn vp-btn-secondary" to={`/agent?about=${encodeURIComponent(data.id)}`}>
+            Ask agent about this finding
+          </Link>
+        )}
         {status === 'open' && (
           <Button loading={marking} onClick={() => void markReviewed()}>
             Mark as reviewed
