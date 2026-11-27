@@ -124,6 +124,29 @@ def test_a_finding_pruned_after_the_check_but_before_the_insert_is_unknown(ready
     assert rows(ready.db_path) == []
 
 
+def test_a_conversation_started_meanwhile_for_the_finding_is_the_one_used(ready, monkeypatch):
+    """The finding had no conversation when it was looked up, but one exists by the time
+    of the insert: that one continues, and no second row appears."""
+    from vegapunk.ai import store
+
+    fid = add_finding(ready.db_path)
+    db(ready.db_path, lambda c: add_conversation(c, "m" * 32, "About: earlier", T, finding_id=fid))
+    real = store.conversation_for_finding
+    calls = []
+
+    def missing_at_first(conn, finding_id):
+        calls.append(finding_id)
+        return None if len(calls) == 1 else real(conn, finding_id)
+
+    monkeypatch.setattr(store, "conversation_for_finding", missing_at_first)
+    op = make_operator(ready, FakeProvider([Turn.text("ok")]))
+    got = asyncio.run(collect(op, "Why?", None, fid))
+    assert len(calls) == 2  # the lookup missed it, the fallback found it
+    assert got[0]["id"] == "m" * 32 and got[0]["finding_id"] == fid
+    assert got[-1]["type"] == "done"
+    assert [r["id"] for r in rows(ready.db_path)] == ["m" * 32]
+
+
 # ---- the whole stack, with a fake model over HTTP
 def test_the_finding_is_in_the_system_prompt_of_every_answer_and_kept_fresh(settings):
     fake = FakeOpenAI(script=[{"text": ["First."]}, {"text": ["Second."]}])
