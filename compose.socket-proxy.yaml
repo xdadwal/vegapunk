@@ -1,0 +1,81 @@
+# Optional: put a read-only Docker socket proxy between Vegapunk and Docker.
+# See docs/socket-proxy.md. Needs Docker Compose 2.24.4 or newer (for !override and !reset).
+#
+#   docker compose -f compose.yaml -f compose.socket-proxy.yaml up -d --build
+#
+# Vegapunk then no longer has the Docker socket. It talks to the proxy, which passes on only
+# GET and HEAD requests to the parts of the Docker API that Vegapunk reads, and answers
+# everything else with 403 Forbidden.
+services:
+  socket-proxy:
+    # A third-party image (https://github.com/Tecnativa/docker-socket-proxy). Upstream
+    # rebuilds its tags weekly, so it is pinned by digest as well as tag; see
+    # docs/socket-proxy.md for how to update it.
+    image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
+    environment:
+      # Only GET and HEAD are passed on, so no request that creates, starts, stops or
+      # deletes anything gets through, whatever the settings below allow. Some GETs under
+      # /containers still reach far: see "What does not change" in docs/socket-proxy.md.
+      POST: "0"
+      # The parts of the API Vegapunk reads.
+      PING: "1"        # /_ping
+      VERSION: "1"     # /version (the Docker SDK asks for it when it connects)
+      INFO: "1"        # /info
+      CONTAINERS: "1"  # /containers: list, inspect, stats and logs
+      # Everything else is refused. These are listed so no image default can turn one on.
+      EVENTS: "0"
+      ALLOW_START: "0"
+      ALLOW_STOP: "0"
+      ALLOW_RESTARTS: "0"
+      ALLOW_PAUSE: "0"
+      ALLOW_UNPAUSE: "0"
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      CONFIGS: "0"
+      DISTRIBUTION: "0"
+      EXEC: "0"
+      GRPC: "0"
+      IMAGES: "0"
+      NETWORKS: "0"
+      NODES: "0"
+      PLUGINS: "0"
+      SECRETS: "0"
+      SERVICES: "0"
+      SESSION: "0"
+      SWARM: "0"
+      SYSTEM: "0"
+      TASKS: "0"
+      VOLUMES: "0"
+      # Vegapunk asks Docker something every few seconds, and the default ("info") logs a
+      # line for each request with no limit on size. Set "info" to see each request,
+      # including refused ones, while troubleshooting.
+      LOG_LEVEL: notice
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # No ports are published: only containers in this project can reach the proxy.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2375/_ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  vegapunk:
+    environment:
+      VEGAPUNK_DOCKER_URL: tcp://socket-proxy:2375
+    # The same data volume as without the proxy, and no Docker socket.
+    volumes: !override
+      - vegapunk-data:/data
+    group_add: !reset []
+    depends_on:
+      socket-proxy:
+        condition: service_healthy

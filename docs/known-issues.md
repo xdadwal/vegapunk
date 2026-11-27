@@ -2,6 +2,13 @@
 
 Things we know are wrong, unverified, or deliberately limited. Each has a status so nothing is lost between milestones. Fix or close an item by editing this file in the same change.
 
+## Release status (0.1.0)
+
+What has been run, and what has not:
+
+- **Verified on Docker Desktop for macOS:** Vegapunk was used during development with Gemma (`docker.io/ai/gemma4:latest`) through Docker Model Runner, and the [install guide](install.md)'s "Test connection" against it was run; install, backup, restore and upgrade were run from a local copy of the repository (cloning from GitHub and the folder mount were not); and the [socket proxy](socket-proxy.md) was run.
+- **Not verified:** a Linux host, including the `DOCKER_GID` path (see 2); any hosted AI provider, and Ollama (see 6 and 8); the smoke test running in GitHub Actions; Windows.
+
 ## Open
 
 ### 1. Docker Desktop reports the Docker VM, not the machine
@@ -12,7 +19,7 @@ On Docker Desktop (Mac or Windows) containers run in a small Linux VM, so Vegapu
 
 | | Vegapunk showed | The Mac actually has |
 |---|---|---|
-| Host name | `docker-desktop` (kernel `linuxkit`) | `MacQueen` |
+| Host name | `docker-desktop` (kernel `linuxkit`) | the Mac's own name |
 | Memory | 7.8 GiB (Docker Desktop's limit) | 16 GiB |
 | Storage | 1007 GiB used 17 GiB (the VM's sparse disk image) | 460 GiB, 274 GiB used |
 | Uptime | since the VM started | since the Mac booted |
@@ -21,11 +28,7 @@ CPU cores match only because Docker Desktop gives the VM every core. The **Stora
 
 On a Linux host the numbers are the machine's. That is the supported target, but it is **not yet verified on Linux** (see 2).
 
-**README is inaccurate:** it says CPU and memory "already report the whole host". True on Linux, not on Docker Desktop.
-
-Candidate fixes (neither done, awaiting a decision):
-1. README note that Docker Desktop reports the VM and that Storage is not meaningful there.
-2. A small note on the Overview when the host's OS is `Docker Desktop`.
+The [install guide](install.md#docker-desktop-shows-the-wrong-memory-storage-or-host-name) now says that Docker Desktop reports the VM and that Storage is not meaningful there. Still open: a small note on the Overview when the host's OS is `Docker Desktop` (not done, awaiting a decision).
 
 ### 2. Not verified on a real Linux host
 
@@ -43,15 +46,15 @@ Covered by unit tests. A live run did not wait long enough to see a stale contai
 
 `httpx` is deprecated for Starlette's test client, which prints a warning in every backend test run. Switching to `httpx2` was attempted and blocked by the permission system.
 
-### 6. The agent has not been tried against a real AI provider
+### 6. The agent has been tried with one local model only
 
-Milestone 3 was verified against a scripted fake OpenAI-compatible server over real HTTP, which exercises logpose's real code path. Real models differ: how well they use the tools, how long answers take, and how a given provider words its errors are unchecked until someone connects one.
+Milestone 3 was verified against a scripted fake OpenAI-compatible server over real HTTP, which exercises logpose's real code path. Since then it has been run with one local model, Gemma through Docker Model Runner. No hosted provider has been tried: how well other models use the tools, how long answers take, and how a given provider words its errors are unchecked.
 
 ### 7. Thresholds are not tunable
 
 The watch rules' thresholds are constants in `backend/vegapunk/watch/rules.py`. There is no setting for them yet.
 
-### 8. Findings have not been tried against a real provider
+### 8. Findings have been tried with one local model only
 
 Findings were verified with a fake OpenAI-compatible server. Docker Model Runner with gemma4 accepts the strict JSON schema, but other real models and providers are unchecked.
 
@@ -78,4 +81,5 @@ On Docker Desktop the storage figure can read high (see known issue 1), which ca
 - **One answer at a time**, server-wide, with at most 8 model turns and 12 lookups each.
 - **An answer keeps running after the browser leaves**, until it ends, hits its limits (180 s, 8 turns, 12 lookups) or someone presses Stop, so a model you are billed for keeps working meanwhile. A sync log read already under way when Stop is pressed finishes in the background.
 - **A reattached answer replays merged text.** A reader who joins late gets the text so far as one event; past 5,000 events, step events are no longer kept for late readers (live readers still get them).
+- **Chat conversations keep the log lines the agent read** (redacted) in `conversations.db` until the conversation is deleted. After a year with no new message its messages are hidden (the conversation stays listed in History), not erased.
 - **Long conversations rely on logpose's own context handling,** which summarises when a provider rejects an over-long request.

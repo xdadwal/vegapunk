@@ -2,6 +2,7 @@ import argparse
 import getpass
 import sys
 from collections.abc import Callable
+from importlib import metadata
 
 from vegapunk.auth import admin as admin_store
 from vegapunk.auth import sessions
@@ -39,6 +40,15 @@ def reset_password(read_password: Callable[[str], str]) -> int:
     return 0
 
 
+def show_version() -> int:
+    try:
+        version = metadata.version("vegapunk")
+    except metadata.PackageNotFoundError:
+        return _fail("Vegapunk is not installed as a package, so its version is unknown.")
+    print(f"Vegapunk {version}")
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -47,7 +57,10 @@ def main(
     parser = argparse.ArgumentParser(prog="python -m vegapunk")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("reset-password", help="set a new admin password from the host")
-    parser.parse_args(argv)
+    commands.add_parser("version", help="print the Vegapunk version")
+    args = parser.parse_args(argv)
+    if args.command == "version":
+        return show_version()
     return reset_password(read_password)
 
 

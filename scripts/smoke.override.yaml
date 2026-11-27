@@ -1,0 +1,14 @@
+# For throwaway runs (the smoke test, the socket proxy check, upgrade checks) beside a
+# Vegapunk that is already running on this machine. compose.yaml names the container
+# `vegapunk`, and `-p <project>` does not change a fixed name, so this drops it and lets
+# Compose name the container after the project. Choose the host port with VEGAPUNK_PORT:
+#
+#   VEGAPUNK_PORT=18080 docker compose -p vpcheck \
+#     -f compose.yaml -f scripts/smoke.override.yaml up -d --build
+#
+# Volumes, networks and the built image are already named after the project, so nothing
+# else is shared with the running instance. Remove everything with `down -v` for the same
+# project name.
+services:
+  vegapunk:
+    container_name: !reset null
