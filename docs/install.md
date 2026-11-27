@@ -128,7 +128,18 @@ services:
 
 Then run `docker compose up -d` again. If you use the socket proxy, Compose no longer picks the file up on its own; name it yourself: `docker compose -f compose.yaml -f compose.socket-proxy.yaml -f compose.override.yaml up -d`.
 
-**Using a folder instead of the volume?** The container runs as user ID 10001, so that user must be able to write to it. For example, replace `vegapunk-data:/data` in `compose.yaml` with `./data:/data` and, on Linux, run `sudo chown 10001 data` once. Not verified: a folder mount has not been run.
+**Using a folder instead of the volume?** The container runs as user ID 10001, so that user must be able to write to it. Put the mount in `compose.override.yaml` rather than editing `compose.yaml`, so `git pull` does not conflict when you upgrade. A mount at `/data` there replaces the volume:
+
+```yaml
+services:
+  vegapunk:
+    volumes:
+      - ./data:/data
+```
+
+Create the folder and hand it to user 10001 before the first start (otherwise Docker creates it owned by root), on Linux with `mkdir data && sudo chown 10001 data`. Not verified: `docker compose config` shows the folder replacing the volume, but Vegapunk has not been run with a folder mount.
+
+`compose.override.yaml` and `.env` are your own settings for this install; git ignores both.
 
 ## Data and backups
 
@@ -138,34 +149,41 @@ Everything Vegapunk keeps is in one Docker volume, mounted at `/data` in the con
 - `conversations.db`: the agent conversations (created the first time you use the chat).
 - `secret.key`: the key that encrypts the saved AI provider API key.
 
-The volume is called `<folder>_vegapunk-data`, where `<folder>` is the name of the folder you cloned into (`vegapunk_vegapunk-data` if you kept the default). To be sure, ask Docker:
+The volume is called `<project>_vegapunk-data`. The project name is the name of the folder you cloned into, lowercased, with characters other than letters, digits, `-` and `_` dropped (`vegapunk_vegapunk-data` if you kept the default). To be sure, ask Docker:
 
 ```sh
 docker inspect vegapunk --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}'
 ```
 
+If you use the [socket proxy](socket-proxy.md), give both `-f` files (or set `COMPOSE_FILE=compose.yaml:compose.socket-proxy.yaml` in `.env`) to every `docker compose` command in this section and the next. A plain `docker compose up -d` would start Vegapunk on the Docker socket again and leave the proxy running on its own.
+
 ### Back up
 
 Stop Vegapunk first. The databases are written all the time and a copy taken while they are open can miss recent changes. Stopping takes a few seconds and monitoring resumes when you start it again.
 
+Run this in the cloned folder. It writes the backup to your home folder, outside the clone, readable only by you:
+
 ```sh
 VOLUME=$(docker inspect vegapunk --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')
 docker compose stop
-docker run --rm -v "$VOLUME":/data:ro python:3.12-slim tar -C /data -cpf - . > vegapunk-backup.tar
+(umask 077; docker run --rm -v "$VOLUME":/data:ro python:3.12-slim tar -C /data -cpf - . > ~/vegapunk-backup.tar)
 docker compose start
 ```
 
-`python:3.12-slim` is the image Vegapunk is built on, so it is already on your machine; any image with GNU tar works. The archive keeps file ownership. Check what is in it:
+`python:3.12-slim` is the base image in Vegapunk's `Dockerfile`, so it is normally on your machine already (Docker pulls it if not). Any image with GNU tar works. The archive keeps file ownership. Check what is in it:
 
 ```sh
-tar -tvf vegapunk-backup.tar
+ls -l ~/vegapunk-backup.tar
+tar -tvf ~/vegapunk-backup.tar
 ```
 
-Keep the backup somewhere safe and private. It holds `secret.key` and the encrypted API key side by side, so anyone with the file can read your API key.
+**The backup contains `secret.key`, the key that decrypts your saved AI provider API key, next to the encrypted key itself.** Anyone with the file can read your API key. Store it like a password, and do not keep it inside the cloned folder, where `git add` or a Docker build could pick it up.
 
 ### Restore
 
-Restore into an empty volume. On the same machine, remove the container and the old volume first (this deletes the current data, so be sure the backup is good):
+Restore only into an empty volume: unpacking over existing data mixes old and new files.
+
+On the same machine, run this in the cloned folder to remove the container and the old volume (this deletes the current data, so be sure the backup is good):
 
 ```sh
 VOLUME=$(docker inspect vegapunk --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}')
@@ -173,16 +191,21 @@ docker compose down
 docker volume rm "$VOLUME"
 ```
 
-On a new machine, clone the repository first and use `<folder>_vegapunk-data` as the volume name. Then create the volume, unpack the backup into it as root, and give the files back to user 10001, which Vegapunk runs as and which must be able to write them:
+On a new machine, clone the repository first and do not start it yet.
+
+Then, in the cloned folder, create the empty volume, unpack the backup into it as root, give the files back to user 10001 (which Vegapunk runs as and which must be able to write them), and start:
 
 ```sh
+# The volume Compose will use: <project>_vegapunk-data, where the project is this folder's
+# name as Compose writes it (lowercased, other characters dropped).
+VOLUME=$(docker compose config | awk '$1 == "name:" && $2 ~ /_vegapunk-data$/ {print $2}')
 docker volume create "$VOLUME"
 docker run --rm -i -v "$VOLUME":/data python:3.12-slim \
-  sh -c 'tar -C /data --same-owner -xpf - && chown -R 10001 /data' < vegapunk-backup.tar
+  sh -c 'tar -C /data --same-owner -xpf - && chown -R 10001 /data' < ~/vegapunk-backup.tar
 docker compose up -d --build
 ```
 
-Compose may warn that the volume "already exists but was not created by Docker Compose". That is expected, and it uses the volume.
+Compose may warn that the volume "already exists but was not created by Docker Compose". That is expected, and it uses the volume. After the start, the `docker inspect` line above shows the same name.
 
 Sign in with the same username and password as before.
 
@@ -200,7 +223,7 @@ Upgrades are done by pulling the new code and rebuilding. The database is update
    docker compose up -d --build
    ```
 
-   On Linux, pass `DOCKER_GID` as you did when installing (or keep it in `.env`).
+   On Linux, pass `DOCKER_GID` as you did when installing (or keep it in `.env`). If you use the [socket proxy](socket-proxy.md), give both `-f` files (or `COMPOSE_FILE` in `.env`) here too.
 3. Check the version and that it is healthy:
 
    ```sh

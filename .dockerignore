@@ -9,3 +9,5 @@ docs
 **/.ruff_cache
 **/*.db
 data
+*.tar
+*.tgz

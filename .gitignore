@@ -25,3 +25,8 @@ dist/
 # Local data
 *.db
 *.sqlite3
+
+# Local install settings and backups (a backup holds secret.key)
+compose.override.yaml
+*.tar
+*.tgz

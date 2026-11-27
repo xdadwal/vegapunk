@@ -18,7 +18,13 @@ cd vegapunk
 docker compose up -d --build
 ```
 
-Open http://localhost:8000 and create the admin account. On Linux, start it with `DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d --build` so it can read the Docker socket. If port 8000 is taken, set `VEGAPUNK_PORT` (for example `VEGAPUNK_PORT=8080`).
+On Linux, start it this way instead, so it can read the Docker socket:
+
+```sh
+DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose up -d --build
+```
+
+Then open http://localhost:8000 and create the admin account. If port 8000 is taken, set `VEGAPUNK_PORT` (for example `VEGAPUNK_PORT=8080`).
 
 - [Install guide](docs/install.md): configuration, backups, upgrading, uninstalling and troubleshooting.
 - [Read-only Docker socket proxy](docs/socket-proxy.md) (optional).
