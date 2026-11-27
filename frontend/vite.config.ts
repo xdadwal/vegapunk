@@ -12,5 +12,29 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test-setup.ts',
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'json-summary', 'lcov'],
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/test-fixtures.ts',
+        'src/test-probe.tsx',
+        'src/test-setup.ts',
+        'src/test-utils.tsx',
+        'src/main.tsx',
+        'src/types.ts',
+        'src/**/*.d.ts',
+        'src/**/*.css',
+      ],
+      // A regression guard, not a target: about 3 points under what was measured on
+      // 2026-11-27 (lines 97.8, statements 96.4, functions 96.0, branches 91.3).
+      thresholds: {
+        lines: 94,
+        statements: 93,
+        functions: 93,
+        branches: 88,
+      },
+    },
   },
 })

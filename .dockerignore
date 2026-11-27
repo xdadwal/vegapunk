@@ -7,6 +7,9 @@ docs
 **/__pycache__
 **/.pytest_cache
 **/.ruff_cache
+**/.coverage
+**/coverage.xml
+**/coverage
 **/*.db
 data
 **/*.tar

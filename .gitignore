@@ -17,10 +17,15 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Node
 node_modules/
 dist/
+coverage/
 
 # Local data: the dev data directory and keys must never be committed
 /backend/data/
