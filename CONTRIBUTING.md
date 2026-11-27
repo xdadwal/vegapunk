@@ -70,7 +70,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs three jobs on eve
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
-uv run pytest
+uv run pytest --cov --cov-report=term-missing --cov-report=xml
 ```
 
 Run `uv run ruff format .` to fix formatting.
@@ -80,9 +80,12 @@ Run `uv run ruff format .` to fix formatting.
 ```sh
 npm ci
 npm run lint
-npm test
+npm run format:check
+npm run test:coverage
 npm run build
 ```
+
+Run `npm run format` to fix formatting. The coverage commands fail if coverage drops below its floor; for a quick run while you work, `uv run pytest` and `npm test` are fine.
 
 **Docker**, from the repository root:
 
@@ -101,6 +104,7 @@ The full set is in [AGENTS.md](AGENTS.md#conventions). The ones that come up mos
 
 - **Write tests alongside new code.** Backend tests live in `backend/tests/`; frontend tests sit next to the file they test (`Thing.test.tsx`).
 - **Keep changes small and simple.** Prefer a plain solution over a new abstraction.
+- **Frontend code is formatted with Prettier** (`npm run format`), as backend code is with ruff.
 - **Frontend styling uses the design tokens** in `frontend/src/styles/tokens.css` and the component styles in `components.css`. Don't hard-code colours, spacing or fonts.
 - **Say "Agent", not "AI"**, for the operator in the interface. "AI" is only for the provider settings.
 - **Migrations are never edited once shipped.** A schema change is a new numbered file in `backend/vegapunk/migrations/` (`0007_name.sql`).

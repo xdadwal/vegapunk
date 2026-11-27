@@ -107,7 +107,7 @@ Backend, from `backend/`:
 uv sync --locked          # install exactly what uv.lock says
 uv run ruff check .       # lint
 uv run ruff format --check .   # formatting (use `uv run ruff format .` to fix)
-uv run pytest             # tests
+uv run pytest --cov --cov-report=term-missing --cov-report=xml   # tests with coverage
 ```
 
 Frontend, from `frontend/`:
@@ -115,11 +115,14 @@ Frontend, from `frontend/`:
 ```sh
 npm ci                    # install exactly what package-lock.json says
 npm run lint              # oxlint
-npm test                  # Vitest, once
+npm run format:check      # Prettier (use `npm run format` to fix)
+npm run test:coverage     # Vitest, once, with coverage
 npm run build             # type-check and build into dist/
 ```
 
-To run one backend test file, pass it to pytest: `uv run pytest tests/test_tools.py`. To run one frontend test file, pass it to Vitest: `npm test -- src/pages/Containers.test.tsx`.
+For a quick run without coverage, `uv run pytest` and `npm test` are fine. To run one backend test file, pass it to pytest: `uv run pytest tests/test_tools.py`. To run one frontend test file, pass it to Vitest: `npm test -- src/pages/Containers.test.tsx`.
+
+Coverage has a floor, set a few points under the measured figure as a guard against regressions: `fail_under` in `backend/pyproject.toml` and `test.coverage.thresholds` in `frontend/vite.config.ts`. A run below it fails. CI shows the figures on the job's summary page and keeps the reports as artifacts. Locally, the frontend report is in `frontend/coverage/` (open `lcov-report/index.html`).
 
 ## The Docker image and the smoke test
 

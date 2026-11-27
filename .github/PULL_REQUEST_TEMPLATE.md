@@ -11,8 +11,8 @@
 ## Checklist
 
 - [ ] Tests are added or updated for the change.
-- [ ] Backend: `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest` pass.
-- [ ] Frontend: `npm run lint`, `npm test` and `npm run build` pass.
+- [ ] Backend: `uv run ruff check .`, `uv run ruff format --check .` and `uv run pytest --cov` pass.
+- [ ] Frontend: `npm run lint`, `npm run format:check`, `npm run test:coverage` and `npm run build` pass.
 - [ ] Docs are updated (README, docs/, CHANGELOG.md under Unreleased, known-issues.md) where behaviour changed.
 - [ ] UI changes use the design tokens, with no hard-coded colours, spacing or fonts, and say "Agent", not "AI".
 - [ ] No new dependency, or it was discussed and agreed in the linked issue.

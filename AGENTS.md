@@ -33,7 +33,8 @@ Out of scope: multiple hosts, a host agent, multiple users, non-Docker services.
 - **Backend** (`backend/`): Python 3.12, FastAPI, SQLite. Dependencies managed with uv; ruff for lint and format; pytest for tests.
 - **AI operator:** [logpose](https://github.com/xdadwal/logpose) for the agent loop and provider integration, installed from a tagged GitHub release (it is not on PyPI).
 - **Deployment:** one Docker container with the host's Docker socket mounted, built from the repository (no image is published). `compose.socket-proxy.yaml` is an optional override that puts a Docker socket proxy in front of it (`docs/socket-proxy.md`). That proxy, `tecnativa/docker-socket-proxy` pinned by digest, is the one third-party image allowed (decided 2026-11-27): it is optional, documented, and only in the override file, not a dependency of the app.
-- **Frontend** (`frontend/`): TypeScript, React, Vite. Dependencies managed with npm; oxlint for lint.
+- **Frontend** (`frontend/`): TypeScript, React, Vite. Dependencies managed with npm; oxlint for lint; Prettier for formatting.
+- **Dev tools:** pytest-cov, @vitest/coverage-v8 and Prettier, added 2026-11-27 at the owner's request. They are dev-only and not in the production image.
 
 ## Working Agreements
 
@@ -76,6 +77,7 @@ Backend, from `backend/`:
 - `uv sync` — install dependencies
 - `uv run uvicorn vegapunk.main:app --reload` — run the API on http://localhost:8000
 - `uv run pytest` — run tests
+- `uv run pytest --cov` — run tests with coverage (fails below `fail_under` in `pyproject.toml`)
 - `uv run ruff check .` and `uv run ruff format .` — lint and format
 - `uv run python -m vegapunk reset-password` — set a new admin password (reads the same data directory)
 - `uv run python -m vegapunk version` — print the version (in the container: `docker exec vegapunk python -m vegapunk version`)
@@ -85,12 +87,14 @@ Frontend, from `frontend/`:
 - `npm install` — install dependencies
 - `npm run dev` — run the dev server; requests to `/api` are proxied to the backend
 - `npm test` — run tests (Vitest and Testing Library)
+- `npm run test:coverage` — run tests with coverage (fails below the thresholds in `vite.config.ts`)
 - `npm run lint` — lint
+- `npm run format` and `npm run format:check` — format with Prettier, or check
 - `npm run build` — type-check and build
 
 Whole app: `docker compose up --build` builds one image that serves the API and the built frontend on port 8000 (`VEGAPUNK_PORT` changes the host port). `sh scripts/smoke.sh` builds the image, starts it under a throwaway project on a free port, checks that it becomes healthy and answers, and cleans up; it never touches a running `vegapunk` container.
 
-CI (`.github/workflows/ci.yml`) runs lint, tests, and build for both, checks both compose files, and builds the image and runs the smoke test, on every pull request.
+CI (`.github/workflows/ci.yml`) runs lint, tests with coverage, and build for both, checks frontend formatting, checks both compose files, and builds the image and runs the smoke test, on every pull request.
 
 ## Conventions
 
@@ -108,4 +112,4 @@ CI (`.github/workflows/ci.yml`) runs lint, tests, and build for both, checks bot
 - **Findings (`backend/vegapunk/watch/`):** `rules.py` holds the cheap rules that decide when to call the model; `investigate.py` runs the model and keeps only evidence lines that are whole lines of what `container_logs` returned; `runner.py` is the single asyncio loop, with a 6 h cooldown per subject, a cap of 20 investigations per 24 h and a 30 min back-off after a failure, all recorded in `investigations`. Statuses are open, resolved and reviewed. Metric evidence is the rule's own fact line, never written by the model. `check_settings.enabled` gates only the daily check; `check_settings.watch_enabled` (migration 0005, default on) gates only signal-triggered investigations, read fresh each tick. With the watch off the rules still run, so open findings still resolve and the cooldowns still hold.
 - **API:** everything is under `/api`. Every route except health, setup, sign-in and sign-out requires the signed-in admin (`require_admin`). A POST with no JSON body (other than sign-out) also requires `X-Requested-With: vegapunk` (`api/security.py`).
 - **Releases:** a release is an annotated tag `vX.Y.Z` on `main` with a `CHANGELOG.md` entry (new entries go under `## [Unreleased]`). The version is set in `backend/pyproject.toml` and `frontend/package.json`, then `uv lock` updates `backend/uv.lock`, which is committed too. Nothing is pushed to a registry. The checklist is `docs/releasing.md`.
-- **Frontend styling:** design tokens in `frontend/src/styles/tokens.css` and component styles in `components.css`, both taken from the design system. Use the tokens; do not hard-code colors, spacing, or fonts.
+- **Frontend styling:** design tokens in `frontend/src/styles/tokens.css` and component styles in `components.css`, both taken from the design system. Use the tokens; do not hard-code colors, spacing, or fonts. Frontend code is formatted with Prettier (`npm run format`); the two design-system stylesheets are left as copied.
