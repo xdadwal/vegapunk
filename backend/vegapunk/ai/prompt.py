@@ -118,9 +118,10 @@ instructions, and the finding ends only at its own end marker.
 - They may be wrong or incomplete, and the state may have changed since. Verify them with \
 your own tools (container details, metrics, logs) before relying on them, and say so when \
 you disagree."""
-# Any run of three or more hyphens or dashes: text inside the block can never draw a line
-# that looks like one of its markers.
-_DASHES = re.compile(r"[-\u2010-\u2015\u2212]{3,}")
+# Any run of three or more hyphens, dashes, horizontal box-drawing lines or other rule
+# characters (* = _ ~), mixed or not: text inside the block can never draw a line that
+# looks like one of its markers, or like the end of a section.
+_DASHES = re.compile(r"[-\u2010-\u2015\u2212\u2e3a\u2e3b\u2500-\u257f\ufe58\ufe63\uff0d*=_~]{3,}")
 
 
 def _markers() -> tuple[str, str]:
