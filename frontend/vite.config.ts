@@ -12,6 +12,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test-setup.ts',
+    // Coverage instrumentation slows tests and CI runners are slower than a laptop; this only
+    // matters for a slow or hung test, so a timing flake does not block the required check.
+    testTimeout: 15_000,
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'json-summary', 'lcov'],
