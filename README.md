@@ -1,5 +1,9 @@
 # Vegapunk
 
+[![CI](https://github.com/xdadwal/vegapunk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xdadwal/vegapunk/actions/workflows/ci.yml?query=branch%3Amain)
+[![License: MIT](https://img.shields.io/github/license/xdadwal/vegapunk)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/xdadwal/vegapunk?include_prereleases&sort=semver)](https://github.com/xdadwal/vegapunk/releases)
+
 An open-source tool for managing a homelab host and its services.
 
 > **Status:** Pre-release, version 0.1.0. It watches and reports; it does not change anything on your host yet. Expect things to change.
@@ -7,6 +11,18 @@ An open-source tool for managing a homelab host and its services.
 ## Overview
 
 Vegapunk is a single server that runs on your homelab host. It periodically captures data about the host and the containers running on it, and gives you a web interface to view them.
+
+**What it is:**
+
+- A web interface for one host: its CPU, memory and storage, and each container's status, restarts, CPU and memory, with history for trends.
+- An agent that watches that data, raises findings (a diagnosis with the evidence behind it and a suggested fix in words), and answers your questions in a chat. It uses an AI provider you choose.
+- One container on the host it watches, with the host's Docker socket mounted. There is no separate agent to install.
+
+**What it isn't (yet):**
+
+- It doesn't change anything. Vegapunk only reads and reports: it can't start, stop or restart containers, and the agent can't run commands. Managing containers is planned for later.
+- It watches one host, the one it runs on. Multiple hosts are out of scope.
+- It manages Docker containers only, with one admin account and no other users.
 
 ## Quick start
 
@@ -53,7 +69,7 @@ Each finding has a diagnosis, the evidence it cites and a suggested fix in words
 
 ## Development
 
-You need [uv](https://docs.astral.sh/uv/) and Node.js 24.
+[docs/development.md](docs/development.md) covers the code layout, tests, the Docker build and how to add to Vegapunk. In short, you need [uv](https://docs.astral.sh/uv/) and Node.js 24.
 
 ```sh
 # Backend (http://localhost:8000)
@@ -69,7 +85,17 @@ npm run dev
 
 ## Contributing
 
-Contributions, ideas, and bug reports are welcome — feel free to open an issue or pull request.
+Contributions, ideas, and bug reports are welcome — feel free to open an issue or pull request. Vegapunk is young and has one maintainer, so help of any size counts: running it on Linux and reporting back, trying it with your AI provider, fixing docs, adding tests.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to help, the first-version scope, and what a pull request needs.
+- [docs/development.md](docs/development.md): setting up, running the tests and finding your way around the code.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): how we treat each other.
+- [SUPPORT.md](SUPPORT.md): where to ask questions and how to report a bug.
+- [Discussions](https://github.com/xdadwal/vegapunk/discussions): questions, ideas and sharing your setup.
+
+## Project status and roadmap
+
+Vegapunk 0.1.0 is the first version: observer only, on one Docker host. The [roadmap](docs/plans/roadmap.md) shows how it was built and what is planned after it (container management and agent actions behind permission levels, a published image); what changed in each version is in the [changelog](CHANGELOG.md), and what is known to be wrong or unverified (including Linux) is in [known issues](docs/known-issues.md).
 
 ## License
 
