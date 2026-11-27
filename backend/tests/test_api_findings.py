@@ -8,6 +8,7 @@ from vegapunk.watch import findings
 
 T = datetime(2026, 11, 27, 9, 0, tzinfo=UTC)
 KEY = "sk-test-key-abcdef123456"
+BUSY = "Another check is running. Try again in a moment."
 
 
 class FakeRunner:
@@ -35,6 +36,7 @@ def draft(subject="web", title="Web is down", evidence=()):
 @pytest.fixture
 def api(client, settings):
     assert client.post("/api/setup/admin", json=CREDENTIALS).status_code == 201
+    client.headers["X-Requested-With"] = "vegapunk"
     client.runner = FakeRunner()
     client.app.state.runner = client.runner
     conn = connect(settings.db_path)
@@ -76,6 +78,7 @@ def test_list_filters_and_counts(api):
 
 
 def test_list_reports_checks(api):
+    findings.record_investigation(api.conn, "scheduled:check", "scheduled", T, "nothing")
     checks = api.get("/api/findings").json()["checks"]
     assert checks == {
         "enabled": True,
@@ -94,6 +97,28 @@ def test_last_error_hidden_while_running(api):
     api.runner.running, api.runner.error = True, "The check was interrupted."
     c = api.get("/api/findings").json()["checks"]
     assert c["running"] is True and c["last_error"] is None
+
+
+def test_last_run_at_is_null_until_a_check_has_run(api):
+    # A fresh install stores a placeholder time; it is not a check that ran.
+    findings.set_check_last_run(api.conn, T)
+    assert api.get("/api/findings").json()["checks"]["last_run_at"] is None
+    api.app.state.runner = None
+    assert api.get("/api/findings").json()["checks"]["last_run_at"] is None
+    findings.record_investigation(api.conn, "scheduled:check", "scheduled", T, "nothing")
+    assert api.get("/api/findings").json()["checks"]["last_run_at"] == "2026-11-27T09:00:00Z"
+
+
+@pytest.mark.parametrize("path", ["/api/findings/check", "/api/findings/{fid}/review"])
+def test_body_less_posts_need_the_request_header(api, path):
+    url = path.format(fid=add(api))
+    del api.headers["X-Requested-With"]
+    for headers in ({}, {"X-Requested-With": "XMLHttpRequest"}):
+        r = api.post(url, headers=headers)
+        assert r.status_code == 403 and r.json() == {"detail": "Missing request header."}
+    assert api.runner.calls == 0
+    r = api.post(url, headers={"X-Requested-With": "vegapunk"})
+    assert r.status_code in (202, 204)
 
 
 def test_list_without_runner_reads_the_database(api):
@@ -150,8 +175,8 @@ def test_check_started(api):
     "kwargs, message",
     [
         ({"skipped": "off"}, "Connect an AI provider first."),
-        ({"running": True}, "A check is already running."),
-        ({"started": False}, "A check is already running."),
+        ({"running": True}, BUSY),
+        ({"started": False}, BUSY),
         ({"skipped": "key_rejected"}, "Your AI provider rejected the API key."),
         (
             {"skipped": "unsupported"},

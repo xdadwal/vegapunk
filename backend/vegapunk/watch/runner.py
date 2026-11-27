@@ -9,10 +9,14 @@ run one at a time on one lock; SQLite is only touched through `asyncio.to_thread
 import asyncio
 import contextlib
 import logging
+import shutil
 import sqlite3
+import tempfile
+import time
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from logpose import Agent
 
@@ -26,6 +30,7 @@ from vegapunk.timefmt import z
 from vegapunk.watch import findings, rules
 from vegapunk.watch.findings import EvidenceLine, FindingDraft
 from vegapunk.watch.investigate import (
+    SCRATCH_PREFIX,
     InvestigationError,
     investigate,
     investigation_agent_factory,
@@ -39,6 +44,7 @@ BACKOFF = timedelta(minutes=30)  # per key, after a failed attempt
 REVIEW_QUIET = timedelta(hours=24)  # per key, after its finding was reviewed
 DAILY_CAP = 20  # watch investigations in any 24 hours, across all keys
 CLEAR_AFTER = timedelta(minutes=30)  # a signal silent this long has cleared
+SCRATCH_MAX_AGE = timedelta(minutes=10)  # an older check scratch directory was left behind
 CHECK_KEY = "scheduled:check"
 SCHEDULED = "scheduled:"
 HOST = "host"
@@ -131,9 +137,32 @@ class Runner:
 
     # ---- the loop
     def start(self) -> None:
+        self.sweep_temp()
         if not self._autostart or self._task is not None:
             return
         self._task = asyncio.get_running_loop().create_task(self._loop(), name="vegapunk-watch")
+
+    @staticmethod
+    def sweep_temp() -> None:
+        """Delete check scratch directories (they hold redacted logs) left by a process that
+        was killed mid-run. Only ones older than any run could take are touched."""
+        root = Path(tempfile.gettempdir())
+        cutoff = time.time() - SCRATCH_MAX_AGE.total_seconds()
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if (
+                    entry.name.startswith(SCRATCH_PREFIX)
+                    and entry.is_dir()
+                    and not entry.is_symlink()
+                    and entry.stat().st_mtime < cutoff
+                ):
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                continue
 
     @property
     def loop_running(self) -> bool:
@@ -292,8 +321,9 @@ class Runner:
         except InvestigationError as exc:
             await self._failed(run_id, focus, exc.code, exc.message)
             return exc.code not in ("key_rejected", "unsupported")
-        except Exception:
-            log.exception("A check hit a problem")
+        except Exception as exc:
+            # By type only: an exception's text or traceback may hold container log text.
+            log.error("A check hit a problem: %s", type(exc).__name__)
             await self._failed(run_id, focus, "error", PROBLEM)
             return True
 

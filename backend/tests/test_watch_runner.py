@@ -8,7 +8,10 @@ same database (a restart) keeps them.
 import asyncio
 import json
 import logging
+import os
+import tempfile
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -873,7 +876,7 @@ def test_a_watch_error_is_cleared_by_the_next_success(world, signals):
 
 
 def test_an_unexpected_investigator_error_is_a_failed_attempt(world, signals, caplog):
-    clock, inv = Clock(), Investigator(RuntimeError("boom"))
+    clock, inv = Clock(), Investigator(RuntimeError("boom: a line from the container logs"))
     signals.now = [RESTART]
     with caplog.at_level(logging.ERROR):
         run(runner(world, inv, clock).tick())
@@ -881,6 +884,10 @@ def test_an_unexpected_investigator_error_is_a_failed_attempt(world, signals, ca
     assert rows(world, "SELECT error FROM investigations")[0]["error"] == (
         "The check hit a problem."
     )
+    # Logged by type only: an exception's text or traceback may hold container log text.
+    (record,) = [r for r in caplog.records if r.name == "vegapunk.watch.runner"]
+    assert "RuntimeError" in record.getMessage() and record.exc_info is None
+    assert "container logs" not in caplog.text
 
 
 # ---- run now, concurrency, stopping
@@ -978,6 +985,43 @@ def test_a_crash_inside_tick_is_logged_and_the_loop_continues(world, signals, ca
         run(asyncio.wait_for(go(), 5))
     assert len(calls) >= 3
     assert "tick exploded" in caplog.text
+
+
+def old_scratch_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    made = {}
+    for name, age in [
+        ("vegapunk-check-old", 11 * 60),
+        ("vegapunk-check-new", 5 * 60),
+        ("other-old", 11 * 60),
+    ]:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "logpose.db").write_text("redacted log lines")
+        stamp = time.time() - age
+        os.utime(d, (stamp, stamp))
+        made[name] = d
+    return made
+
+
+def test_start_sweeps_old_check_scratch_directories(world, tmp_path, monkeypatch):
+    made = old_scratch_dirs(tmp_path, monkeypatch)
+
+    async def go():
+        r = Runner(world, FakeDocker(), CRYPTO_KEY, T0, investigator=Investigator([]))
+        r.start()
+        await r.stop()
+
+    run(go())
+    assert not made["vegapunk-check-old"].exists()
+    assert made["vegapunk-check-new"].exists() and made["other-old"].exists()
+
+
+def test_sweep_temp_works_without_starting(world, tmp_path, monkeypatch):
+    made = old_scratch_dirs(tmp_path, monkeypatch)
+    runner(world, Investigator([]), Clock()).sweep_temp()
+    assert not made["vegapunk-check-old"].exists()
+    assert made["vegapunk-check-new"].exists() and made["other-old"].exists()
 
 
 def test_start_does_nothing_when_built_with_start_false(world):

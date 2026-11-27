@@ -54,6 +54,8 @@ from vegapunk.watch.rules import Signal
 
 log = logging.getLogger(__name__)
 
+SCRATCH_PREFIX = "vegapunk-check-"  # the run's temporary directory; the runner sweeps leftovers
+
 MAX_ITERATIONS = 10
 MAX_TOOL_CALLS = 20
 MAX_TOKENS = 4_096
@@ -197,7 +199,7 @@ async def investigate(
     output: CheckReport | None = None
     # logpose keeps no session here, but writes run records to its database: keep that
     # file in a directory that is deleted when the run ends.
-    with tempfile.TemporaryDirectory(prefix="vegapunk-check-") as scratch:
+    with tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX) as scratch:
         agent: Agent | None = None
         try:
             agent = agent_factory(
@@ -240,8 +242,9 @@ async def investigate(
             raise InvestigationError("timeout", "The check took too long.") from None
         except MaxIterationsError:
             raise InvestigationError("too_many_steps", "The check needed too many steps.") from None
-        except Exception:
-            log.exception("A check hit a problem")
+        except Exception as exc:
+            # By type only: an exception's text or traceback may hold container log text.
+            log.error("A check hit a problem: %s", type(exc).__name__)
             raise InvestigationError("error", "The check hit a problem.") from None
         finally:
             if agent is not None:

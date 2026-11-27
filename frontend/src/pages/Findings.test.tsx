@@ -108,6 +108,15 @@ describe('Findings', () => {
     ).toBeVisible()
   })
 
+  it('names no scheduled check before one has run', async () => {
+    show(findingList([OPEN], { last_run_at: null }))
+    renderApp('/findings')
+    expect(
+      await screen.findByText('What the agent noticed in container logs, metrics and storage'),
+    ).toBeVisible()
+    expect(screen.queryByText(/last scheduled check/)).toBeNull()
+  })
+
   it('shows alerts for an agent that is off, a rejected key, and unsupported models', async () => {
     show(findingList([OPEN], { skipped: 'off' }))
     const { unmount } = renderApp('/findings')

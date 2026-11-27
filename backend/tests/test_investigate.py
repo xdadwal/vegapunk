@@ -457,6 +457,24 @@ def test_errors_are_mapped_to_codes(error, code):
     assert len(built) == 1
 
 
+def test_an_unexpected_error_is_logged_by_type_only(caplog):
+    secret_line = "password=hunter2 from the container logs"
+    provider = FakeProvider([Turn.fail(RuntimeError(secret_line))])
+    make = agent_factory(provider)
+
+    def factory(db_path, **_):
+        return make(model="m", db_path=str(db_path), tracing=None)
+
+    with caplog.at_level("DEBUG"), pytest.raises(InvestigationError):
+        asyncio.run(investigate(factory, focus=None, open_findings=[], subjects=ALL, secret=KEY))
+    records = [r for r in caplog.records if r.name == "vegapunk.watch.investigate"]
+    assert records and "RuntimeError" in records[0].getMessage()
+    for r in records:
+        assert r.exc_info is None
+        assert secret_line not in r.getMessage()
+    assert secret_line not in caplog.text
+
+
 # ---- (m) nothing is kept on disk
 def test_no_file_appears_in_the_working_or_data_directory(world, tmp_path, monkeypatch):
     work = tmp_path / "work"

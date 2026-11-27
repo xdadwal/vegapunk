@@ -23,7 +23,10 @@ function detailOf(body: unknown, status: number): string {
 }
 
 export async function api<T = void>(path: string, options: Options = {}): Promise<T> {
+  const method = options.method ?? 'GET'
   const headers = new Headers()
+  // The server refuses body-less POSTs without it: a plain cross-site form cannot set it.
+  if (method !== 'GET') headers.set('X-Requested-With', 'vegapunk')
   let body: string | undefined
   if (options.body !== undefined) {
     headers.set('Content-Type', 'application/json')
@@ -33,7 +36,7 @@ export async function api<T = void>(path: string, options: Options = {}): Promis
   let response: Response
   try {
     response = await fetch(`/api${path}`, {
-      method: options.method ?? 'GET',
+      method,
       headers,
       body,
       credentials: 'same-origin',

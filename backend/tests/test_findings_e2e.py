@@ -102,6 +102,7 @@ def stack(tmp_path, monkeypatch, fake: FakeOpenAI, docker=None):
     app = create_vegapunk(settings, collectors=[], docker=docker or FakeDocker({"a": LOGS}))
     with serve(create_app(fake)) as model_url, TestClient(app) as client:
         client.event_hooks["response"] = [keep]
+        client.headers["X-Requested-With"] = "vegapunk"
         assert client.post("/api/setup/admin", json=CREDENTIALS).status_code == 201
         saved = client.put(
             "/api/settings/ai",
